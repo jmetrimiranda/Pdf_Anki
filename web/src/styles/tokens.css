@@ -2,8 +2,10 @@
  * Design tokens — copied from the Painel de Estudos spec, section 4.1/4.2
  * (docs/referencia/painel-PROJETO.md). Keep both projects identical.
  * Reader-specific tokens (docs/PROJETO.md section 4) are at the end.
+ * Themes also apply to any element with data-theme (used by /dev/ui to show both side by side).
  */
-:root {
+:root,
+[data-theme='light'] {
   color-scheme: light;
   --bg: #ffffff;
   --text: #222222;
@@ -52,7 +54,8 @@
   --page-dark-text: #d8d8d8;
 }
 
-:root[data-theme='dark'] {
+:root[data-theme='dark'],
+[data-theme='dark'] {
   color-scheme: dark;
   --bg: #141414;
   --text: #e8e8e8;
@@ -71,7 +74,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root {
+  :root,
+  [data-theme] {
     --motion: 0ms;
   }
 }

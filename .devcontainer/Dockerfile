@@ -38,7 +38,11 @@ RUN rustup component add rustfmt clippy
 RUN groupadd --gid ${USER_GID} ${USERNAME} \
     && useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash ${USERNAME} \
     && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
-    && chown -R ${USERNAME}:${USERNAME} /usr/local/cargo /usr/local/rustup
+    && mkdir -p /home/${USERNAME}/.local/share/pnpm /home/${USERNAME}/.cache /home/${USERNAME}/.config \
+    && chown -R ${USERNAME}:${USERNAME} /usr/local/cargo /usr/local/rustup /home/${USERNAME}
+
+# System libraries for Playwright's Chromium and WebKit (e2e against the mocked core).
+RUN npx -y playwright@1.64.1 install-deps chromium webkit && rm -rf /var/lib/apt/lists/*
 
 USER ${USERNAME}
 ENV CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:/opt/protoc/bin:$PATH

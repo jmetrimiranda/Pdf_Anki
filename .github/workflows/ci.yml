@@ -4,19 +4,27 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release.yml reuses these jobs, so a release is only drafted from a fully tested build.
+  workflow_call:
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   PROTOC_VERSION: "31.1"
+  # The Tauri CLI is run from web/, which doesn't contain the Tauri crate.
+  TAURI_APP_PATH: ../src-tauri/app
 
 jobs:
   web:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -27,77 +35,125 @@ jobs:
       - run: pnpm -r test
       - name: Playwright (mocked core)
         run: |
-          pnpm --dir web exec playwright install --with-deps chromium
+          pnpm --dir web exec playwright install --with-deps chromium webkit
           pnpm --dir web e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          if-no-files-found: ignore
 
   linux:
     # Same image as the devcontainer, so CI and local builds match.
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
+      - name: Free disk space
+        # Debug + release builds of the Anki core and PdfCraft need more than the runner's ~14 GB free.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
       - uses: actions/checkout@v5
         with: { submodules: recursive }
+      - uses: docker/setup-buildx-action@v3
       - name: Build dev image
-        run: docker build -t leitor-dev:latest .devcontainer
-      - uses: actions/cache@v4
+        uses: docker/build-push-action@v6
+        with:
+          context: .devcontainer
+          tags: leitor-dev:latest
+          load: true
+          cache-from: type=gha,scope=leitor-dev
+          cache-to: type=gha,scope=leitor-dev,mode=max
+      - name: Restore cargo cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/cargo-registry
             ~/cargo-git
-            src-tauri/target
+            src-tauri/target/debug
           key: linux-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: linux-cargo-
-      - name: fmt, clippy, test, bundle
+      - name: fmt, clippy, test, bundle (in the dev image)
+        # The image's user is dev (uid 1000) but the runner checks out as uid 1001, so run as root;
+        # root-owned outputs stay readable for the cache and artifact steps.
         run: |
-          mkdir -p ~/cargo-registry ~/cargo-git src-tauri/target
-          sudo chown -R 1000:1000 ~/cargo-registry ~/cargo-git src-tauri/target . 
-          docker run --rm -v "$PWD":/workspaces/leitor-estudos \
+          mkdir -p ~/cargo-registry ~/cargo-git
+          docker run --rm --user 0 -e HOME=/root \
+            -e CARGO_INCREMENTAL -e CARGO_TERM_COLOR -e TAURI_APP_PATH -e APPIMAGE_EXTRACT_AND_RUN=1 \
+            -v "$PWD":/workspaces/leitor-estudos \
             -v ~/cargo-registry:/usr/local/cargo/registry -v ~/cargo-git:/usr/local/cargo/git \
             -w /workspaces/leitor-estudos leitor-dev:latest bash -c '
               set -euo pipefail
+              git config --global --add safe.directory "*"
+              scripts/fetch-anki-web.sh
+              scripts/fetch-ocr-models.sh
               pnpm install --frozen-lockfile
               cd src-tauri
               cargo fmt --all --check
               cargo clippy -j 2 --workspace --all-targets -- -D warnings
-              timeout 50m cargo test -j 2 --workspace
+              timeout 75m cargo test -j 2 --workspace
               cd ..
               pnpm --dir web tauri build --bundles deb,appimage
             '
+      - name: Save cargo cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/cargo-registry
+            ~/cargo-git
+            src-tauri/target/debug
+          key: linux-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.run_id }}
       - uses: actions/upload-artifact@v4
         with:
           name: linux-bundles
           path: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/appimage/*.AppImage
-          if-no-files-found: warn
+          if-no-files-found: error
 
   windows:
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
+      - name: Allow long paths
+        run: git config --global core.longpaths true
       - uses: actions/checkout@v5
         with: { submodules: recursive }
       - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
-        with: { workspaces: src-tauri }
+        with:
+          workspaces: src-tauri
+          shared-key: windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: protoc ${{ env.PROTOC_VERSION }}
         shell: pwsh
         run: |
           $u = "https://github.com/protocolbuffers/protobuf/releases/download/v$env:PROTOC_VERSION/protoc-$env:PROTOC_VERSION-win64.zip"
-          Invoke-WebRequest $u -OutFile protoc.zip
-          Expand-Archive protoc.zip -DestinationPath "$env:RUNNER_TEMP\protoc"
-          "PROTOC=$env:RUNNER_TEMP\protoc\bin\protoc.exe" | Out-File -Append $env:GITHUB_ENV
+          Invoke-WebRequest $u -OutFile "$env:RUNNER_TEMP\protoc.zip"
+          Expand-Archive "$env:RUNNER_TEMP\protoc.zip" -DestinationPath "$env:RUNNER_TEMP\protoc"
+          "PROTOC=$env:RUNNER_TEMP\protoc\bin\protoc.exe" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "PROTOC_INCLUDE=$env:RUNNER_TEMP\protoc\include" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      - name: Fetch bundled assets
+        # Git Bash on the runner has curl, sha256sum and Python.
+        shell: bash
+        run: |
+          scripts/fetch-anki-web.sh
+          scripts/fetch-ocr-models.sh
       - name: Test core
         working-directory: src-tauri
         run: cargo test -j 2 --workspace
       - name: Bundle (.msi)
+        # MSVC, the Windows SDK and WebView2 are preinstalled; the Tauri CLI downloads WiX itself.
         run: pnpm --dir web tauri build --bundles msi
       - uses: actions/upload-artifact@v4
         with:
           name: windows-msi
           path: src-tauri/target/release/bundle/msi/*.msi
-          if-no-files-found: warn
+          if-no-files-found: error

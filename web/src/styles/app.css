@@ -1,0 +1,208 @@
+@import 'tailwindcss';
+@import './tokens.css';
+
+/* Touch devices get 44px targets (spec painel 4.2). */
+@custom-variant coarse (@media (pointer: coarse));
+
+/* Derived colors that are not part of the shared token set. */
+:root,
+[data-theme] {
+  --hover: color-mix(in srgb, var(--text) 6%, transparent);
+  --active: color-mix(in srgb, var(--text) 10%, transparent);
+  --lime-soft: color-mix(in srgb, var(--lime) 14%, transparent);
+  --error-soft: color-mix(in srgb, var(--error) 10%, transparent);
+  --surface-2: color-mix(in srgb, var(--text) 3%, var(--bg));
+  --focus: color-mix(in srgb, var(--lime) 70%, transparent);
+  --overlay: rgba(0, 0, 0, 0.32);
+  --on-lime: #ffffff;
+}
+[data-theme='dark'] {
+  --on-lime: #142008;
+  --overlay: rgba(0, 0, 0, 0.55);
+}
+
+@theme inline {
+  --color-*: initial;
+  --color-white: #ffffff;
+  --color-black: #000000;
+  --color-bg: var(--bg);
+  --color-fg: var(--text);
+  --color-muted: var(--muted);
+  --color-line: var(--border);
+  --color-card: var(--card);
+  --color-empty: var(--empty);
+  --color-surface: var(--surface-2);
+  --color-lime: var(--lime);
+  --color-lime-dark: var(--lime-dark);
+  --color-lime-soft: var(--lime-soft);
+  --color-on-lime: var(--on-lime);
+  --color-today: var(--today);
+  --color-link: var(--link);
+  --color-error: var(--error);
+  --color-error-soft: var(--error-soft);
+  --color-neutral: var(--neutral-btn);
+  --color-hover: var(--hover);
+  --color-active: var(--active);
+  --color-focus: var(--focus);
+  --color-overlay: var(--overlay);
+  --color-anki-new: var(--anki-new);
+  --color-anki-learn: var(--anki-learn);
+  --color-anki-review: var(--anki-review);
+
+  --radius-*: initial;
+  --radius-box: var(--radius-card);
+  --radius-ctl: var(--radius-control);
+  --radius-full: 9999px;
+
+  --shadow-*: initial;
+  --shadow-popover: var(--shadow-pop);
+
+  --font-weight-*: initial;
+  --font-weight-normal: 400;
+  --font-weight-semibold: 600;
+
+  --text-*: initial;
+  --text-2xs: 11px;
+  --text-2xs--line-height: 1.4;
+  --text-xs: 12px;
+  --text-xs--line-height: 1.5;
+  --text-sm: 13px;
+  --text-sm--line-height: 1.5;
+  --text-base: 14px;
+  --text-base--line-height: 1.5;
+  --text-md: 15px;
+  --text-md--line-height: 1.4;
+  --text-lg: 18px;
+  --text-lg--line-height: 1.35;
+
+  --default-transition-duration: var(--motion);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  [data-theme] {
+    color: var(--text);
+  }
+  code,
+  kbd,
+  pre {
+    font-family: var(--font-mono);
+  }
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--link) 28%, transparent);
+  }
+  button {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: default;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0ms !important;
+    transition-duration: 0ms !important;
+  }
+}
+
+/* Entry animations for floating surfaces (Radix sets data-state). */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+@keyframes sheet-in {
+  from {
+    transform: translateY(16px);
+    opacity: 0;
+  }
+}
+@keyframes shimmer {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+@utility anim-fade {
+  animation: fade-in var(--motion) ease-out;
+}
+@utility anim-pop {
+  animation: pop-in var(--motion) ease-out;
+}
+@utility anim-sheet {
+  animation: sheet-in var(--motion) ease-out;
+}
+@utility anim-shimmer {
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Word overlay over rendered PDF pages (spec 6.3): transparent but selectable. */
+.word-layer {
+  position: absolute;
+  inset: 0;
+  line-height: 1;
+  user-select: text;
+}
+.word-layer > span {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+}
+.word-layer > span::selection {
+  background: color-mix(in srgb, var(--link) 35%, transparent);
+  color: transparent;
+}
+.word-layer.debug > span {
+  outline: 1px solid color-mix(in srgb, var(--link) 45%, transparent);
+  background: color-mix(in srgb, var(--link) 8%, transparent);
+}
+/* Search hits: multiply keeps the glyphs dark on light pages; on the dark page multiply would turn
+   the fill black, so it is drawn plain with an outline instead. */
+.search-hits > div {
+  position: absolute;
+  border-radius: 2px;
+  background: var(--hl-yellow);
+  opacity: var(--hl-opacity);
+  mix-blend-mode: multiply;
+}
+.search-hits.on-dark > div {
+  mix-blend-mode: normal;
+  outline: 1px solid var(--hl-yellow);
+}

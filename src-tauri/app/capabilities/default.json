@@ -1,7 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: core commands only",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "description": "Main window: the Phase 0 app commands only (the UI uses no core plugin APIs yet)",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "allow-anki-deck-tree",
+    "allow-doc-open-path",
+    "allow-doc-info",
+    "allow-doc-outline",
+    "allow-doc-words",
+    "allow-doc-search",
+    "allow-doc-close"
+  ]
 }

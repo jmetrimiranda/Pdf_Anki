@@ -16,7 +16,7 @@ fi
 TTY=()
 [[ -t 0 && -t 1 ]] && TTY=(-it)
 exec docker run --rm "${TTY[@]}" "${GUI[@]}" \
-  --shm-size=2g --network host \
+  --shm-size=2g ${LEITOR_DEV_NETWORK:+--network "$LEITOR_DEV_NETWORK"} \
   -v "$ROOT":/workspaces/leitor-estudos \
   -v leitor-cargo-registry:/usr/local/cargo/registry \
   -v leitor-cargo-git:/usr/local/cargo/git \

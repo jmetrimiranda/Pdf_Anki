@@ -1,0 +1,491 @@
+//! Library (section 6.6) and reading positions. A book's identity is `book_uid`, the lowercase hex
+//! sha256 of the original file, shared with library-sync, the Painel and `leitor://` links.
+
+use std::io::Read;
+
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
+use rusqlite::{OptionalExtension, Row, Transaction, params};
+use serde::{Deserialize, Deserializer, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::{Result, Store, StoreError, now_ms};
+
+/// `book_uid` of a file's bytes: lowercase hex sha256.
+pub fn book_uid_of(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+/// Streaming variant of [`book_uid_of`] for large files.
+pub fn book_uid_of_reader(mut reader: impl Read) -> std::io::Result<String> {
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+pub fn is_valid_book_uid(uid: &str) -> bool {
+    uid.len() == 64 && uid.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn check_uid(uid: &str) -> Result<()> {
+    if is_valid_book_uid(uid) {
+        Ok(())
+    } else {
+        Err(StoreError::InvalidBookUid(uid.to_owned()))
+    }
+}
+
+/// Enums stored as their lowercase serde name in a `CHECK`ed TEXT column.
+macro_rules! text_enum {
+    ($(#[$meta:meta])* $name:ident { $($variant:ident => $text:literal),+ $(,)? }) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        pub enum $name {
+            $(#[serde(rename = $text)] $variant),+
+        }
+
+        impl $name {
+            pub fn as_str(self) -> &'static str {
+                match self { $(Self::$variant => $text),+ }
+            }
+        }
+
+        impl ToSql for $name {
+            fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+                Ok(self.as_str().into())
+            }
+        }
+
+        impl FromSql for $name {
+            fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+                match value.as_str()? {
+                    $($text => Ok(Self::$variant),)+
+                    other => Err(FromSqlError::Other(
+                        format!(concat!("unknown ", stringify!($name), " {:?}"), other).into(),
+                    )),
+                }
+            }
+        }
+    };
+}
+
+text_enum!(BookFormat { Pdf => "pdf", Epub => "epub" });
+text_enum!(OcrStatus { None => "none", Running => "running", Done => "done", Failed => "failed" });
+text_enum!(Renderer { Pdfcraft => "pdfcraft", Pdfjs => "pdfjs" });
+
+/// A book as listed in the library (non-deleted), joined with this device's file info.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Book {
+    pub book_uid: String,
+    pub title: String,
+    pub author: Option<String>,
+    pub language: String,
+    pub format: BookFormat,
+    pub file_name: String,
+    pub pages: u32,
+    pub has_text: bool,
+    pub ocr_status: OcrStatus,
+    pub renderer: Renderer,
+    pub content_deck_id: Option<i64>,
+    pub collection_folder: Option<String>,
+    /// Epoch ms, UTC.
+    pub added_at: i64,
+    /// Epoch ms, UTC.
+    pub updated_at: i64,
+    /// Where the file is on this device (not synced).
+    pub local_path: Option<String>,
+    pub downloaded: bool,
+}
+
+/// Metadata gathered when importing a file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewBook {
+    pub book_uid: String,
+    pub title: String,
+    pub author: Option<String>,
+    /// Defaults to `en`.
+    pub language: Option<String>,
+    pub format: BookFormat,
+    pub file_name: String,
+    pub pages: u32,
+    pub has_text: bool,
+    /// The copy in the app folder, if the file is on this device.
+    pub local_path: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AddOutcome {
+    /// A new row was created.
+    Created,
+    /// The book was already in the library; its metadata was kept.
+    Existing,
+    /// The book had been removed and is back (metadata refreshed from the import).
+    Restored,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddedBook {
+    pub book: Book,
+    pub outcome: AddOutcome,
+}
+
+/// Partial update. A missing field is left alone; for nullable fields, an explicit `null` clears.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BookPatch {
+    pub title: Option<String>,
+    #[serde(deserialize_with = "double_option")]
+    pub author: Option<Option<String>>,
+    pub language: Option<String>,
+    pub renderer: Option<Renderer>,
+    #[serde(deserialize_with = "double_option")]
+    pub content_deck_id: Option<Option<i64>>,
+    #[serde(deserialize_with = "double_option")]
+    pub collection_folder: Option<Option<String>>,
+    pub pages: Option<u32>,
+    pub has_text: Option<bool>,
+    pub ocr_status: Option<OcrStatus>,
+}
+
+fn double_option<'de, T, D>(d: D) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// Where the reader was in a book. `page` is 0-based; `offset` is the scroll offset within the
+/// page; `cfi` is for EPUB; `progress` is 0..=1.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingPosition {
+    pub page: u32,
+    pub offset: f64,
+    pub cfi: Option<String>,
+    pub progress: f64,
+    /// Set by the store on write (epoch ms, UTC); ignored on input.
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+fn non_empty(field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        Err(StoreError::InvalidInput(format!(
+            "{field} não pode ficar vazio."
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+const BOOK_COLUMNS: &str = "b.book_uid, b.title, b.author, b.language, b.format, b.file_name, \
+     b.pages, b.has_text, b.ocr_status, b.renderer, b.content_deck_id, b.collection_folder, \
+     b.added_at, b.updated_at, f.local_path, f.downloaded";
+
+fn book_from_row(r: &Row<'_>) -> rusqlite::Result<Book> {
+    Ok(Book {
+        book_uid: r.get(0)?,
+        title: r.get(1)?,
+        author: r.get(2)?,
+        language: r.get(3)?,
+        format: r.get(4)?,
+        file_name: r.get(5)?,
+        pages: r.get(6)?,
+        has_text: r.get(7)?,
+        ocr_status: r.get(8)?,
+        renderer: r.get(9)?,
+        content_deck_id: r.get(10)?,
+        collection_folder: r.get(11)?,
+        added_at: r.get(12)?,
+        updated_at: r.get(13)?,
+        local_path: r.get(14)?,
+        downloaded: r.get::<_, Option<bool>>(15)?.unwrap_or(false),
+    })
+}
+
+fn fetch_book(tx: &rusqlite::Connection, uid: &str) -> Result<Option<Book>> {
+    Ok(tx
+        .query_row(
+            &format!(
+                "SELECT {BOOK_COLUMNS} FROM book b LEFT JOIN book_file f USING (book_uid)
+                 WHERE b.book_uid = ?1 AND b.deleted = 0"
+            ),
+            params![uid],
+            book_from_row,
+        )
+        .optional()?)
+}
+
+fn require_book(tx: &rusqlite::Connection, uid: &str) -> Result<Book> {
+    fetch_book(tx, uid)?.ok_or_else(|| StoreError::BookNotFound(uid.to_owned()))
+}
+
+/// `Some(deleted)` if the row exists, tombstoned or not.
+fn book_state(tx: &Transaction<'_>, uid: &str) -> Result<Option<bool>> {
+    Ok(tx
+        .query_row(
+            "SELECT deleted FROM book WHERE book_uid = ?1",
+            params![uid],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+impl Store {
+    /// Adds a book, keyed by `book_uid`. Re-adding the same file is idempotent; re-adding a removed
+    /// book restores it.
+    pub fn add_book(&mut self, new: &NewBook) -> Result<AddedBook> {
+        check_uid(&new.book_uid)?;
+        non_empty("O título", &new.title)?;
+        non_empty("O nome do arquivo", &new.file_name)?;
+        let language = new.language.as_deref().unwrap_or("en");
+        non_empty("O idioma", language)?;
+        let now = now_ms();
+
+        let tx = self.conn.transaction()?;
+        let outcome = match book_state(&tx, &new.book_uid)? {
+            None => {
+                tx.execute(
+                    "INSERT INTO book (book_uid, title, author, language, format, file_name, pages,
+                                       has_text, added_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                    params![
+                        new.book_uid,
+                        new.title,
+                        new.author,
+                        language,
+                        new.format,
+                        new.file_name,
+                        new.pages,
+                        new.has_text,
+                        now
+                    ],
+                )?;
+                AddOutcome::Created
+            }
+            Some(true) => {
+                tx.execute(
+                    "UPDATE book SET title = ?2, author = ?3, language = ?4, format = ?5,
+                                     file_name = ?6, pages = ?7, has_text = ?8,
+                                     updated_at = ?9, deleted = 0
+                     WHERE book_uid = ?1",
+                    params![
+                        new.book_uid,
+                        new.title,
+                        new.author,
+                        language,
+                        new.format,
+                        new.file_name,
+                        new.pages,
+                        new.has_text,
+                        now
+                    ],
+                )?;
+                AddOutcome::Restored
+            }
+            Some(false) => AddOutcome::Existing,
+        };
+        upsert_book_file(&tx, &new.book_uid, new.local_path.as_deref())?;
+        let book = require_book(&tx, &new.book_uid)?;
+        tx.commit()?;
+        Ok(AddedBook { book, outcome })
+    }
+
+    /// Non-deleted books, most recently added first.
+    pub fn list_books(&self) -> Result<Vec<Book>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {BOOK_COLUMNS} FROM book b LEFT JOIN book_file f USING (book_uid)
+             WHERE b.deleted = 0 ORDER BY b.added_at DESC, b.title"
+        ))?;
+        let books = stmt
+            .query_map([], book_from_row)?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(books)
+    }
+
+    /// A non-deleted book, or `None`.
+    pub fn get_book(&self, book_uid: &str) -> Result<Option<Book>> {
+        check_uid(book_uid)?;
+        fetch_book(&self.conn, book_uid)
+    }
+
+    pub fn update_book(&mut self, book_uid: &str, patch: &BookPatch) -> Result<Book> {
+        check_uid(book_uid)?;
+        let tx = self.conn.transaction()?;
+        let mut b = require_book(&tx, book_uid)?;
+        if let Some(title) = &patch.title {
+            non_empty("O título", title)?;
+            b.title = title.clone();
+        }
+        if let Some(language) = &patch.language {
+            non_empty("O idioma", language)?;
+            b.language = language.clone();
+        }
+        if let Some(author) = &patch.author {
+            b.author = author.clone();
+        }
+        if let Some(renderer) = patch.renderer {
+            b.renderer = renderer;
+        }
+        if let Some(deck) = patch.content_deck_id {
+            b.content_deck_id = deck;
+        }
+        if let Some(folder) = &patch.collection_folder {
+            b.collection_folder = folder.clone();
+        }
+        if let Some(pages) = patch.pages {
+            b.pages = pages;
+        }
+        if let Some(has_text) = patch.has_text {
+            b.has_text = has_text;
+        }
+        if let Some(status) = patch.ocr_status {
+            b.ocr_status = status;
+        }
+        tx.execute(
+            "UPDATE book SET title = ?2, author = ?3, language = ?4, renderer = ?5,
+                             content_deck_id = ?6, collection_folder = ?7, pages = ?8,
+                             has_text = ?9, ocr_status = ?10, updated_at = ?11
+             WHERE book_uid = ?1",
+            params![
+                book_uid,
+                b.title,
+                b.author,
+                b.language,
+                b.renderer,
+                b.content_deck_id,
+                b.collection_folder,
+                b.pages,
+                b.has_text,
+                b.ocr_status,
+                now_ms()
+            ],
+        )?;
+        let book = require_book(&tx, book_uid)?;
+        tx.commit()?;
+        Ok(book)
+    }
+
+    /// Soft-deletes a book and tombstones its annotations and reading position (section 16).
+    /// Removing an already removed book is a no-op. The local file is left to the caller.
+    pub fn remove_book(&mut self, book_uid: &str) -> Result<()> {
+        check_uid(book_uid)?;
+        let tx = self.conn.transaction()?;
+        match book_state(&tx, book_uid)? {
+            None => return Err(StoreError::BookNotFound(book_uid.to_owned())),
+            Some(true) => return Ok(()),
+            Some(false) => {}
+        }
+        let now = now_ms();
+        for sql in [
+            "UPDATE book SET deleted = 1, updated_at = ?2 WHERE book_uid = ?1",
+            "UPDATE annotation SET deleted = 1, updated_at = ?2 WHERE book_uid = ?1 AND deleted = 0",
+            "UPDATE reading_position SET deleted = 1, updated_at = ?2
+             WHERE book_uid = ?1 AND deleted = 0",
+        ] {
+            tx.execute(sql, params![book_uid, now])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records where this device keeps the book's file (or that it has none).
+    pub fn set_book_file(&mut self, book_uid: &str, local_path: Option<&str>) -> Result<()> {
+        check_uid(book_uid)?;
+        let tx = self.conn.transaction()?;
+        if book_state(&tx, book_uid)?.is_none() {
+            return Err(StoreError::BookNotFound(book_uid.to_owned()));
+        }
+        tx.execute(
+            "INSERT INTO book_file (book_uid, local_path, downloaded) VALUES (?1, ?2, ?3)
+             ON CONFLICT (book_uid) DO UPDATE
+             SET local_path = excluded.local_path, downloaded = excluded.downloaded",
+            params![book_uid, local_path, local_path.is_some()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn get_reading_position(&self, book_uid: &str) -> Result<Option<ReadingPosition>> {
+        check_uid(book_uid)?;
+        Ok(self
+            .conn
+            .query_row(
+                r#"SELECT page, "offset", cfi, progress, updated_at FROM reading_position
+                   WHERE book_uid = ?1 AND deleted = 0"#,
+                params![book_uid],
+                |r| {
+                    Ok(ReadingPosition {
+                        page: r.get(0)?,
+                        offset: r.get(1)?,
+                        cfi: r.get(2)?,
+                        progress: r.get(3)?,
+                        updated_at: r.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Saves the position of a non-deleted book; returns it with the stored `updated_at`.
+    pub fn set_reading_position(
+        &mut self,
+        book_uid: &str,
+        pos: &ReadingPosition,
+    ) -> Result<ReadingPosition> {
+        check_uid(book_uid)?;
+        if !pos.offset.is_finite() {
+            return Err(StoreError::InvalidInput(
+                "o deslocamento na página não é um número válido.".into(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&pos.progress) {
+            return Err(StoreError::InvalidInput(
+                "o progresso deve estar entre 0 e 1.".into(),
+            ));
+        }
+        let tx = self.conn.transaction()?;
+        require_book(&tx, book_uid)?;
+        let now = now_ms();
+        tx.execute(
+            r#"INSERT INTO reading_position (book_uid, page, "offset", cfi, progress, updated_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+               ON CONFLICT (book_uid) DO UPDATE
+               SET page = excluded.page, "offset" = excluded."offset", cfi = excluded.cfi,
+                   progress = excluded.progress, updated_at = excluded.updated_at, deleted = 0"#,
+            params![book_uid, pos.page, pos.offset, pos.cfi, pos.progress, now],
+        )?;
+        tx.commit()?;
+        Ok(ReadingPosition {
+            updated_at: now,
+            ..pos.clone()
+        })
+    }
+}
+
+fn upsert_book_file(tx: &Transaction<'_>, uid: &str, local_path: Option<&str>) -> Result<()> {
+    match local_path {
+        Some(path) => tx.execute(
+            "INSERT INTO book_file (book_uid, local_path, downloaded) VALUES (?1, ?2, 1)
+             ON CONFLICT (book_uid) DO UPDATE SET local_path = excluded.local_path, downloaded = 1",
+            params![uid, path],
+        )?,
+        None => tx.execute(
+            "INSERT OR IGNORE INTO book_file (book_uid, local_path, downloaded) VALUES (?1, NULL, 0)",
+            params![uid],
+        )?,
+    };
+    Ok(())
+}

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "dev",
+  "description": "Development aids for the main window (dev_smoke is only registered in debug builds)",
+  "windows": ["main"],
+  "permissions": ["allow-dev-smoke"]
+}

@@ -4,11 +4,11 @@ Legenda: ✅ feito · 🔶 parcial · ⬜ pendente · ⏸️ ADIADO (iOS/iPad, d
 
 ## Fase 0 — Fundação e prova de integração
 
-- ⬜ O app compila e roda no Linux e no Windows com o `rslib` (com `rustls`) e o motor do PdfCraft linkados. *(substitui o critério de iOS)*
+- 🔶 O app compila e roda no Linux e no Windows com o `rslib` (com `rustls`) e o motor do PdfCraft linkados. *(substitui o critério de iOS)* — Linux ✅ (devcontainer: build, clippy, 53 testes Rust, app sob Xvfb); Windows: build no CI (`windows-latest`), aguardando o primeiro resultado.
 - ⏸️ Compila para iOS (dispositivo e simulador).
 - ⏸️ No simulador de iOS, o `rslib` faz login e sincroniza por HTTPS.
-- ⬜ Um comando de teste no app abre uma coleção, mostra a árvore de decks, abre um PDF e mostra a página 1.
-- ⬜ `/dev/ui` com todos os componentes nos temas claro e escuro, aprovado visualmente pelo usuário.
+- ✅ Um comando de teste no app abre uma coleção, mostra a árvore de decks, abre um PDF e mostra a página 1. (`/dev/smoke` e `leitor-estudos --smoke`; captura em `docs/capturas/fase-0/dev-smoke.png`)
+- 🔶 `/dev/ui` com todos os componentes nos temas claro e escuro — pronto (`docs/capturas/fase-0/dev-ui.png`); aguardando a aprovação visual do usuário.
 
 ## Fase 1 — Leitor de PDF
 
@@ -87,3 +87,4 @@ Legenda: ✅ feito · 🔶 parcial · ⬜ pendente · ⏸️ ADIADO (iOS/iPad, d
 ## Registro
 
 - 2026-10-22 — Início. Devcontainer, workspace Cargo e documentação inicial.
+- 2026-10-22 — Fase 0: `core-anki` (ator dono da coleção, árvore de decks, estudados hoje), `core-pdf` (fachada PdfCraft: render com temas, palavras UAX #29 com retângulos, busca, cache), `core-store` (esquema completo da seção 14), app Tauri (comandos, protocolo `pdf`, `--smoke`), interface (shell com abas, design system, `/dev/ui`, `/anki`, leitor inicial), scripts de dados, CI Linux/Windows e release. Testes: 53 Rust, 18 Vitest, e2e Playwright (Chromium + WebKit). Revisão adversarial em 4 dimensões; achados corrigidos.
