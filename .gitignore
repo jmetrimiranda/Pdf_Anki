@@ -1,0 +1,17 @@
+# Rust
+/src-tauri/target/
+/src-tauri/app/gen/
+# Web
+node_modules/
+/web/dist/
+/web/test-results/
+/web/playwright-report/
+*.tsbuildinfo
+# Downloaded/generated assets (scripts/*)
+/src-tauri/resources/anki-web/
+/src-tauri/resources/ocr-models/
+/data/generated/
+# Local
+*.zip
+.env
+.DS_Store

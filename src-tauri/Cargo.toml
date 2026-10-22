@@ -1,0 +1,77 @@
+[workspace]
+resolver = "3"
+members = ["app", "crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+rust-version = "1.97.1"
+publish = false
+
+[workspace.dependencies]
+# --- Anki core (pinned tag; see docs/PROJETO.md 3.2). Needs PROTOC=protoc 31.1.
+anki = { git = "https://github.com/ankitects/anki", tag = "26.09.3", features = ["rustls"] }
+anki_proto = { git = "https://github.com/ankitects/anki", tag = "26.09.3" }
+
+# --- PdfCraft engine crates (submodule at the commit pinned in docs/decisoes.md).
+pdfcraft-engine = { path = "../third_party/pdfcraft/crates/engine" }
+pdfcraft-render = { path = "../third_party/pdfcraft/crates/render" }
+pdfcraft-annot = { path = "../third_party/pdfcraft/crates/annot" }
+pdfcraft-ocr = { path = "../third_party/pdfcraft/crates/ocr" }
+pdfcraft-cos = { path = "../third_party/pdfcraft/crates/cos" }
+
+# --- Our crates
+core-anki = { path = "crates/core-anki" }
+core-pdf = { path = "crates/core-pdf" }
+core-epub = { path = "crates/core-epub" }
+core-vocab = { path = "crates/core-vocab" }
+core-store = { path = "crates/core-store" }
+core-ai = { path = "crates/core-ai" }
+
+# --- Shared. rusqlite MUST stay on Anki's version (one libsqlite3-sys in the graph).
+rusqlite = { version = "0.36.0", features = ["bundled"] }
+# rslib needs io-util, which Anki's own workspace unifies in (found by the spike).
+tokio = { version = "1.45", features = ["fs", "rt-multi-thread", "macros", "signal", "io-util", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+unicode-segmentation = "1.13"
+sha2 = "0.10"
+hex = "0.4"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+png = "0.18"
+tempfile = "3"
+insta = "1.49"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+# Copied from third_party/pdfcraft/Cargo.toml: its engine depends on these patched forks.
+# A [patch] only applies at the workspace root, so it must be repeated here (docs/PROJETO.md 2.2).
+# winit and egui-wgpu are left out: they only serve PdfCraft's egui UI, which this app doesn't use.
+[patch.crates-io]
+hayro-interpret = { path = "../third_party/pdfcraft/vendor/hayro-interpret" }
+hayro = { path = "../third_party/pdfcraft/vendor/hayro" }
+hayro-syntax = { path = "../third_party/pdfcraft/vendor/hayro-syntax" }
+hayro-cmap = { path = "../third_party/pdfcraft/vendor/hayro-cmap" }
+hayro-jbig2 = { path = "../third_party/pdfcraft/vendor/hayro-jbig2" }
+lopdf = { path = "../third_party/pdfcraft/vendor/lopdf" }
+vello_common = { path = "../third_party/pdfcraft/vendor/vello_common" }
+
+# Same idea as PdfCraft: optimise dependencies in dev so rendering and the Anki core are usable,
+# keep line tables only so debug info for the huge graph stays small.
+[profile.dev.package."*"]
+opt-level = 2
+debug = "line-tables-only"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 4

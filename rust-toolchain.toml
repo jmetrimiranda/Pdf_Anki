@@ -1,0 +1,4 @@
+[toolchain]
+# Anki 26.09.3 pins 1.97.1; PdfCraft needs >= 1.95 with edition 2024.
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]

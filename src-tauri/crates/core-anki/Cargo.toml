@@ -1,0 +1,23 @@
+[package]
+name = "core-anki"
+description = "AnkiService: the single owner of the Anki collection, the /_anki/ bridge, sync and code cards"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anki.workspace = true
+anki_proto.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+anyhow.workspace = true

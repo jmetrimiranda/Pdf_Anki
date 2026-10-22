@@ -1,0 +1,23 @@
+[package]
+name = "core-pdf"
+description = "Facade over the PdfCraft engine: the only crate that knows PdfCraft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pdfcraft-engine.workspace = true
+pdfcraft-render.workspace = true
+pdfcraft-annot.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+unicode-segmentation.workspace = true
+png.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true

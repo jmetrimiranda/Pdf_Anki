@@ -1,0 +1,33 @@
+{
+  "name": "leitor-estudos",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": { "USER_UID": "1000", "USER_GID": "1000" }
+  },
+  "remoteUser": "dev",
+  "workspaceFolder": "/workspaces/leitor-estudos",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/leitor-estudos,type=bind",
+  "mounts": [
+    "source=leitor-cargo-registry,target=/usr/local/cargo/registry,type=volume",
+    "source=leitor-cargo-git,target=/usr/local/cargo/git,type=volume",
+    "source=leitor-target,target=/workspaces/leitor-estudos/src-tauri/target,type=volume",
+    "source=leitor-pnpm-store,target=/home/dev/.local/share/pnpm,type=volume",
+    "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind"
+  ],
+  "containerEnv": {
+    "DISPLAY": "${localEnv:DISPLAY}",
+    "CARGO_BUILD_JOBS": "8"
+  },
+  "runArgs": ["--shm-size=2g"],
+  "postCreateCommand": "sudo chown -R dev:dev /usr/local/cargo/registry /usr/local/cargo/git /workspaces/leitor-estudos/src-tauri/target /home/dev/.local/share/pnpm && git submodule update --init --recursive",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tauri-apps.tauri-vscode",
+        "dbaeumer.vscode-eslint",
+        "bradlc.vscode-tailwindcss"
+      ]
+    }
+  }
+}
