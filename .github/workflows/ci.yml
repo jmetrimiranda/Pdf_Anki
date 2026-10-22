@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  PROTOC_VERSION: "31.1"
+
+jobs:
+  web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r lint
+      - run: pnpm -r test
+      - name: Playwright (mocked core)
+        run: |
+          pnpm --dir web exec playwright install --with-deps chromium
+          pnpm --dir web e2e
+
+  linux:
+    # Same image as the devcontainer, so CI and local builds match.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with: { submodules: recursive }
+      - name: Build dev image
+        run: docker build -t leitor-dev:latest .devcontainer
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/cargo-registry
+            ~/cargo-git
+            src-tauri/target
+          key: linux-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: linux-cargo-
+      - name: fmt, clippy, test, bundle
+        run: |
+          mkdir -p ~/cargo-registry ~/cargo-git src-tauri/target
+          sudo chown -R 1000:1000 ~/cargo-registry ~/cargo-git src-tauri/target . 
+          docker run --rm -v "$PWD":/workspaces/leitor-estudos \
+            -v ~/cargo-registry:/usr/local/cargo/registry -v ~/cargo-git:/usr/local/cargo/git \
+            -w /workspaces/leitor-estudos leitor-dev:latest bash -c '
+              set -euo pipefail
+              pnpm install --frozen-lockfile
+              cd src-tauri
+              cargo fmt --all --check
+              cargo clippy -j 2 --workspace --all-targets -- -D warnings
+              timeout 50m cargo test -j 2 --workspace
+              cd ..
+              pnpm --dir web tauri build --bundles deb,appimage
+            '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundles
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: warn
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with: { submodules: recursive }
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: src-tauri }
+      - name: protoc ${{ env.PROTOC_VERSION }}
+        shell: pwsh
+        run: |
+          $u = "https://github.com/protocolbuffers/protobuf/releases/download/v$env:PROTOC_VERSION/protoc-$env:PROTOC_VERSION-win64.zip"
+          Invoke-WebRequest $u -OutFile protoc.zip
+          Expand-Archive protoc.zip -DestinationPath "$env:RUNNER_TEMP\protoc"
+          "PROTOC=$env:RUNNER_TEMP\protoc\bin\protoc.exe" | Out-File -Append $env:GITHUB_ENV
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: Test core
+        working-directory: src-tauri
+        run: cargo test -j 2 --workspace
+      - name: Bundle (.msi)
+        run: pnpm --dir web tauri build --bundles msi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi
+          path: src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: warn

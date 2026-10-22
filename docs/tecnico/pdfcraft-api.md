@@ -14,13 +14,18 @@ in PdfCraft's own tests, or reading the fields. Add `static_assertions` checks t
 
 | Crate | Role for us | Heavy deps |
 |---|---|---|
-| `pdfcraft-render` (`crates/render`) | rasterize pages (`PageRenderer`, `RenderPool`), text layer (`PageText`), `inspect` (page sizes, outline, links, Info metadata), `OpenError` | hayro (vendored, patched), lopdf (vendored), kurbo |
+| `pdfcraft-render` (`crates/render`) | rasterize pages (`PageRenderer`, `RenderPool`), text layer (`PageText`), `inspect` (page sizes, outline, links, Info metadata), `OpenError` | pdfcraft-cos, pdfcraft-fonts (skrifa, harfrust, unicode-bidi), hayro (vendored, patched), hayro-syntax, lopdf (vendored), kurbo, serde, bytemuck (`crates/render/Cargo.toml`) |
 | `pdfcraft-cos` (`crates/cos`) | PDF object graph: open with a password, copy-on-write edits, `write_incremental` / `write_full` | pdfcraft-crypt, pdfcraft-filters, chrono |
 | `pdfcraft-annot` (`crates/annot`) | build annotations (`add_annotation`) and their appearance streams; link annotations | cos, fonts, model |
 | `pdfcraft-model` (`crates/model`) | typed page tree: `Page::crop/rotation/view_matrix` | cos |
 | `pdfcraft-organize` (`crates/organize`) | `set_info` / `info` / `custom_info` (Info dictionary), bookmark paging | cos, content |
 | `pdfcraft-ocr` (`crates/ocr`) | ocrs recogniser (§7.2) | ocrs, rten |
 | `pdfcraft-engine` (`crates/engine`) | façade: `Session` holds open `Document`s (cos graph, `DocInfo`, a `RenderPool`, undo, saves); `Edit` enum | **everything**: sign (aws-lc-rs, rustls-cng), js (boa_engine), xfa, forms, print (craft-print git), craft-docpath (git), image, png, tiff, chrono… |
+
+Module layout of render (`crates/render/src/lib.rs:11-29`): `inspect`, `raster`, `reading`, `pixels` are
+**private** modules; only the items listed in the `pub use` lines are reachable at the crate root. `text` is a
+`pub mod`, so `TextFilter`, `fold_case` and `layout` are reached as `pdfcraft_render::text::…` (only `PageText`
+and `TextGlyph` are re-exported at the root). `raster::STUCK_AFTER` is `pub` but **not** re-exported.
 
 Important: the engine does **not** re-export `pdfcraft_render` (types such as `RenderRequest`,
 `PageText`, `OpenError`, `ReadingColors` are not reachable through it). `core-pdf` must depend on
@@ -66,9 +71,11 @@ pub fn inspect(bytes: Arc<Vec<u8>>, password: Option<&str>) -> Result<DocInfo, O
 pub fn open(data: Arc<Vec<u8>>) -> Result<Self, CosError>                       // :571
 pub fn open_with_password(data: Arc<Vec<u8>>, password: Option<&str>) -> Result<Self, CosError>
 ```
-It accepts the owner or the user password. `CosError` (`crates/cos/src/lib.rs:31`) includes `NotPdf`,
-`Syntax{offset,detail}`, `NeedsPassword`, `WrongPassword`, `Security(String)`, `ReadOnlyLimit` and others.
-`CosError` is `Clone + PartialEq`.
+It accepts the owner or the user password (`None` tries the empty password). `CosError`
+(`crates/cos/src/lib.rs:33-55`, `#[derive(Debug, thiserror::Error, Clone, PartialEq)]`) is exactly:
+`NotPdf`, `Syntax { offset: usize, detail: String }`, `MissingObject(u32)`, `NotADictionary(ObjRef)`,
+`Filter(String)`, `NeedsPassword`, `WrongPassword`, `Security(String)`, `Poisoned`, `ReadOnlyLimit`.
+`pdfcraft_cos::Document` is `#[derive(Clone)]` (`document.rs:405`); clones share the parsed data through `Arc`s.
 
 ### 1.4 Owner password → renderer password (R2–R4)
 The engine provides this helper (`crates/engine/src/lib.rs:972`):
@@ -101,15 +108,21 @@ impl OpenContext {
 ```
 What `prepare_open` does (`:3483-3620`, `build_document` `:3624`):
 - It runs cos open, then `inspect`, retrying with the recovered user password on `WrongPassword`.
-- It lays out dynamic XFA forms and runs their scripts with boa (unless `set_javascript(false)`).
+- It lays out dynamic XFA forms (always) and runs their initialize/calculate scripts with boa (skipped when
+  `set_javascript(false)`, i.e. `js_off`; `:3578`).
 - It recovers a missing page tree.
 - It validates signatures.
 - It builds the `display` bytes (missing comment and field appearances drawn, in memory only).
 - **It always spawns a `RenderPool`** with `render_threads()` = `clamp(available_parallelism, 2, 8) - 1` threads (`:1052`). Every open document therefore costs 1–7 idle threads until `close`.
 
-`pub struct Document` (`:391`) has these public fields: `id`, `name`, `path`, `bytes` (working file),
+`pub struct Document` (`:391-440`) has these public fields: `id`, `name`, `path`, `bytes` (working file),
 `display` (what is rendered), `info: DocInfo`, `renderer: RenderPool`, `password: Option<String>`
-(already the **render** password), `dirty` and `read_only_reason`. The `RenderConfig` is private.
+(already the **render** password, `build_document` sets `password: render_password`), `dirty`,
+`read_only_reason`, `form: Arc<Vec<pdfcraft_forms::Field>>`, `signatures: Arc<Vec<SignatureInfo>>`,
+`xfa: Option<XfaLayout>`, `xfa_warnings: Vec<String>`, `edit_notices: Vec<TextNotice>`. The `RenderConfig`
+(`config`) and the editor (`editor: Option<Editor>`, the cos graph) are private. When the cos open fails
+(e.g. unsupported security) the document still opens for viewing with `editor = None` and
+`read_only_reason = Some(..)`; `apply` then fails with `EditError::ReadOnly`.
 Read it with `Session::render_config(id) -> Option<RenderConfig>` (`:5017`).
 
 **Pattern for a Tauri app:** call `prepare_open` (through an `OpenContext` clone) on a blocking
@@ -161,8 +174,8 @@ our stored annotation quads. `view_to_user` maps through fractions of `width`/`h
 also accounts for `/UserUnit` correctly. These functions are the canonical "undo rotation and crop"
 conversion. Do not write our own.
 
-An alternative at the model level is `pdfcraft_model::Page::{crop, rotation, display_size, view_matrix}`
-(`crates/model/src/lib.rs:31-77`). It works on a `cos::Document`, and its display space has **y up**.
+An alternative at the model level is `pdfcraft_model::Page::{crop, rotation, user_unit, display_size, view_matrix}`
+(`crates/model/src/lib.rs:29-67`; `pages(doc) -> Vec<Page>` at `:86`; all take `&cos::Document`, return `f64`/`i64`). It works on a `cos::Document`, and its display space has **y up**.
 Do not mix the two conventions.
 
 ### 2.3 Metadata through the engine
@@ -177,7 +190,7 @@ holds the same data as of open time.
 ### 3.1 `RenderConfig` — `crates/render/src/raster.rs:57` (Clone, Debug, Default)
 ```rust
 pub struct RenderConfig {
-    pub password: Option<Arc<str>>,             // the RENDER (user) password, see 1.4
+    pub password: Option<Arc<str>>,             // source comment says "user or owner"; for R2–R4 only the USER one works, see 1.4
     pub layers: Arc<Vec<(i32, i32, bool)>>,     // OCG overrides
     pub hide_comments: bool,
     pub reject_oversize: bool,                  // error instead of silently down-scaling whole pages
@@ -256,7 +269,8 @@ impl PageRenderer {
 ```
 - `new` parses eagerly, but a parse failure or wrong password gives no error: `page_count()` is 0 and
   every `render` returns `error = Some("the document could not be parsed")`. Validate with `inspect` first.
-- After a renderer panic it re-parses the document (`:486-489`).
+- After a renderer panic it re-parses the document (`:478-481`).
+- On any error `width = height = 0` and `rgba` is empty (`finish`, `raster.rs:392-398`).
 - Use it for sequential jobs on a background thread: document-wide search (§5.5), text for vocabulary
   scanning, cover thumbnails at import, and OCR. The engine's `Exporter` and `OcrJob` follow the same
   pattern (`engine/src/export.rs:107`, `engine/src/ocr.rs:107`).
@@ -327,7 +341,7 @@ loop {
 | `PageRenderer` | **yes** | not relied on (`render` is `&mut self`) | `RenderPool` holds `Option<RefCell<PageRenderer>>`, and `engine::Document` (which holds a `RenderPool`) is asserted `Send` by `tests.rs:41` |
 | `RenderPool` | **yes** | **no** (`RefCell` field `inline`, `raster.rs:737`) | same assertion; `RefCell<T>: !Sync` |
 | hayro `Pdf` | yes | yes | shared as `Arc<Pdf>` across workers |
-| hayro `RenderCache` | no (`Rc<RefCell>`, `vendor/hayro/src/lib.rs:84`) | no | internal only, created per render |
+| hayro `RenderCache` | no (`Rc<RefCell>`, `vendor/hayro/src/lib.rs:76`) | no | internal only, created per render |
 
 `RenderPool` takes `&self` for `set_queue` and `try_recv`, but because it is `!Sync` it cannot be shared
 through an `Arc` across threads. Own it on one thread (the actor above), or put it behind a `Mutex`.
@@ -353,8 +367,11 @@ impl ReadingColors {
     pub fn mode_name(&self) -> &'static str; pub fn text_hex(&self) -> Option<String>; pub fn background_hex(&self) -> Option<String>;
 }
 ```
-How it works (`vendor/hayro/src/lib.rs:89-120`, a PdfCraft patch): **solid** paints are mapped by luminance
-between `text` and `background`. Images, shadings and patterns are **never** mapped. This gives a dark theme
+How it works (`vendor/hayro/src/lib.rs:89-133`, `ColorReplacement::map`, a PdfCraft patch): **solid** paints are
+mapped by luminance `t = (0.2126 r + 0.7152 g + 0.0722 b)/255` to `text*(1-t) + background*t` (alpha kept);
+`only_black` leaves paints with `t > 0.10` unchanged; with `line_art: false` non-glyph path paints are left
+unchanged (so a white rectangle a PDF paints as its page background would stay white in dark mode: keep
+`line_art: true`). Images, shadings and patterns are **never** mapped. This gives a dark theme
 in which photos and figures keep their real colours, which is exactly the spec's "no inversion". The page
 background is cleared to `background`. Print previews (`PRINT_TAG`) ignore the setting.
 
@@ -428,7 +445,12 @@ Gotchas:
 - Search folds case per character. Whitespace runs and line breaks count as one space. Matches do not overlap.
 - `line_rects` merges consecutive glyphs on the same line, so its rects are in view space.
   Multiply by the display scale.
-- `TextFilter` (`text.rs:21`) has `{ tables, code, images, mcids: HashSet<i32> }`. Setting `images: true`
+- Search is case-folded (`fold_case`) but **not accent-insensitive**: `acao` does not find `ação`. If we want
+  diacritic-insensitive search for Portuguese, use `find_with` with our own normalising matcher.
+- The text interpreter receives the `RenderConfig` settings, so `hide_comments: true` very likely also drops
+  comment appearance text (`text.rs:718-722`, `hayro-interpret/src/interpret/mod.rs:190`; not tested by us).
+- `TextFilter` (`pdfcraft_render::text::TextFilter`, `text.rs:21`, Clone/Debug/Default; not re-exported at the
+  crate root) has `{ tables, code, images, mcids: HashSet<i32> }`. Setting `images: true`
   excludes `Figure`-tagged text **and invisible text layers (including OCR)**. Use it for statistics only.
   `filtered_text` can fail with "a replacement text span mixes…".
 
@@ -468,7 +490,9 @@ Copying a selection uses `pt.text_of(range)`, as the spec requires.
 
 ### 5.5 Document search
 **There is no document-wide search API** in render or engine. The egui canvas loops over cached
-`PageText`s and calls `find_opts` (`crates/ui-egui/src/canvas.rs:1185-1192`). For `core-pdf::search`:
+`PageText`s and calls `find_opts` (`crates/ui-egui/src/canvas.rs:1189,1210`). The closest reference
+implementation is the automation `find` tool (`crates/automation/src/lib.rs:2120-2156`): pages in growing
+batches, `find_opts_limited(query, false, false, needed)`, and per hit `text_of(r)` + `line_rects(r)`. For `core-pdf::search`:
 1. Run it on a background thread with its own `PageRenderer`. Do not use the view pool, because
    `set_queue` would evict the visible pages' work.
 2. For each page, get Text (cache `Arc<PageText>` per page, LRU), then call `find_opts_limited(q, cs, ww, remaining)`.
@@ -499,8 +523,14 @@ pub enum LinkTarget {
     RemoteGoTo { file: String, destination: RemoteDestination, new_window: Option<bool> },
     Other(String),                         // "JavaScript", "Launch", …
 }
-pub enum DestView { Top, Xyz { left, top, zoom: Option<f32> }, Fit, FitH { top }, FitV { left }, FitR { rect: [f32; 4] } } // user-space coords
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum DestView { #[default] Top, Xyz { left: Option<f32>, top: Option<f32>, zoom: Option<f32> }, Fit,
+                    FitH { top: Option<f32> }, FitV { left: Option<f32> }, FitR { rect: [f32; 4] } } // :330, user-space coords
 ```
+How links are read (`inspect.rs:1236-1259`): `/Dest` wins over `/A`; `/A /S /GoTo /D` → `Page`; `/URI` → `Uri`;
+a link whose destination cannot be resolved, or whose `/A` has no `/S`, is **omitted** from `DocInfo.links`.
+`Link.index` is the position in the page's raw `/Annots`.
+
 Converting for the frontend: `Link.rect` is in **user** space. Map both corners with
 `info.pages[l.page].user_to_view(x, y)` and normalize. For a jump, `LinkTarget::Page(p, view)` →
 scroll to page `p`. For the offset, use `info.pages[p].dest_fraction(left, top, 0)`, which returns fractions
@@ -528,7 +558,7 @@ that the highlight pixels sit over the glyphs.
 
 ### 7.2 `pdfcraft-annot` types — `crates/annot/src/lib.rs`
 ```rust
-pub type Rgb = [f64; 3];                                                         // :49 (0..1)
+pub type Rgb = [f64; 3];                                                         // :47 (0..1)
 pub enum Markup { Highlight, Underline, StrikeOut, Squiggly }                    // :51
 pub enum Shape { Note { at: [f64; 2], icon: NoteIcon }, TextMarkup { kind: Markup, quads: Vec<[f64; 8]> }, Rectangle{..}, … } // :342 (user space)
 pub fn rect_quad(r: [f64; 4]) -> [f64; 8]                                        // :480 (unrotated pages only)
@@ -541,7 +571,7 @@ pub enum AnnotError { NoPageTree, NoSuchPage(usize), NoSuchAnnotation{page,index
 ```
 `add_annotation` writes `/Subtype /Highlight`, `/QuadPoints`, `/C`, `/CA` (when opacity < 1), `/Contents`,
 `/T`, `/Subj`, `/P` and `/F 4 (Print)`. It **generates the appearance stream** (`draw_appearance`,
-`:1295`; highlights use the `Multiply` blend mode, `appearance.rs:242`) and appends to the page's `/Annots`.
+`:1384`; highlights use the `Multiply` blend mode, `appearance.rs:242`) and appends to the page's `/Annots`.
 For a note on a highlight, use `contents` (only `Shape::Note` gets a `/Popup`). For a loose note, use
 `Shape::Note { at: top-left in user space, icon: NoteIcon::Comment }`. Our 4 colours map to `Style { color, opacity: 1.0, width: 1.0, fill: None }`.
 
@@ -603,10 +633,20 @@ let bytes = res.and_then(|_| session.save_bytes(id));                           
 if let Ok(b) = &bytes { session.check_save(id, b)?; }                                    // :4296 reopen check
 session.close(id);
 ```
-The engine generates `Meta` (`/NM` uuid, dates from the session clock), checks permissions (an encrypted file
-without the annotate bit → `EditError::NotPermitted("comments")`, `engine/src/lib.rs:2240-2262`), and runs
-the edit on a clone inside `catch_unwind` (`:3800-3803`). Cost: each `apply` rewrites the working bytes,
-re-inspects and rebuilds a `RenderPool`, so **batch everything into one `Edit::Batch`**.
+The engine generates `Meta` (`EditCtx::meta`, `:2404`: a deterministic UUID-v4-shaped `/NM` derived from the
+document generation, dates from the session clock), checks permissions, and runs the edit on a clone inside
+`catch_unwind` (`:3800-3803`).
+
+**Permission trap:** `check_permission` (`:2212-2331`) maps `AddAnnotation` → `p.annotate()` but
+`SetInfo` → `p.modify()`, and `Batch` checks every member (`try_for_each`). An encrypted file that allows
+commenting but not modifying therefore rejects the **whole** batch with
+`EditError::NotPermitted("changes to the document")`. Decide a fallback (export without `LeitorBookUid`, or the
+manual cos path below, which does not check permissions; Acrobat-style permission bits are advisory).
+
+Cost: `apply` refreshes by scope (`scope_of`, `:276-322`; `refresh_scoped`, `:4035`): `SetInfo` alone is
+`Scope::Metadata` (keeps the renderer); `AddAnnotation` alone is `Scope::Comments` (rewrites working bytes,
+rebuilds the pool, skips the full re-inspect); a `Batch` mixing both is `Scope::Full` (full `inspect` + new
+pool). Either way, **batch everything into one `Edit::Batch`**, not one `apply` per note.
 
 **Without engine** (cos + annot + organize):
 ```rust
@@ -719,7 +759,10 @@ just those two (with `inspect` plus cos/annot/organize). Concretely:
 - The text layer includes annotation appearance text (form values, FreeText).
 - `TextGlyph.text` can hold several chars (ligatures). Map UAX#29 words through a char→glyph table (§5.4).
 - `set_info` with an empty value deletes the key. The key must pass `check_custom_key`.
-- The engine `Session::apply` rebuilds the pool and re-inspects on every call. Batch the edits.
+- The engine `Session::apply` rewrites the working bytes and (except for metadata-only edits) rebuilds the pool on every call. Batch the edits.
+- `SetInfo` needs the `modify` permission bit, `AddAnnotation` needs `annotate`; a mixed batch fails as a whole (§7.5).
+- Non-embedded Japanese CID fonts only render if PdfCraft was built with `CRAFT_FONTS_DIR` set (`crates/fonts/build.rs`); otherwise that text draws nothing.
+- Text search is not accent-insensitive.
 - The engine's `Session::set_reading_colors` replaces the document's pool (in-flight work is lost).
 - Our root `Cargo.toml` must keep `[patch.crates-io]` identical to upstream's hayro/lopdf/vello_common entries.
 

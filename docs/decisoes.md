@@ -12,3 +12,6 @@ Formato: data · decisão · motivo (uma linha cada). Ver docs/PROJETO.md seçã
 - 2026-10-22 · O repositório é `jmetrimiranda/Pdf_Anki` (público); a raiz do repositório é a raiz do projeto `leitor-estudos` da seção 3.1. · Repositório já criado pelo usuário.
 - 2026-10-22 · Desenvolvimento num devcontainer (`.devcontainer/`, Debian bookworm + Rust 1.97.1 + protoc 31.1 + Node 22/pnpm + deps do Tauri + g++/clang + Xvfb). · Pedido do usuário; o mesmo ambiente serve ao CI Linux.
 - 2026-10-22 · `[patch.crates-io]` copiado do PdfCraft sem `winit` e `egui-wgpu`. · Só servem à interface egui, que o app não usa.
+- 2026-10-22 · `AnkiService` é um ator que possui o `Collection` (não o `Backend`); a barra de progresso das páginas do Anki (`latestProgress`) fica indeterminada e `setWantsAbort` é atendido fora do ator. · Mantém as APIs Rust tipadas da seção 8.1; alternativa (Backend) documentada em `docs/tecnico/anki-web-and-reviewer.md` §2.6(d).
+- 2026-10-22 · As páginas do Anki são despachadas por nome → método do trait gerado (tabela escrita à mão/gerada por nome), não por índices numéricos. · O `anki_proto` não expõe o pool de descritores e os índices dependem da ordem de carga (risco de deriva silenciosa).
+- 2026-10-22 · Windows: sem NASM/CMake; o `aws-lc-sys` usa os objetos NASM pré-compilados. · Verificado em `docs/tecnico/pdfcraft-build.md`.
