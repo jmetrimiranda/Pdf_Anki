@@ -179,7 +179,10 @@ async function selections(page: Page, after: number): Promise<Logged[]> {
 }
 
 /** Drags across the phrase on page 1 and returns the selection PdfCraft reported. */
-async function selectPhrase(page: Page, at: Located): Promise<{ msg: Logged; during: number; lastMoveAbs: number }> {
+async function selectPhrase(
+  page: Page,
+  at: Located,
+): Promise<{ msg: Logged; during: number; lastMoveAbs: number; earlyDuring: number }> {
   // PdfCraft reports changes only: start from no selection.
   if (await page.evaluate(() => window.__leitor!.state().selection !== null)) await clickBlank(page, at);
   const y = (at.text.y0 + at.text.y1) / 2;
@@ -200,7 +203,13 @@ async function selectPhrase(page: Page, at: Located): Promise<{ msg: Logged; dur
   // Let PdfCraft extend the selection to the last move before the release (one egui pass may hold both).
   await pdfcraftFrames(page, 2);
   const beforeUp = await now(page);
-  const during = (await selections(page, after)).filter((m) => m.at <= beforeUp).length;
+  const duringMsgs = (await selections(page, after)).filter((m) => m.at <= beforeUp);
+  const during = duringMsgs.length;
+  // The debounce runs on PdfCraft's clock (when an egui pass sees the selection change), which the test can't
+  // observe: on a slow machine (CI: 4 vCPUs, software WebGL) one drag step can take longer than the 300 ms quiet
+  // period, so a message may legitimately arrive mid-drag. What holds at any speed: every message needs 300 ms
+  // without a change after a new change, so two consecutive messages are at least ~300 ms apart (250 ms of slack).
+  const earlyDuring = duringMsgs.slice(1).filter((m, i) => m.abs - duringMsgs[i]!.abs < 250).length;
   await page.mouse.up();
   let msg: Logged | undefined;
   let texts: string[] = [];
@@ -218,7 +227,7 @@ async function selectPhrase(page: Page, at: Located): Promise<{ msg: Logged; dur
     .catch((e: Error) => {
       throw new Error(`${e.message}\nselections reported: ${texts.join(', ') || 'none'}`);
     });
-  return { msg: msg!, during, lastMoveAbs };
+  return { msg: msg!, during, lastMoveAbs, earlyDuring };
 }
 
 /** Clicks a blank part of page 2 (the selection bar covers the rest of page 1) and waits for the cleared selection. */
@@ -334,9 +343,11 @@ test('selection: debounced pdfcraft:selection with the text and page rects; clea
     { key: 'define', label: 'Definir palavra' },
   ]);
 
-  const { msg, during, lastMoveAbs } = await selectPhrase(page, at);
-  // Debounced: not one message per frame of the drag, and the last one ~300 ms after the last move.
-  expect(during).toBeLessThanOrEqual(2);
+  const { msg, during, lastMoveAbs, earlyDuring } = await selectPhrase(page, at);
+  // Debounced: never one message per frame of the drag (at most one per move), consecutive messages ~300 ms apart,
+  // and the final one ~300 ms after the last move.
+  expect(during).toBeLessThanOrEqual(8);
+  expect(earlyDuring).toBe(0);
   expect(msg.abs - lastMoveAbs).toBeGreaterThanOrEqual(200);
   expect(msg).toMatchObject({ id: uid, page: 0 });
   expect(msg.rects!.length).toBeGreaterThanOrEqual(1);

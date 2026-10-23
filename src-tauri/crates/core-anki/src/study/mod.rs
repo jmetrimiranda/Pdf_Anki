@@ -22,7 +22,7 @@ pub mod typeans;
 pub mod types;
 
 pub use session::MARKED_TAG;
-use session::Session;
+use session::{Session, StudyEnv};
 pub use types::*;
 
 /// Where a study session is shown (spec 10.1: only one place studies at a time).
@@ -99,7 +99,7 @@ fn invalidates_card(e: &crate::Error) -> bool {
 fn start_on_actor(
     col: &mut anki::collection::Collection,
     state: &mut State,
-    media: &std::path::Path,
+    env: &StudyEnv,
     deck_id: i64,
     owner: StudyOwner,
 ) -> Result<StudyStart> {
@@ -125,7 +125,7 @@ fn start_on_actor(
     let Some(session) = state.session.as_mut() else {
         return Err(crate::Error::NoStudySession);
     };
-    match session::next(col, session, media) {
+    match session::next(col, session, env) {
         Ok(next) => Ok(StudyStart { next, preempted }),
         Err(e) => {
             if invalidates_card(&e) {
@@ -148,16 +148,21 @@ impl Study {
     async fn with_state<R, F>(&self, f: F) -> Result<R>
     where
         R: Send + 'static,
-        F: FnOnce(&mut anki::collection::Collection, &mut State, &std::path::Path) -> Result<R>
+        F: FnOnce(&mut anki::collection::Collection, &mut State, &StudyEnv) -> Result<R>
             + Send
             + 'static,
     {
         let shared = Arc::clone(&self.state);
         let media = self.service.paths().media_folder.clone();
+        let roles = self.service.code_roles_cell();
         self.service
             .call(move |col| {
+                let env = StudyEnv {
+                    media,
+                    code_roles: roles.snapshot(),
+                };
                 let mut guard = lock(&shared);
-                f(col, &mut guard, &media)
+                f(col, &mut guard, &env)
             })
             .await
     }
@@ -166,15 +171,15 @@ impl Study {
     async fn with_session<R, F>(&self, f: F) -> Result<R>
     where
         R: Send + 'static,
-        F: FnOnce(&mut anki::collection::Collection, &mut Session, &std::path::Path) -> Result<R>
+        F: FnOnce(&mut anki::collection::Collection, &mut Session, &StudyEnv) -> Result<R>
             + Send
             + 'static,
     {
-        self.with_state(move |col, state, media| {
+        self.with_state(move |col, state, env| {
             let Some(session) = state.session.as_mut() else {
                 return Err(crate::Error::NoStudySession);
             };
-            let res = f(col, session, media);
+            let res = f(col, session, env);
             if let Err(e) = &res
                 && invalidates_card(e)
             {
@@ -188,7 +193,7 @@ impl Study {
     /// Starts (or continues) studying `deck_id` in `owner` and returns the top of its queue. A session held by the
     /// other owner is replaced (`preempted`); the same owner just switches deck.
     pub async fn start(&self, deck_id: i64, owner: StudyOwner) -> Result<StudyStart> {
-        self.with_state(move |col, state, media| start_on_actor(col, state, media, deck_id, owner))
+        self.with_state(move |col, state, env| start_on_actor(col, state, env, deck_id, owner))
             .await
     }
 
@@ -216,7 +221,7 @@ impl Study {
     /// "Revisar aqui" (spec 10.1): remembers the current deck (only when no mini-review is open yet, so switching
     /// between the book's decks keeps the original one), then studies `deck_id` in the panel.
     pub async fn mini_review_open(&self, deck_id: i64) -> Result<MiniReviewOpened> {
-        self.with_state(move |col, state, media| {
+        self.with_state(move |col, state, env| {
             let panel_owns = state
                 .session
                 .as_ref()
@@ -225,7 +230,7 @@ impl Study {
                 Some(previous) if panel_owns => previous,
                 _ => col.get_current_deck()?.id.0,
             };
-            let started = start_on_actor(col, state, media, deck_id, StudyOwner::Panel)?;
+            let started = start_on_actor(col, state, env, deck_id, StudyOwner::Panel)?;
             state.mini_previous = Some(previous);
             Ok(MiniReviewOpened {
                 previous_deck_id: previous,
@@ -279,7 +284,7 @@ impl Study {
 
     /// Answers the card on screen (`rating` 1..=4: De novo, Difícil, Bom, Fácil) after `ms` milliseconds.
     pub async fn answer(&self, card_id: i64, rating: u8, ms: u32) -> Result<StudyNext> {
-        self.with_session(move |col, s, media| session::answer(col, s, media, card_id, rating, ms))
+        self.with_session(move |col, s, env| session::answer(col, s, env, card_id, rating, ms))
             .await
     }
 
@@ -295,8 +300,8 @@ impl Study {
         action: CardAction,
         flag: Option<u8>,
     ) -> Result<CardActionResult> {
-        self.with_session(move |col, s, media| {
-            session::card_action(col, s, media, card_id, action, flag)
+        self.with_session(move |col, s, env| {
+            session::card_action(col, s, env, card_id, action, flag)
         })
         .await
     }

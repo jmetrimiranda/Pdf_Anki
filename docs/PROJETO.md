@@ -729,7 +729,7 @@ O webview não compila C++, então:
 
 ## 12. Escaneamento de vocabulário
 
-O objetivo: antes de ler um livro em inglês, saber quanto do vocabulário dele o usuário já domina e gerar um deck só com as palavras que faltam. A medida do que o usuário sabe é o próprio Anki: as palavras maduras dos decks da pasta de vocabulário. Tudo roda no aparelho, offline, em Rust (`core-vocab`).
+O objetivo: antes de ler um livro em inglês, saber quanto do vocabulário dele o usuário já domina e gerar um deck só com as palavras que faltam. A medida do que o usuário sabe é o próprio Anki: as palavras maduras dos decks da pasta de vocabulário. Tudo roda no aparelho, offline, em Rust (`core-vocab`). **A detecção não usa IA**; a IA (opcional, seção 13) só preenche a Definição e a Tradução dos cards gerados.
 
 ### 12.1 Fluxo (assistente, ao clicar em "Escanear vocabulário" no livro ou no Painel Anki do livro)
 
@@ -737,19 +737,24 @@ O objetivo: antes de ler um livro em inglês, saber quanto do vocabulário dele 
    - Mostra a árvore de decks. O usuário escolhe um deck-pai; o padrão é o último usado, normalmente "Vocabulário".
    - Todos os subdecks entram, recursivamente. Eles são listados com o número de cards, e o usuário pode desmarcar algum.
    - A escolha fica salva como padrão, mas o passo sempre aparece.
-2. **Campos** (só na primeira vez para cada tipo de nota, ou quando aparecer um tipo novo).
+2. **Trecho do livro** (decisão de 23/10/2026):
+   - **"Livro inteiro"** (padrão).
+   - **"Por bookmarks/sumário":** a árvore do sumário do PDF (os bookmarks do arquivo, inclusive os que o usuário criou no PdfCraft, que ficam gravados no PDF; no EPUB, o sumário do livro), com caixas de seleção. Cada item vai da página dele até a página anterior ao próximo item **do mesmo nível ou acima**; o último vai até o fim do livro. Marcar um item inclui os filhos. Vários itens podem ser marcados.
+   - **"Páginas":** uma página (`37`), um intervalo (`21-45`) ou uma lista (`21-45, 60, 72-80`). Páginas fora do livro ou texto inválido mostram o erro no campo e não deixam seguir.
+   - O relatório, as métricas e a curva de cobertura valem **só para o trecho escolhido** (seções 12.4 e 12.5).
+3. **Campos** (só na primeira vez para cada tipo de nota, ou quando aparecer um tipo novo).
    - Para cada tipo de nota encontrado nesses decks, escolher o campo que tem a palavra em inglês.
    - Sugestão automática pelo nome do campo (`Word`, `Palavra`, `English`, `Inglês`, `Front`, `Frente`, `Expression`, `Vocab`, `Term`). Se nenhum casar, o primeiro campo.
    - Mostrar 5 palavras de exemplo já extraídas, para o usuário conferir. Fica salvo em `notetype_mapping`.
-3. **Critério de "eu sei":** madura = intervalo ≥ 21 dias (a definição do Anki), configurável. Opção "contar cards jovens como conhecidos" (desligada). Suspensas: ignorar (padrão) ou contar como conhecidas.
-4. **Executar** (tarefa em segundo plano com progresso): texto → palavras → lemas → comparação → relatório.
-5. **Relatório** → selecionar palavras → **Gerar deck**.
+4. **Critério de "eu sei":** madura = intervalo ≥ 21 dias (a definição do Anki), configurável. Opção "contar cards jovens como conhecidos" (desligada). Suspensas: ignorar (padrão) ou contar como conhecidas. Opção **"Derivadas de palavras conhecidas: criar card (padrão) | contar como conhecidas"** (seção 12.3, item I).
+5. **Executar** (tarefa em segundo plano com progresso): texto → palavras → lemas → comparação → relatório. Se a tabela de lemas por página do livro já existe (seção 12.3, F), escanear outro trecho só refaz a comparação, em segundos.
+6. **Relatório** → selecionar palavras → **Gerar deck**.
 
 ### 12.2 Dados embutidos no app (gerados no build, em `data/`)
 
 | Dado | Fonte | Uso |
 |---|---|---|
-| Léxico e listas de exceções (formas irregulares) | Open English WordNet (CC-BY 4.0), convertido para SQLite | Lematização e definições offline |
+| Léxico, listas de exceções (formas irregulares) e relações de derivação (`derivation`) | Open English WordNet (CC-BY 4.0), convertido para SQLite | Lematização, definições offline e famílias de palavras (seção 12.3, item I) |
 | Frequência geral (Zipf) das ~100 mil palavras mais comuns | lista derivada do `wordfreq` (verificar a licença dos dados antes) | Marcar palavras "raras" e desempatar a ordem |
 | Palavras funcionais | lista de stopwords do inglês | Considerar "the", "of" etc. como conhecidas por padrão |
 
@@ -783,7 +788,7 @@ O tamanho total fica em algumas dezenas de MB. No iPad, os dados podem ser baixa
 
 **E. Nome próprio:** palavra com inicial maiúscula que não está no início da frase, cuja forma em minúsculas aparece em menos de 10% das ocorrências no livro e que não é um lema comum do WordNet. Fica fora das métricas por padrão e é listada à parte.
 
-**F. Por lema, guardar:** número de ocorrências, primeira página (ou capítulo), uma frase de exemplo (a primeira com 8 a 30 palavras que contém a palavra, na grafia original, com a posição para destacar) e a lista de páginas (para o realce no leitor).
+**F. Por lema e por página, guardar** (tabela de lemas por página, `book_lemma_page`, seção 14): número de ocorrências na página, a forma original mais comum e a primeira frase de exemplo da página (8 a 30 palavras, na grafia original, com a posição para destacar). Daí saem, para qualquer trecho, as ocorrências, a primeira página, o exemplo (o primeiro **dentro do trecho**) e a lista de páginas (para o realce no leitor). A tabela é calculada uma vez por versão do texto do livro; escanear outro trecho não relê o PDF.
 
 **G. Comparação:**
 
@@ -795,45 +800,61 @@ status(lema) = ajuste_manual(lema)
             ?? desconhecida
 ```
 
+**I. Formas e famílias de palavras conhecidas** (decisão de 23/10/2026; ex.: o usuário sabe "learn" e o livro tem "learning"):
+
+- **Flexões** (-s, -ed, -ing, comparativos e superlativos -er/-est, e as irregulares das listas de exceções) de um lema conhecido contam como **conhecidas** e não viram card. O passo D já faz isso: a forma é reduzida ao lema conhecido.
+- **Exceção — forma flexionada que também é lema próprio:** quando a forma flexionada existe no WordNet como lema próprio, com outro sentido como **substantivo ou adjetivo** (learning, meaning, feeling, building, interesting), ela não é contada como conhecida automaticamente: vai para o grupo à parte **"Formas de palavras que você sabe"** no relatório, **desmarcada por padrão**, com a palavra-base ao lado ("learning ← learn ✓"). O usuário marca as que quer como card. Nas métricas, ela conta como conhecida enquanto não for marcada.
+- **Derivadas** (learner, unlearn, happiness, quickly) de um lema conhecido, achadas pelas relações de derivação (`derivation`) do Open English WordNet: viram **cards normalmente** (padrão), com a família indicada no relatório (coluna "família: learn ✓") e no verso do card ("Da família de: learn", campo `Família`, seção 12.6). Com a opção "Derivadas de palavras conhecidas: contar como conhecidas" (passo 4 do assistente), elas contam como conhecidas e não viram card.
+
 **H. Phrasal verbs (segunda etapa da Fase 6):** detectar verbo + partícula adjacentes ("look up", "give in") pela lista de phrasal verbs do WordNet e comparar com as expressões dos decks.
 
 ### 12.4 Métricas
+
+Todas as métricas valem **só para o trecho escolhido** (seção 12.1, passo 2).
 
 - **Total de tokens** (sem nomes próprios e números).
 - **Cobertura conhecida** = tokens com status "conhecida" ÷ total.
 - **Cobertura com aprendizado** = (conhecida + aprendendo + nova no deck) ÷ total.
 - **Lemas desconhecidos únicos**, com o número dos que aparecem 2 vezes ou mais.
 - **Curva de cobertura:** ordenar os lemas desconhecidos por ocorrências, do mais frequente para o menos, e calcular a cobertura acumulada ao "aprender" os N primeiros. Destacar quantas palavras faltam para 95% e para 98%. A pesquisa sobre leitura em segunda língua indica cerca de 98% de cobertura para ler com conforto sem consulta, e 95% como um mínimo razoável (Hu & Nation, 2000; Laufer & Ravenhorst-Kalovski, 2010).
-- **Cobertura por capítulo**, pelo sumário do PDF ou pelos capítulos do EPUB. Sem sumário, blocos de 20 páginas.
+- **Cobertura por capítulo**, pelo sumário do PDF ou pelos capítulos do EPUB, restrita aos capítulos que tocam o trecho. Sem sumário, blocos de 20 páginas.
 - **Frequência geral** de cada lema (Zipf). "Rara" quando Zipf < 2,5.
 
 ### 12.5 Relatório
 
 ```
 Animal Farm — George Orwell              escaneado em 22/10/2026 · pasta: Vocabulário (6 decks)
+Trecho: Cap 3 (p. 21–45)
+Detecção offline, sem IA. A IA só preenche Definição e Tradução, se estiver ligada.
 Cobertura atual 94,1%  ·  com o que você está aprendendo 95,3%  ·  meta 98%
 Aprendendo 312 palavras você chega a 98%.            [curva de cobertura]
 Capítulos:  I 95%  ·  II 93%  ·  III 94%  ·  …
 ────────────────────────────────────────────────────────────────────────────
-☑  palavra      ocorr.   1ª pág.   geral    exemplo
-☑  windmill       41     p. 37     rara     "…the building of the windmill…"
-☑  pasture        12     p. 3      comum    "…the pasture which lay…"
+☑  palavra      ocorr.   1ª pág.   geral    família        exemplo
+☑  windmill       41     p. 37     rara                    "…the building of the windmill…"
+☑  learner         3     p. 24     comum    learn ✓        "…a slow learner of letters…"
    Napoleon        —     nome próprio
+── Formas de palavras que você sabe (desmarcadas) ──────────────────────────
+☐  learning ← learn ✓     5     p. 22     comum    "…all the learning of the pigs…"
 [Selecionar as 312 para 98%]  [Já sei]  [Ignorar]  [Nome próprio]       [Gerar deck (312)]
 ```
+
+- O cabeçalho mostra o trecho escaneado e a linha fixa "Detecção offline, sem IA. A IA só preenche Definição e Tradução, se estiver ligada."
+- O grupo "Formas de palavras que você sabe" (seção 12.3, item I) vem à parte, desmarcado, com a palavra-base ao lado.
 
 Filtros: status, mínimo de ocorrências (padrão 2), capítulo e ocultar raras. Ordenação por ocorrências, primeira aparição ou frequência geral. Clicar numa linha abre o livro na primeira ocorrência.
 
 ### 12.6 Gerar o deck
 
 - **Nome padrão:** `<pasta de vocabulário>::Livros::<Título>`. O deck nasce dentro da pasta de vocabulário, então, depois que o usuário aprender as palavras, os próximos escaneamentos já contam com elas.
-- **Tipo de nota "Vocabulário · Livro"** (criado no "Preparar coleção"), com os campos: Palavra, Lema, Classe, Definição, Tradução, Exemplo (a frase do livro com a palavra em `<b>`), Fonte (link `leitor://` para a primeira ocorrência, seção 10.2) e Frequência (ocorrências no livro).
-  - Card 1, inglês → português: frente com Palavra, `{{tts en_US:Palavra}}` e Exemplo; verso com Definição, Tradução e Fonte.
+- **Escaneamento de um trecho:** o deck gerado é um **subdeck com o nome do trecho**: `…::Animal Farm::Cap 3` (o título do item do sumário; vários itens: os títulos separados por " + ", cortados num tamanho razoável) ou `…::Animal Farm::p. 21-45` (páginas, no formato digitado e normalizado). "Livro inteiro" usa o deck do livro, sem subdeck.
+- **Tipo de nota "Vocabulário · Livro"** (criado no "Preparar coleção"), com os campos: Palavra, Lema, Classe, Definição, Tradução, Exemplo (a frase do livro com a palavra em `<b>`), Fonte (link `leitor://` para a primeira ocorrência, seção 10.2), Frequência (ocorrências no livro) e **Família** (o lema conhecido de que a palavra deriva, seção 12.3, item I; vazio se não houver). O campo Família entrou em 23/10/2026, antes de qualquer coleção real ser preparada ou sincronizada, para não exigir sincronização completa depois (seção 9).
+  - Card 1, inglês → português: frente com Palavra, `{{tts en_US:Palavra}}` e Exemplo; verso com Definição, Tradução, a linha "Da família de: {{Família}}" (só quando preenchido) e Fonte.
   - Card 2, português → inglês: opcional, desligado por padrão.
 - **Ordem dos cards novos:** pela primeira ocorrência (padrão: aprender na ordem da leitura) ou pela frequência, reposicionando os cards novos.
 - **Opção "um subdeck por capítulo"** (`…::Animal Farm::Cap 01`), para estudar o vocabulário de cada capítulo antes de lê-lo (o Painel Anki do livro mostra o subdeck do capítulo atual).
-- **Tags:** `livro::<slug>` e `cap::<n>`.
-- **Não duplicar:** lemas que já existem como nota na pasta de vocabulário ficam de fora.
+- **Tags:** `livro::<slug>`, `cap::<n>` e, no escaneamento de um trecho, a tag do trecho `trecho::<slug-do-trecho>` (ex.: `trecho::cap-3`, `trecho::p-21-45`).
+- **Não duplicar:** lemas que já existem como nota na pasta de vocabulário ficam de fora, e também **as palavras já criadas num escaneamento anterior do mesmo livro** (qualquer trecho), mesmo que a nota tenha sido movida para fora da pasta; o app reconhece essas notas pelo tipo "Vocabulário · Livro" com o `book_uid` do livro na Fonte.
 - **Enriquecimento antes de criar:**
   - **Com IA** (lotes de 40, resposta em JSON): Definição (inglês simples, nível B1), Tradução (pt-BR, no sentido da frase) e Classe. Mostrar o custo estimado antes. Cache por (lema, hash do exemplo).
   - **Sem IA:** a Definição vem do WordNet embutido, no primeiro sentido da classe mais provável. A Tradução fica vazia.
@@ -843,7 +864,7 @@ Filtros: status, mínimo de ocorrências (padrão 2), capítulo e ocultar raras.
 
 - O botão "Realçar vocabulário" (no Painel Anki do livro) sublinha as palavras desconhecidas (coral) e as que estão em aprendizado (âmbar). O núcleo calcula os retângulos de cada ocorrência (texto com posição do `core-pdf`, no mesmo commit do PdfCraft da tela) e o app manda `pdfcraft:marks` para as páginas visíveis e as vizinhas, conforme chegam os `pdfcraft:page`. As marcas nunca vão para o PDF.
 - **Tocar numa palavra realçada** gera `pdfcraft:mark-click`, e o app abre, por cima do iframe na posição recebida, um popover com o lema, o status, a definição (da nota no deck, se existir; senão do WordNet, ou da IA sob demanda) e os botões "Adicionar ao deck do livro", "Já sei" e "Nome próprio". Adicionar cria a nota na hora; o enriquecimento com IA vem depois, em segundo plano.
-- **Escanear de novo** só recalcula os status (a tabela de lemas fica guardada por livro), em segundos. O processamento completo só roda de novo se o texto mudar (depois de um OCR, por exemplo).
+- **Escanear de novo**, ou escanear **outro trecho**, só recalcula os status a partir da tabela de lemas por página (guardada por livro), em segundos. O processamento completo só roda de novo se o texto mudar (depois de um OCR, por exemplo).
 
 ### 12.8 Desempenho e qualidade esperados
 
@@ -898,10 +919,13 @@ notetype_mapping(anki_notetype_id PK, role ENUM('vocab','code_command','code_pro
 code_note_extra(note_id PK, accepted JSON, requires JSON, updated_at, deleted)
 -- os ids do Anki (notetype, note) são estáveis entre aparelhos sincronizados, então servem de chave
 vocab_scan(uid PK, book_uid, created_at, root_deck_id, deck_ids JSON, config JSON,
+           range JSON,              -- trecho: {kind: 'all'|'outline'|'pages', items, pages, label}
            total_tokens, cov_known REAL, cov_with_learning REAL, unknown_lemmas,
            words_to_95, words_to_98, status)
 book_lemma(book_uid, lemma, pos, occurrences, first_unit, example, example_span JSON,
            units JSON, is_proper BOOL, zipf REAL, PRIMARY KEY(book_uid, lemma))       -- cache, recriável
+book_lemma_page(book_uid, lemma, unit INT, occurrences, form, example NULL, example_span JSON NULL,
+                text_version, PRIMARY KEY(book_uid, lemma, unit))                    -- cache por página, recriável
 vocab_override(lemma PK, status ENUM('known','ignored','proper'), updated_at, deleted)
 vocab_enrichment_cache(lemma, context_hash, payload JSON, PRIMARY KEY(lemma, context_hash))
 ai_usage(uid PK, at, feature, provider, model, tokens_in, tokens_out, cost_usd)
@@ -961,7 +985,7 @@ O Anki sincroniza pelo servidor dele. Os livros, as anotações e o progresso pr
 - **Exclusões:** viram `deleted = true` (lápide) e sincronizam como qualquer alteração. Excluir um livro apaga as anotações e a posição dele (também como lápides) e, no servidor, o arquivo é removido depois de 30 dias. As lápides ficam 90 dias.
 - **Arquivos:** enviados ao adicionar um livro e a cada nova versão salva (anotações, OCR); baixados sob demanda. A biblioteca mostra todos os livros; os que não estão no aparelho aparecem com "Baixar".
 - **Conflito de arquivo:** se o `PUT` parte de uma versão que já não é a atual no servidor (o livro foi anotado em dois aparelhos sem sincronizar no meio), o servidor responde 409. O app baixa a versão do servidor, guarda a sua como "<título> (cópia de conflito, <aparelho>, <data>)" na biblioteca e avisa o usuário. Nada é perdido. Para evitar isso, o app sincroniza o livro ao abrir e ao fechar.
-- **O que não sincroniza:** caches recriáveis (`book_text`, `book_lemma`, `vocab_scan`) e as sessões de leitura (que vão para o Painel). O OCR vai dentro do arquivo, como camada de texto.
+- **O que não sincroniza:** caches recriáveis (`book_text`, `book_lemma`, `book_lemma_page`, `vocab_scan`) e as sessões de leitura (que vão para o Painel). O OCR vai dentro do arquivo, como camada de texto.
 - **Quando:** ao abrir o app, ao fechar um livro e a cada 5 min com o app aberto. Offline, as alterações esperam numa fila local.
 
 ## 17. Integração com o Painel de Estudos
@@ -1102,6 +1126,9 @@ Aceite:
 Aceite:
 
 - [ ] O passo "escolher a pasta de vocabulário" é obrigatório e lista os subdecks.
+- [ ] O passo "Trecho" oferece livro inteiro, sumário/bookmarks (com os bookmarks criados no PdfCraft) e páginas (`37`, `21-45`, `21-45, 60, 72-80`); o relatório, as métricas e a curva valem só para o trecho, e o cabeçalho mostra qual foi. Escanear outro trecho do mesmo livro leva segundos.
+- [ ] Flexões de palavras conhecidas contam como conhecidas; as que também são lemas próprios (learning, meaning…) aparecem no grupo "Formas de palavras que você sabe", desmarcadas, com a palavra-base; derivadas (learner, happiness…) viram cards com "família: learn ✓" no relatório e "Da família de: learn" no verso, ou contam como conhecidas pela opção.
+- [ ] O deck de um trecho é um subdeck com o nome do trecho e a tag `trecho::…`; palavras de escaneamentos anteriores do mesmo livro não entram de novo.
 - [ ] O mapeamento de campos funciona com os tipos de nota reais do usuário (5000 palavras, Oxford).
 - [ ] Os tempos e a precisão da seção 12.8.
 - [ ] O relatório mostra a cobertura, a curva (95% e 98%) e os capítulos.

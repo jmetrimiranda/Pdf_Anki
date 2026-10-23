@@ -1,0 +1,44 @@
+# Leitor de Estudos services on the VPS (spec Appendix A.1). TEMPLATE — VPS deployment pending (docs/tecnico/runner.md).
+# Lives in the Leitor repository cloned at /opt/leitor-estudos and is pulled into the Painel's compose with
+#   include: /opt/leitor-estudos/server/compose.leitor.yml
+# (commented out there until this repository is cloned on the VPS). Caddy belongs to the Painel's compose: it joins
+# runner_net and is the only way in, at https://runner.<domínio>/ →  reverse_proxy runner:8091
+#
+# Secrets: RUNNER_TOKEN comes from the VPS's .env (never committed), generated there with `openssl rand -base64 32`
+# and pasted into the Leitor (Configurações → Código, stored in the system keychain).
+# library-sync (port 8090, volume leitor_data) is added in Phase 9.
+
+services:
+  runner:
+    ulimits:
+      core: 0  # no core dumps on the host (kernel core_pattern is global; docs/decisoes.md)
+    build:
+      context: ./runner
+    image: leitor-runner
+    restart: unless-stopped
+    init: true # reaps the processes a killed program leaves behind
+    read_only: true
+    tmpfs:
+      - /work:size=64m,mode=1777,exec
+      - /tmp:size=16m
+    # Starts as root only for the image's setpriv entrypoint, which drops to 10001 (jobs: 10002) at once.
+    user: "0:0"
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 2
+    environment:
+      RUNNER_PORT: "8091"
+      RUNNER_TOKEN: ${RUNNER_TOKEN:?set RUNNER_TOKEN in the VPS .env}
+    # No ports: reachable only through Caddy on runner_net.
+    networks:
+      runner_net:
+        aliases: [runner]
+
+networks:
+  # No route to the internet or to the other services (spec 11.5).
+  runner_net:
+    name: runner_net
+    internal: true

@@ -6,6 +6,8 @@ import type {
   AnkiChanged,
   AnkiPageEvent,
   BackupInfo,
+  CodeMappingFields,
+  CodeSettings,
   CoreClient,
   DeckNode,
   DeckTree,
@@ -192,6 +194,20 @@ export interface AnkiState {
   nextImageFile?: string | null;
   /** Which dataset the collection holds: the seed or a replaced `.colpkg`. */
   dataset: 'seed' | 'colpkg';
+  /** Configurações → Código: user notetypes with the "Comando" role (the app store's `notetype_mapping`). */
+  codeMappings?: MockCodeMapping[];
+  /** `code_note_extra` by note id. */
+  codeExtras?: Record<string, { accepted: string[]; requires: string[] }>;
+  /** The code settings (the app store's settings). */
+  codeSettings?: CodeSettings;
+  /** e2e: `false` = no C++ compiler and no runner. */
+  cppAvailable?: boolean;
+}
+
+export interface MockCodeMapping {
+  notetypeId: number;
+  fields: CodeMappingFields;
+  updatedAt: number;
 }
 
 export const DEFAULT_DECK_ID = 1;
@@ -214,6 +230,9 @@ export const NT_CLOZE_LEITOR = 1_600_000_000_102;
 export const NT_CODE_COMMAND = 1_600_000_000_103;
 export const NT_CODE_PROGRAM = 1_600_000_000_104;
 export const NT_VOCAB_BOOK = 1_600_000_000_105;
+/** The fixture's user-shaped command type (core_anki::fixture::USER_COMMAND_NOTETYPE). */
+export const NT_USER_COMMAND = 1_600_000_000_201;
+export const USER_COMMAND_NOTETYPE = 'ROS 2 · Digite o comando';
 
 export const APP_NOTETYPE_NAMES = [
   'Básico (Leitor)',
@@ -279,6 +298,109 @@ export const APP_NOTETYPES: MockNotetype[] = [
     appType: 'Vocabulário · Livro',
   },
 ];
+
+/** Like the user's "DIGITE O COMANDO · CTRL+ENTER RESPONDE" type (docs/referencia/capturas/06..09). */
+export function userCommandNotetype(): MockNotetype {
+  return {
+    id: NT_USER_COMMAND,
+    name: USER_COMMAND_NOTETYPE,
+    kind: 'normal',
+    fields: ['Frente', 'Comando', 'Explicação'],
+    templates: ['Cartão 1'],
+    appType: null,
+  };
+}
+
+/** The fixture's user-type notes (Frente, Comando, Explicação), like core_anki::fixture::USER_COMMAND_NOTES. */
+export const USER_COMMAND_NOTES: [string, string, string][] = [
+  [
+    'Ver a transformação entre os frames world e turtle1',
+    'ros2 run tf2_ros tf2_echo world turtle1',
+    'Imprime Translation e Rotation (quaternion) a cada atualização.',
+  ],
+  [
+    'Listar os executáveis disponíveis dentro do pacote turtlesim',
+    'ros2 pkg executables turtlesim',
+    'Retorna turtlesim draw_square, turtlesim mimic, turtlesim turtle_teleop_key, turtlesim turtlesim_node.',
+  ],
+  ['Instalar o pacote turtlesim (Humble)', 'sudo apt install ros-humble-turtlesim', ''],
+];
+
+export interface FixtureProgram {
+  question: string;
+  language: 'python' | 'cpp';
+  mode: 'testes' | 'saida' | 'estrutura';
+  answer: string;
+  tests: string;
+  input: string;
+  expectedOutput: string;
+  notes: string;
+}
+
+/** The "Programação" deck (core_anki::fixture::PROGRAMS), in creation order. */
+export const FIXTURE_PROGRAMS: FixtureProgram[] = [
+  {
+    question: 'Função que soma os pares de uma lista',
+    language: 'python',
+    mode: 'testes',
+    answer: 'def soma_pares(xs):\n    return sum(x for x in xs if x % 2 == 0)',
+    tests: 'assert soma_pares([1, 2, 3, 4]) == 6\nassert soma_pares([]) == 0',
+    input: '',
+    expectedOutput: '',
+    notes: 'Uma expressão geradora dentro de sum() evita a lista intermediária.',
+  },
+  {
+    question: 'Ler dois inteiros e imprimir a soma',
+    language: 'python',
+    mode: 'saida',
+    answer: 'a, b = map(int, input().split())\nprint(a + b)',
+    tests: '',
+    input: '2 3\n',
+    expectedOutput: '5\n',
+    notes: '',
+  },
+  {
+    question: 'Criar um nó rclpy mínimo',
+    language: 'python',
+    mode: 'estrutura',
+    answer:
+      'import rclpy\nfrom rclpy.node import Node\n\n\nclass Minimo(Node):\n    def __init__(self):\n        super().__init__("minimo")\n\n\ndef main():\n    rclpy.init()\n    rclpy.spin(Minimo())\n    rclpy.shutdown()',
+    tests: '',
+    input: '',
+    expectedOutput: '',
+    notes: 'rclpy.init() antes de criar o nó; spin() mantém o nó vivo.',
+  },
+  {
+    question: 'Função int quadrado(int x)',
+    language: 'cpp',
+    mode: 'testes',
+    answer: 'int quadrado(int x) { return x * x; }',
+    tests: 'int main() {\n    CHECK(quadrado(3) == 9);\n    CHECK(quadrado(-2) == 4);\n}',
+    input: '',
+    expectedOutput: '',
+    notes: '',
+  },
+  {
+    question: 'Imprimir Olá, mundo!',
+    language: 'cpp',
+    mode: 'saida',
+    answer: '#include <iostream>\nint main() { std::cout << "Olá, mundo!\\n"; }',
+    tests: '',
+    input: '',
+    expectedOutput: 'Olá, mundo!\n',
+    notes: '',
+  },
+];
+
+/** Plain text → field HTML (the editor's `codeToHtml`; the mock data layer doesn't import UI code). */
+export function fixtureCodeToHtml(text: string): string {
+  return text
+    .replace(/\r\n?/g, '\n')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>');
+}
 
 function stockNotetypes(): MockNotetype[] {
   return [
@@ -444,8 +566,9 @@ const learning = (): Partial<MockCard> => ({ queue: 'learn', due: Date.now() - 6
 export function seedAnki(): AnkiState {
   const notetypes = [
     ...stockNotetypes(),
-    // The fixture already uses three app types (as if an earlier "Preparar coleção" made them).
-    ...APP_NOTETYPES.filter((nt) => [NT_BASIC_LEITOR, NT_CODE_COMMAND, NT_VOCAB_BOOK].includes(nt.id)),
+    // The fixture already uses four app types (as if an earlier "Preparar coleção" made them).
+    ...APP_NOTETYPES.filter((nt) => [NT_BASIC_LEITOR, NT_CODE_COMMAND, NT_CODE_PROGRAM, NT_VOCAB_BOOK].includes(nt.id)),
+    userCommandNotetype(),
   ];
   const b = new Builder('seed', notetypes);
   const s = b.state;
@@ -518,6 +641,36 @@ export function seedAnki(): AnkiState {
     [review(4)],
   );
   b.note(ros, NT_CODE_COMMAND, ['Listar os tópicos ativos', 'ros2 topic list', '', '', '', '']);
+  // The stock "type in the answer" type (studied with Anki's own type box).
+  b.note(ros, NT_BASIC_TYPE, ['Comando para compilar o workspace', 'colcon build'], [{}], ['ros2']);
+  // The user's own command type (not an app type), as in the user's real deck.
+  for (const [front, cmd, explanation] of USER_COMMAND_NOTES) {
+    b.note(ros, NT_USER_COMMAND, [front, cmd, explanation], [{}], ['ros2']);
+  }
+
+  // Programação: "Código · Programa" notes (Python and C++, every mode).
+  const programming = b.deck('Programação', null);
+  for (const p of FIXTURE_PROGRAMS) {
+    b.note(
+      programming,
+      NT_CODE_PROGRAM,
+      [
+        p.question,
+        p.language,
+        p.mode,
+        fixtureCodeToHtml(p.answer),
+        '',
+        '',
+        fixtureCodeToHtml(p.tests),
+        fixtureCodeToHtml(p.input),
+        fixtureCodeToHtml(p.expectedOutput),
+        p.notes,
+        '',
+      ],
+      [{}],
+      ['programacao'],
+    );
+  }
 
   // Matemática: MathJax inline and display.
   b.note(math, NT_BASIC, ['Quanto vale \\(\\frac{a}{b}\\) com a = 6 e b = 3?', '2'], [review(2)]);

@@ -23,6 +23,7 @@ import { t } from '../../../i18n';
 import { core } from '../../../lib/core/client';
 import { AnkiWebPage } from '../pages/AnkiWebPage';
 import { NoteEditorDialog } from '../editor/NoteEditorDialog';
+import { CodePanel } from '../../code-review/CodePanel';
 import { AnswerButtons, ShowAnswerButton, StudyCounts } from './AnswerBar';
 import { StudyStage } from './StudyStage';
 import { FLAG_COLORS, FLAG_KEYS, useStudySession } from './useStudySession';
@@ -46,10 +47,13 @@ export function StudyPage({
   deckId,
   deckName,
   showAnswer: autoShowAnswer,
+  codeAnswer,
 }: {
   deckId?: number;
   deckName?: string;
   showAnswer?: boolean;
+  /** `?codigo=`: the first code card is prefilled with this answer and verified at once (captures, e2e). */
+  codeAnswer?: string | undefined;
 }) {
   const navigate = useNavigate();
   const toast = useToast();
@@ -69,6 +73,12 @@ export function StudyPage({
   });
   const { view, card, side, busy, statesMutated, shown, startedAt, editing, setEditing, undoable, paused } = session;
   const { cardAction, replay } = session;
+  // `codeAnswer` goes to the first code card only.
+  const [codeAnswerCard, setCodeAnswerCard] = useState<number | null>(null);
+  useEffect(() => {
+    if (codeAnswer !== undefined && codeAnswerCard === null && card?.code) setCodeAnswerCard(card.cardId);
+  }, [codeAnswer, codeAnswerCard, card]);
+  const code = card?.code ? card : null;
 
   const menuItems: MenuEntry[] = card
     ? [
@@ -195,14 +205,39 @@ export function StudyPage({
 
       {view.kind === 'done' && <DoneView onBack={() => void navigate({ to: '/anki' })} />}
 
-      <StudyStage
-        session={session}
+      <div
         className={
           view.kind === 'done' || view.kind === 'error'
             ? 'hidden'
-            : 'relative mx-3 min-h-0 flex-1 overflow-hidden rounded-box border border-line bg-card sm:mx-4'
+            : code
+              ? 'mx-3 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto sm:mx-4'
+              : 'mx-3 flex min-h-0 flex-1 flex-col sm:mx-4'
         }
-      />
+        data-testid="study-body"
+      >
+        <StudyStage
+          session={session}
+          className={
+            code
+              ? // The Pergunta (question side) or the card's answer side, above the code panel. The answer side
+                // stays small (it scrolls inside) so the verdict, diff/tests and Contestar fit below it.
+                side === 'answer'
+                ? 'relative max-h-72 min-h-28 shrink-0 basis-[30%] overflow-hidden rounded-box border border-line bg-card'
+                : 'relative min-h-28 shrink-0 basis-[28%] overflow-hidden rounded-box border border-line bg-card'
+              : 'relative min-h-0 flex-1 overflow-hidden rounded-box border border-line bg-card'
+          }
+        />
+        {code && (
+          <div className="shrink-0 pb-1">
+            <CodePanel
+              key={code.cardId}
+              session={session}
+              card={code}
+              autoAnswer={codeAnswerCard === code.cardId ? codeAnswer : undefined}
+            />
+          </div>
+        )}
+      </div>
 
       {card && (
         <footer className="flex shrink-0 flex-col items-center gap-2 px-3 pt-2.5 pb-3 sm:px-4">
@@ -211,7 +246,10 @@ export function StudyPage({
             {card.showTimer && side === 'question' && <StudyTimer startedAt={startedAt} maxSecs={card.timerMaxSecs} />}
           </div>
           {side === 'question' ? (
-            <ShowAnswerButton ref={session.showRef} onClick={session.showAnswer} disabled={busy || paused} />
+            // Code cards answer through the code panel (Verificar / Mostrar resposta).
+            !card.code && (
+              <ShowAnswerButton ref={session.showRef} onClick={session.showAnswer} disabled={busy || paused} />
+            )
           ) : (
             <AnswerButtons
               labels={view.kind === 'card' && view.answer ? view.answer.buttons : card.buttons}
@@ -219,6 +257,8 @@ export function StudyPage({
               onAnswer={session.answer}
               disabled={busy || !statesMutated || paused}
               goodRef={session.goodRef}
+              groupRef={session.answerBarRef}
+              suggested={session.codeSuggestion ? session.codeSuggestion.rating : undefined}
             />
           )}
         </footer>

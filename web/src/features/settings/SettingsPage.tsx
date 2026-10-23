@@ -3,13 +3,13 @@ import { Badge } from '../../components/ui';
 import { t, type MessageKey } from '../../i18n';
 import { cn } from '../../lib/cn';
 
-/** The sections of "Configurações" (spec 5.2); "Anki e sincronização" and the "IA" placeholder exist for now. */
-const SECTIONS: { key: MessageKey; to?: '/configuracoes/anki' | '/configuracoes/ia' }[] = [
+/** The sections of "Configurações" (spec 5.2); "Anki e sincronização", "Código" and the "IA" placeholder exist for now. */
+const SECTIONS: { key: MessageKey; to?: '/configuracoes/anki' | '/configuracoes/codigo' | '/configuracoes/ia' }[] = [
   { key: 'settings.section.general' },
   { key: 'settings.section.reading' },
   { key: 'settings.section.anki', to: '/configuracoes/anki' },
   { key: 'settings.section.vocab' },
-  { key: 'settings.section.code' },
+  { key: 'settings.section.code', to: '/configuracoes/codigo' },
   { key: 'settings.section.ai', to: '/configuracoes/ia' },
   { key: 'settings.section.painel' },
 ];

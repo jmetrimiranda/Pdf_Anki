@@ -1,10 +1,11 @@
 // Contract snapshot (spec 15, 20): the mock core must produce values with exactly the JSON keys the Rust core
 // serializes. `contract.json` is written and checked by `src-tauri/app/tests/contract.rs` from the fixture collection.
 import { beforeEach, describe, expect, it } from 'vitest';
+import importExample from '../../../../src-tauri/crates/core-code/tests/fixtures/import_example.md?raw';
 import contract from './__fixtures__/contract.json';
 import { mockClient, mockHandle } from './mock';
 import { intervalLabel, NEW_CARD_LABELS } from './mock/ankiStudy';
-import type { AvTag, DeckNode } from './types';
+import type { AvTag, DeckNode, StudyCard } from './types';
 
 type Shapes = Record<string, string[]>;
 
@@ -29,6 +30,13 @@ function collectAv(out: Shapes, list: AvTag[]) {
   for (const tag of list) collect(out, `AvTag.${tag.kind}`, tag);
 }
 
+function collectCode(out: Shapes, card: StudyCard) {
+  if (card.code) {
+    collect(out, 'CodeCard', card.code);
+    collect(out, 'CodeCardFields', card.code.fields);
+  }
+}
+
 function walk(nodes: DeckNode[], fn: (n: DeckNode) => void) {
   for (const n of nodes) {
     fn(n);
@@ -51,6 +59,7 @@ describe('mock core vs the Rust contract snapshot', () => {
       if (next.kind === 'card') {
         collect(out, 'StudyNext.card', next);
         collect(out, 'StudyCard', next.card);
+        collectCode(out, next.card);
         collect(out, 'QueueCounts', next.card.counts);
         collectAv(out, next.card.questionAv);
         collectAv(out, next.card.answerAv);
@@ -117,6 +126,56 @@ describe('mock core vs the Rust contract snapshot', () => {
     stopLinks();
     for (const l of links) collect(out, 'DeepLink', l);
 
+    // Code cards (spec 11): the mapped user type studied as a code card, the mapping, extras, "Contestar", C++
+    // results, status/settings and the Markdown import of the spec's example.
+    const user = (await mockClient.ankiNotetypes()).find((n) => n.name === 'ROS 2 · Digite o comando')!;
+    const list = await mockClient.codeMappingSet(user.id, {
+      question: 'Frente',
+      answer: 'Comando',
+      notes: 'Explicação',
+    });
+    collect(out, 'CodeMapping', list[0]);
+    collect(out, 'CodeMappingFields', list[0]!.fields);
+    const ros = (await mockClient.ankiDeckNames()).find((d) => d.name === 'ROS 2 — Revisão')!.id;
+    let mapped = false;
+    let step = await mockClient.ankiStudyNext(ros);
+    for (let i = 0; i < 20 && step.kind === 'card'; i++) {
+      collect(out, 'StudyCard', step.card);
+      collectCode(out, step.card);
+      if (step.card.code?.notetypeId === user.id) {
+        mapped = true;
+        break;
+      }
+      step = await mockClient.ankiAnswer(step.card.cardId, 3, 1000);
+    }
+    expect(mapped, 'the mapped user card was studied as a code card').toBe(true);
+    const userNote = (await mockClient.ankiSearch(`note:"${user.name}"`, null))[0]!;
+    const userNoteId = (await mockClient.ankiBrowseRows([userNote]))[0]!.noteId;
+    collect(out, 'CodeNoteExtra', await mockClient.codeNoteExtraSet(userNoteId, ['ls -la'], ['sudo']));
+    collect(out, 'CodeAcceptResult', await mockClient.codeAcceptAnswer(userNoteId, 'ls -l -a'));
+    const run = await mockClient.codeRunCpp(
+      { 'main.cpp': '#include <iostream>\nint main() { std::cout << "oi\\n"; }' },
+      '',
+    );
+    collect(out, 'CppRunResult', run);
+    collect(out, 'CppCompileResult', run.compile);
+    collect(out, 'CppRunOutput', run.run);
+    const status = await mockClient.codeStatus();
+    collect(out, 'CodeStatus', status);
+    collect(out, 'CppStatus', status.cpp);
+    collect(out, 'LocalCppStatus', status.cpp.local);
+    collect(out, 'RemoteCppStatus', status.cpp.remote);
+    collect(out, 'CodeSettings', await mockClient.codeSettingsGet());
+    collect(out, 'RunnerTestResult', await mockClient.codeRunnerTest());
+    collect(out, 'CodeFormatted', await mockClient.codeFormatCpp('int main() {}\n'));
+    const preview = await mockClient.codeImportMarkdown(importExample);
+    collect(out, 'ImportPreview', preview);
+    for (const item of preview.items) collect(out, 'ImportItem', item);
+    const words = (await mockClient.ankiDeckNames()).find((d) => d.name === '5000 palavras')!.id;
+    const imported = await mockClient.codeImportCommit(importExample, words, [0, 1]);
+    expect(imported.added).toBe(2);
+    collect(out, 'CodeImportResult', imported);
+
     const expected = contract as Shapes;
     for (const required of [
       'StudyNext.card',
@@ -142,6 +201,25 @@ describe('mock core vs the Rust contract snapshot', () => {
       'WordDefinition',
       'WordDefinition.note',
       'DeepLink',
+      'CodeCard',
+      'CodeCardFields',
+      'CodeMapping',
+      'CodeMappingFields',
+      'CodeNoteExtra',
+      'CodeAcceptResult',
+      'CppRunResult',
+      'CppCompileResult',
+      'CppRunOutput',
+      'CodeStatus',
+      'CppStatus',
+      'LocalCppStatus',
+      'RemoteCppStatus',
+      'CodeSettings',
+      'RunnerTestResult',
+      'CodeFormatted',
+      'ImportPreview',
+      'ImportItem',
+      'CodeImportResult',
     ]) {
       expect(out[required], `the mock produced no ${required}`).toBeDefined();
     }

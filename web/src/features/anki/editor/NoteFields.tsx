@@ -6,8 +6,8 @@ import { cn } from '../../../lib/cn';
 import { core } from '../../../lib/core/client';
 import type { NotetypeInfo } from '../../../lib/core/types';
 import { nextClozeNumber } from './cloze';
-import { isCodeField } from './codeField';
-import { CodeFieldEditor } from './CodeFieldEditor';
+import { codeFieldKind, htmlToCode, LANGUAGES, MODES } from './codeField';
+import { CodeFieldEditor, CodeMirrorField, CodeSelectField } from './CodeFieldEditor';
 import { RichField, type RichFieldHandle } from './RichField';
 
 export interface NoteFieldsHandle {
@@ -48,7 +48,19 @@ export const NoteFields = forwardRef<NoteFieldsHandle, NoteFieldsProps>(function
   const code = useRef(new Map<number, HTMLTextAreaElement>());
   const [active, setActive] = useState(0);
   const isCloze = notetype.kind === 'cloze';
-  const codeAt = (i: number) => isCodeField(notetype.name, notetype.fields[i]?.name ?? '');
+  const kindAt = (i: number) => codeFieldKind(notetype, notetype.fields[i]?.name ?? '');
+  const codeAt = (i: number) => kindAt(i) !== null;
+  // The language of a Programa note's code editors follows its Linguagem select.
+  const languageIndex =
+    notetype.appType === 'Código · Programa' ? notetype.fields.findIndex((f) => f.name === 'Linguagem') : -1;
+  const [language, setLanguage] = useState(() => (languageIndex >= 0 ? htmlToCode(fields[languageIndex] ?? '') : ''));
+  const [languageFor, setLanguageFor] = useState(resetKey);
+  if (languageFor !== resetKey) {
+    setLanguageFor(resetKey);
+    setLanguage(languageIndex >= 0 ? htmlToCode(fields[languageIndex] ?? '') : '');
+  }
+  const editorLanguage =
+    notetype.appType === 'Código · Comando' ? 'shell' : language.trim() === 'cpp' ? 'cpp' : 'python';
   const activeIsRich = !codeAt(active);
   const firstRich = notetype.fields.findIndex((_, i) => !codeAt(i));
 
@@ -127,7 +139,8 @@ export const NoteFields = forwardRef<NoteFieldsHandle, NoteFieldsProps>(function
         const id = `${baseId}-f${i}`;
         const errId = `${id}-err`;
         const error = errors?.[i];
-        const isCode = codeAt(i);
+        const kind = kindAt(i);
+        const isCode = kind !== null;
         return (
           <div key={`${notetype.id}-${i}`} className="flex flex-col gap-1">
             <div className="flex min-h-6 items-center gap-2">
@@ -151,7 +164,31 @@ export const NoteFields = forwardRef<NoteFieldsHandle, NoteFieldsProps>(function
                 />
               )}
             </div>
-            {isCode ? (
+            {kind === 'language' || kind === 'mode' ? (
+              <CodeSelectField
+                id={id}
+                label={f.name}
+                html={fields[i] ?? ''}
+                resetKey={resetKey}
+                options={kind === 'language' ? LANGUAGES : MODES}
+                onEdit={(html) => {
+                  if (kind === 'language') setLanguage(htmlToCode(html));
+                  onEdit(i, html);
+                }}
+                onFocus={() => setActive(i)}
+                invalid={!!error}
+                describedBy={error ? errId : undefined}
+              />
+            ) : kind === 'editor' ? (
+              <CodeMirrorField
+                label={f.name}
+                html={fields[i] ?? ''}
+                resetKey={resetKey}
+                language={editorLanguage}
+                onEdit={(html) => onEdit(i, html)}
+                onFocus={() => setActive(i)}
+              />
+            ) : isCode ? (
               <CodeFieldEditor
                 ref={(el) => {
                   if (el) code.current.set(i, el);

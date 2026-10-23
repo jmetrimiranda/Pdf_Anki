@@ -244,4 +244,25 @@ describe('MiniReview', () => {
     await user.click(closes.at(-1)!);
     expect(onClose).toHaveBeenCalled();
   });
+
+  it('a code card: the Pergunta in the frame, the code panel below, the suggestion preselected in the narrow bar', async () => {
+    const user = userEvent.setup();
+    const ROS = deckId('ROS 2 — Revisão');
+    const { f } = await opened({
+      decks: [{ deckId: ROS, name: 'ROS 2 — Revisão', role: 'content' }],
+      initialDeckId: ROS,
+    });
+    await f.send({ t: 'shown' });
+    const input = await screen.findByTestId('code-command-input');
+    expect(screen.getByTestId('code-panel').closest('[data-testid="mini-review"]')).toBeTruthy();
+    await user.type(input, 'ros2 run tf2_ros tf2_echo world turtle1{Enter}');
+    await waitFor(() => expect(screen.getByTestId('code-verdict').textContent).toBe('Correto'));
+    await waitFor(() => expect(f.last('showAnswer')).toBeTruthy());
+    const good = screen.getByRole('button', { name: /^Bom/ });
+    await waitFor(() => expect(good.getAttribute('data-suggested')).toBe('true'));
+    await waitFor(() => expect(document.activeElement).toBe(good));
+    press('Enter');
+    await waitFor(() => expect(mockHandle.anki.logs.filter((l) => l.kind === 'answer')).toHaveLength(1));
+    expect(mockHandle.anki.logs.find((l) => l.kind === 'answer')).toMatchObject({ rating: 3 });
+  });
 });

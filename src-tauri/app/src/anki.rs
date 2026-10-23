@@ -153,11 +153,22 @@ impl AppState {
     /// The collection service, study session and bridge, opening the collection on first use.
     /// Blocks the first time: call it off the async runtime.
     pub fn anki_handles(&self) -> Result<AnkiHandles, AppError> {
+        if let Some(h) = lock(&self.anki_handles).as_ref() {
+            return Ok(h.clone());
+        }
+        // The "Comando" roles of user notetypes (spec 11.1), read before taking the handles lock
+        // (the store has its own lock). A broken store only costs the interactive review.
+        let code_roles = self.code_roles_from_store().unwrap_or_else(|e| {
+            tracing::warn!(code = %e.code, "could not read the code mappings: {e}");
+            Vec::new()
+        });
         let mut slot = lock(&self.anki_handles);
         if let Some(h) = slot.as_ref() {
             return Ok(h.clone());
         }
         let svc = self.anki()?;
+        // Queued before anyone else gets the handles, so the first card already knows the roles.
+        submit_now(svc.set_code_roles(code_roles));
         let study = Study::new(svc.clone());
         let sink_slot = Arc::clone(&self.ui_sink);
         let sink: EventSink = Arc::new(move |event| {
@@ -593,13 +604,22 @@ impl AppState {
     }
 
     /// Runs `f` on the collection actor.
-    async fn on_col<R, F>(&self, f: F) -> Result<R, AppError>
+    pub(crate) async fn on_col<R, F>(&self, f: F) -> Result<R, AppError>
     where
         R: Send + 'static,
         F: FnOnce(&mut core_anki::Collection) -> core_anki::Result<R> + Send + 'static,
     {
         Ok(self.anki_handles()?.svc.call(f).await?)
     }
+}
+
+/// Polls `job` once and drops it. [`AnkiService`] calls submit their job to the actor queue on the
+/// first poll and only await the reply afterwards, so this enqueues the job in order without
+/// blocking (and without needing a runtime: `anki_handles` runs both inside and outside one).
+fn submit_now<F: std::future::Future>(job: F) {
+    let mut job = std::pin::pin!(job);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let _ = job.as_mut().poll(&mut cx);
 }
 
 fn emit_with(slot: &std::sync::RwLock<Option<UiSink>>, event: UiEvent) {

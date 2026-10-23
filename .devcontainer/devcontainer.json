@@ -18,7 +18,7 @@
     "DISPLAY": "${localEnv:DISPLAY}",
     "CARGO_BUILD_JOBS": "8"
   },
-  "runArgs": ["--shm-size=2g"],
+  "runArgs": ["--shm-size=2g", "--ulimit", "core=0"],
   "postCreateCommand": "sudo chown -R dev:dev /usr/local/cargo/registry /usr/local/cargo/git /workspaces/leitor-estudos/src-tauri/target /home/dev/.local/share/pnpm && git submodule update --init --recursive",
   "customizations": {
     "vscode": {

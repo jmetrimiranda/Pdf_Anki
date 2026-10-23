@@ -86,6 +86,52 @@ pub struct StudyCard {
     pub can_undo: bool,
     pub show_timer: bool,
     pub timer_max_secs: u32,
+    /// Code card (spec 11.2): the app studies it with its own editor and checker. `None` (`code: null`) for
+    /// every other card.
+    pub code: Option<CodeCard>,
+}
+
+/// Kind of code card (spec 11.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CodeCardRole {
+    Command,
+    Program,
+}
+
+/// What the code review needs from a code card (spec 11.2). For code cards `question_html` is only the question
+/// field (no type box, never the user's own front template) and `type_answer` is false.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeCard {
+    pub role: CodeCardRole,
+    pub notetype_id: i64,
+    /// One of the app's types ("Código · Comando"/"Código · Programa") rather than a mapped user type.
+    pub app_type: bool,
+    /// The notetype has an `Aceitas` field ("Contestar" adds to it; otherwise to `code_note_extra`).
+    pub accepted_field: bool,
+    /// The card's answer template shows the notes field (the UI then doesn't repeat it).
+    pub answer_shows_notes: bool,
+    /// The card's answer template prints the answer field (the UI then doesn't repeat the reference answer).
+    pub answer_shows_answer: bool,
+    pub fields: CodeCardFields,
+}
+
+/// Raw field HTML of a code card (`""` when the type lacks the field); the UI decodes it with `htmlToCode`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeCardFields {
+    pub answer: String,
+    pub accepted: String,
+    pub requires: String,
+    pub notes: String,
+    pub language: String,
+    pub mode: String,
+    pub initial: String,
+    pub setup: String,
+    pub tests: String,
+    pub input: String,
+    pub expected_output: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

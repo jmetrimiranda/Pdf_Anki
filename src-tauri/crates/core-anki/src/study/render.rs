@@ -8,6 +8,7 @@ use anki::config::BoolKey;
 use anki::prelude::*;
 use anki::services::CardRenderingService;
 use anki::template::RenderedNode;
+use anki_proto::notetypes::notetype::config::Kind as NotetypeKind;
 
 use super::av::{av_refs_to_play_icons, convert_tags, strip_av_refs};
 use super::typeans::{self, TypeContext, TypeState};
@@ -59,7 +60,46 @@ pub fn apply_custom_filters(nodes: &[RenderedNode], front_side: Option<&str>) ->
 /// Renders an existing card like `TemplateRenderContext.render()` + the LaTeX `card_did_render` hook. A template
 /// error becomes the text of both sides (no AV tags), as on the desktop.
 pub fn render_card(col: &mut Collection, cid: CardId, media_folder: &Path) -> Result<RenderedCard> {
-    let out = match col.render_existing_card(cid, false, true) {
+    render_card_with(col, cid, media_folder, None)
+}
+
+/// [`render_card`], optionally as a code card (spec 11.2): the question is only `question_field` (rendered from
+/// the synthesized template `{{<question_field>}}`), `{{FrontSide}}` of the real answer template is that question,
+/// and every `[[type:…]]` marker is removed from both sides (no Anki type box: the app shows its own editor).
+pub fn render_card_with(
+    col: &mut Collection,
+    cid: CardId,
+    media_folder: &Path,
+    question_field: Option<&str>,
+) -> Result<RenderedCard> {
+    let rendered = match question_field {
+        None => col.render_existing_card(cid, false, true),
+        // `render_existing_card` with the card's template whose question format is replaced by `{{<field>}}`
+        // (`Collection::render_card` renders a note with any template; the notetype itself is untouched).
+        Some(field) => (|| {
+            let card = col.storage.get_card(cid)?.or_invalid("no such card")?;
+            let note = col
+                .storage
+                .get_note(card.note_id())?
+                .or_invalid("no such note")?;
+            let nt = col
+                .get_notetype(note.notetype_id)?
+                .or_invalid("no such notetype")?;
+            let index = if nt.config.kind() == NotetypeKind::Cloze {
+                0
+            } else {
+                usize::from(card.template_idx())
+            };
+            let mut template = nt
+                .templates
+                .get(index)
+                .or_invalid("missing template")?
+                .clone();
+            template.config.q_format = format!("{{{{{field}}}}}");
+            col.render_card(&note, &card, &nt, &template, false, true)
+        })(),
+    };
+    let out = match rendered {
         Ok(out) => out,
         Err(e @ AnkiError::TemplateError { .. }) => {
             let msg = e.message(col.tr());
@@ -72,9 +112,16 @@ pub fn render_card(col: &mut Collection, cid: CardId, media_folder: &Path) -> Re
         }
         Err(e) => return Err(e),
     };
-    let q_text = apply_custom_filters(&out.qnodes, None);
+    let strip = |text: String| {
+        if question_field.is_some() {
+            typeans::strip_type_markers(&text)
+        } else {
+            text
+        }
+    };
+    let q_text = strip(apply_custom_filters(&out.qnodes, None));
     let (q_text, question_av) = extract_av_tags(q_text, true, col.tr());
-    let a_text = apply_custom_filters(&out.anodes, Some(&q_text));
+    let a_text = strip(apply_custom_filters(&out.anodes, Some(&q_text)));
     let (a_text, answer_av) = extract_av_tags(a_text, false, col.tr());
     let q_text = render_latex(col, &q_text, out.latex_svg, media_folder);
     let a_text = render_latex(col, &a_text, out.latex_svg, media_folder);
@@ -143,6 +190,16 @@ pub fn render_for_review(
     cid: CardId,
     media_folder: &Path,
 ) -> crate::error::Result<ReviewRender> {
+    render_for_review_with(col, cid, media_folder, None)
+}
+
+/// [`render_for_review`]; with `question_field` the card is rendered as a code card ([`render_card_with`]).
+pub fn render_for_review_with(
+    col: &mut Collection,
+    cid: CardId,
+    media_folder: &Path,
+    question_field: Option<&str>,
+) -> crate::error::Result<ReviewRender> {
     let card = col
         .storage
         .get_card(cid)?
@@ -155,7 +212,7 @@ pub fn render_for_review(
     let notetype = col
         .get_notetype(note.notetype_id)?
         .ok_or_else(|| Error::NotFound("notetype".into()))?;
-    let rendered = render_card(col, cid, media_folder)?;
+    let rendered = render_card_with(col, cid, media_folder, question_field)?;
     let question = prepare_card_text_for_display(col, &rendered.question)?;
     let mut type_state = TypeState::default();
     let question_html = typeans::question_filter(

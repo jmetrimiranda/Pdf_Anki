@@ -3,7 +3,18 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Brackets, FolderPlus, X } from 'lucide-react';
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { Button, Field, IconButton, Input, Notice, SkeletonLines, Textarea, useToast } from '../../components/ui';
+import { CodeEditor } from '../../components/code/CodeEditor';
+import {
+  Button,
+  Field,
+  IconButton,
+  Input,
+  Notice,
+  Select,
+  SkeletonLines,
+  Textarea,
+  useToast,
+} from '../../components/ui';
 import { t, type MessageKey } from '../../i18n';
 import { cn } from '../../lib/cn';
 import { core } from '../../lib/core/client';
@@ -11,11 +22,24 @@ import { q } from '../../lib/core/queries';
 import type { BookCardKind, BookPanelInfo, NotetypeInfo, Rect } from '../../lib/core/types';
 import { errorMessage } from '../anki/decks/DeckDialogs';
 import { CLOZE_CLOSE, clozeOpen, nextClozeNumber } from '../anki/editor/cloze';
-import { codeToHtml } from '../anki/editor/codeField';
+import { codeToHtml, LANGUAGES, MODES } from '../anki/editor/codeField';
+import { codeOptionLabel } from '../anki/editor/CodeFieldEditor';
+import { ReferenceTest } from '../anki/editor/ReferenceTest';
+import { textFieldsToHtml, useReferenceGate } from '../anki/editor/referenceTest';
 import { checkError, useNoteCheck } from '../anki/editor/useNoteCheck';
 import { DeckPicker } from '../anki/shared/DeckPicker';
 import { fonteHtml, fonteLabel, fonteQuery } from './fonte';
-import { codeText, exampleHtml, exampleText, proseText, proseToHtml, singleWord } from './text';
+import {
+  codeText,
+  commandText,
+  exampleHtml,
+  exampleText,
+  guessLanguage,
+  proseText,
+  proseToHtml,
+  singleWord,
+  suggestKind,
+} from './text';
 
 /** The selection the form starts from (0-based PdfCraft page, rects in page view space). */
 export interface CardSelection {
@@ -24,12 +48,14 @@ export interface CardSelection {
   rects: Rect[];
 }
 
-type FieldRole = 'prose' | 'code' | 'cloze' | 'line' | 'example';
+type FieldRole = 'prose' | 'code' | 'cloze' | 'line' | 'example' | 'select';
 
 interface FieldSpec {
   name: string;
   role: FieldRole;
   rows?: number;
+  /** `select` fields: the values offered. */
+  options?: readonly string[];
 }
 
 interface KindSpec {
@@ -74,7 +100,8 @@ export const KINDS: Record<BookCardKind, KindSpec> = {
     label: 'bookPanel.kind.codeProgram',
     fields: [
       { name: 'Pergunta', role: 'prose', rows: 2 },
-      { name: 'Linguagem', role: 'line' },
+      { name: 'Linguagem', role: 'select', options: LANGUAGES },
+      { name: 'Modo', role: 'select', options: MODES },
       { name: 'Resposta', role: 'code', rows: 5 },
     ],
     focus: 'Pergunta',
@@ -98,6 +125,19 @@ export function allowedKinds(text: string): BookCardKind[] {
   return singleWord(text) ? KIND_ORDER : KIND_ORDER.filter((k) => k !== 'vocab');
 }
 
+const CODE_KINDS: readonly BookCardKind[] = ['codeCommand', 'codeProgram'];
+
+/**
+ * The kind the form opens with: a code kind when the selection reads as code (spec 10.2, `suggestKind`), else the
+ * book's last kind — except a code kind, which prose never gets — else Básico.
+ */
+export function initialKind(text: string, lastKind: BookCardKind | null, kinds: readonly BookCardKind[]): BookCardKind {
+  const suggested = suggestKind(text);
+  if (suggested !== 'basic') return suggested;
+  if (lastKind && kinds.includes(lastKind) && !CODE_KINDS.includes(lastKind)) return lastKind;
+  return 'basic';
+}
+
 /** Initial (plain text) values of a kind's fields for this selection. */
 export function prefill(kind: BookCardKind, text: string): Record<string, string> {
   switch (kind) {
@@ -106,9 +146,10 @@ export function prefill(kind: BookCardKind, text: string): Record<string, string
     case 'cloze':
       return { Texto: proseText(text), 'Verso extra': '' };
     case 'codeCommand':
-      return { Pergunta: '', Resposta: codeText(text) };
+      // The prompt ("$ ", "# ") is not part of the command.
+      return { Pergunta: '', Resposta: commandText(text) };
     case 'codeProgram':
-      return { Pergunta: '', Linguagem: 'python', Resposta: codeText(text) };
+      return { Pergunta: '', Linguagem: guessLanguage(text), Modo: 'estrutura', Resposta: codeText(text) };
     case 'vocab': {
       const word = singleWord(text) ?? proseText(text);
       return { Palavra: word, Lema: word.toLowerCase(), Exemplo: word };
@@ -131,6 +172,7 @@ export function noteFields(
     if (!f || !v.trim()) return '';
     switch (f.role) {
       case 'code':
+      case 'select':
         return codeToHtml(v);
       case 'example':
         return exampleHtml(v.replace(/\s+/g, ' ').trim(), values.Palavra ?? '');
@@ -186,9 +228,7 @@ export function CardForm({
   const toast = useToast();
   const titleId = useId();
   const kinds = useMemo(() => allowedKinds(selection.text), [selection.text]);
-  const [kind, setKind] = useState<BookCardKind>(() =>
-    info.lastKind && kinds.includes(info.lastKind) ? info.lastKind : 'basic',
-  );
+  const [kind, setKind] = useState<BookCardKind>(() => initialKind(selection.text, info.lastKind, kinds));
   // Each kind keeps what the user typed when switching back and forth.
   const [values, setValues] = useState<Partial<Record<BookCardKind, Record<string, string>>>>(() => ({
     [kind]: prefill(kind, selection.text),
@@ -251,6 +291,11 @@ export function CardForm({
   const err = checkError(check);
   const showErr = err && attempted ? err.message : null;
 
+  // Code kinds: the Resposta must pass its own check before Ctrl+Enter adds (same rule as spec 11.7).
+  const codeRole = kind === 'codeCommand' ? 'command' : kind === 'codeProgram' ? 'program' : null;
+  const byName = useMemo(() => (codeRole ? textFieldsToHtml(current) : null), [codeRole, current]);
+  const gate = useReferenceGate(notetype ? codeRole : null, byName);
+
   // Focus the field the user fills (Verso, Pergunta…) when the form opens or the kind changes.
   useEffect(() => {
     const id = requestAnimationFrame(() => {
@@ -286,8 +331,9 @@ export function CardForm({
     });
   };
 
-  const add = async () => {
+  const add = async (untested = false) => {
     if (!notetype || !fields || adding) return;
+    if (!untested && !gate.canSave) return;
     if (effectiveDeck === null) {
       setAttempted(true);
       return;
@@ -406,8 +452,17 @@ export function CardForm({
                 error={showErr && f === KINDS[kind].fields[0] ? showErr : null}
                 inputRef={(el) => fieldRefs.current.set(f.name, el)}
                 onGap={gap}
+                language={kind === 'codeCommand' ? 'shell' : current.Linguagem === 'cpp' ? 'cpp' : 'python'}
               />
             ))}
+            <ReferenceTest
+              gate={gate}
+              compact
+              onSaveUntested={() => {
+                gate.allowUntested();
+                void add(true);
+              }}
+            />
             {check === 'duplicate' && (
               <p role="status" className="flex items-start gap-1.5 text-xs text-muted">
                 <AlertTriangle size={13} aria-hidden className="mt-0.5 shrink-0 text-(--vocab-learning)" />
@@ -457,7 +512,7 @@ export function CardForm({
           <Button size="sm" variant="ghost" onClick={onClose}>
             {t('common.cancel')}
           </Button>
-          <Button size="sm" variant="primary" type="submit" loading={adding} disabled={!notetype}>
+          <Button size="sm" variant="primary" type="submit" loading={adding} disabled={!notetype || !gate.canSave}>
             {t('bookPanel.form.add')}
           </Button>
         </div>
@@ -529,6 +584,7 @@ function FormField({
   error,
   inputRef,
   onGap,
+  language,
 }: {
   spec: FieldSpec;
   value: string;
@@ -536,11 +592,37 @@ function FormField({
   error: string | null;
   inputRef: (el: HTMLTextAreaElement | HTMLInputElement | null) => void;
   onGap: (reuse: boolean) => void;
+  language: 'shell' | 'python' | 'cpp';
 }) {
+  if (spec.role === 'code') {
+    // CodeMirror (Ctrl+Enter bubbles up to the form, which adds).
+    return (
+      <div className="flex flex-col gap-1">
+        <span className="text-xs text-muted">{spec.name}</span>
+        <CodeEditor
+          value={value}
+          onChange={onChange}
+          language={language}
+          ariaLabel={spec.name}
+          minLines={spec.rows ?? 3}
+          maxLines={14}
+        />
+        {error && <p className="text-xs text-error">{error}</p>}
+      </div>
+    );
+  }
   return (
     <Field label={spec.name} error={error} hint={spec.role === 'cloze' ? t('bookPanel.form.gapHint') : undefined}>
       {({ id, describedBy, invalid }) =>
-        spec.role === 'line' ? (
+        spec.role === 'select' ? (
+          <Select id={id} value={value} aria-describedby={describedBy} onChange={(e) => onChange(e.target.value)}>
+            {(spec.options ?? []).map((o) => (
+              <option key={o} value={o}>
+                {codeOptionLabel(o)}
+              </option>
+            ))}
+          </Select>
+        ) : spec.role === 'line' ? (
           <Input
             id={id}
             ref={inputRef}

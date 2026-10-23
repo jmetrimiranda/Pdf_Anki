@@ -31,6 +31,8 @@ core-epub = { path = "crates/core-epub" }
 core-vocab = { path = "crates/core-vocab" }
 core-store = { path = "crates/core-store" }
 core-ai = { path = "crates/core-ai" }
+core-code = { path = "crates/core-code" }
+core-cpp = { path = "crates/core-cpp" }
 
 # --- Shared. rusqlite MUST stay on Anki's version (one libsqlite3-sys in the graph).
 rusqlite = { version = "0.36.0", features = ["bundled"] }

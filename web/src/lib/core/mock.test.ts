@@ -324,8 +324,13 @@ describe('mock Anki decks', () => {
 
   it('prepares the collection idempotently', async () => {
     const first = await mockClient.ankiPrepareCollection();
-    expect(first.created.sort()).toEqual(['Cloze (Leitor)', 'Código · Programa']);
-    expect(first.existing.sort()).toEqual(['Básico (Leitor)', 'Código · Comando', 'Vocabulário · Livro']);
+    expect(first.created.sort()).toEqual(['Cloze (Leitor)']);
+    expect(first.existing.sort()).toEqual([
+      'Básico (Leitor)',
+      'Código · Comando',
+      'Código · Programa',
+      'Vocabulário · Livro',
+    ]);
     const second = await mockClient.ankiPrepareCollection();
     expect(second.created).toEqual([]);
     expect(second.existing).toHaveLength(5);

@@ -77,6 +77,19 @@
     "allow-reading-session-heartbeat",
     "allow-reading-session-stop",
     "allow-pending-open-paths",
-    "allow-pending-deep-links"
+    "allow-pending-deep-links",
+    "allow-code-mapping-list",
+    "allow-code-mapping-set",
+    "allow-code-note-extra-get",
+    "allow-code-note-extra-set",
+    "allow-code-accept-answer",
+    "allow-code-run-cpp",
+    "allow-code-format-cpp",
+    "allow-code-status",
+    "allow-code-settings-get",
+    "allow-code-settings-set",
+    "allow-code-runner-test",
+    "allow-code-import-markdown",
+    "allow-code-import-commit"
   ]
 }

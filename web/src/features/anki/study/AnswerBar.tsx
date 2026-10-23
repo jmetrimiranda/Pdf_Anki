@@ -87,6 +87,8 @@ export function AnswerButtons({
   disabled,
   goodRef,
   compact,
+  suggested,
+  groupRef,
 }: {
   labels: [string, string, string, string];
   showIntervals: boolean;
@@ -95,12 +97,22 @@ export function AnswerButtons({
   goodRef?: Ref<HTMLButtonElement>;
   /** The book panel's mini-review: four narrow buttons in one row. */
   compact?: boolean;
+  /** Code cards (spec 11.2): the rating suggested by the check, shown preselected (`null`: none). */
+  suggested?: Rating | null | undefined;
+  /** The group (focused when a code card has no suggestion: Enter then does nothing). */
+  groupRef?: Ref<HTMLDivElement>;
 }) {
   return (
     <div
+      ref={groupRef}
+      tabIndex={-1}
+      data-testid="answer-buttons"
       role="group"
       aria-label={t('anki.study.answerButtons')}
-      className={cn('grid w-full', compact ? 'grid-cols-4 gap-1' : 'max-w-2xl grid-cols-2 gap-2 sm:grid-cols-4')}
+      className={cn(
+        'grid w-full outline-none',
+        compact ? 'grid-cols-4 gap-1' : 'max-w-2xl grid-cols-2 gap-2 sm:grid-cols-4',
+      )}
     >
       {ANSWERS.map(({ rating, label }) => {
         const interval = labels[rating - 1] ?? '';
@@ -118,10 +130,20 @@ export function AnswerButtons({
               type="button"
               disabled={disabled}
               onClick={() => onAnswer(rating)}
-              aria-keyshortcuts={rating === 3 ? '3 Space Enter' : String(rating)}
+              aria-keyshortcuts={
+                (suggested === undefined ? rating === 3 : suggested === rating)
+                  ? `${rating} Space Enter`
+                  : String(rating)
+              }
               aria-label={showIntervals && interval ? `${t(label)} (${interval})` : t(label)}
               data-rating={rating}
-              className={cn(compact ? compactButton : barButton, 'w-full', rating === 3 && 'font-semibold')}
+              data-suggested={suggested === rating ? 'true' : undefined}
+              className={cn(
+                compact ? compactButton : barButton,
+                'w-full',
+                suggested === undefined && rating === 3 && 'font-semibold',
+                suggested === rating && 'border-lime bg-lime-soft font-semibold text-lime-dark',
+              )}
             >
               {t(label)}
             </button>

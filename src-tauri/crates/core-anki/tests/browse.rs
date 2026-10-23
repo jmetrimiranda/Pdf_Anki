@@ -62,7 +62,8 @@ async fn searches_with_anki_syntax() -> anyhow::Result<()> {
     let due = search(svc, "deck:\"5000 palavras\" is:due").await?;
     assert!(due.len() >= 3, "{due:?}");
     assert_eq!(count(svc, "is:new deck:Oxford*").await, 5);
-    assert_eq!(count(svc, "tag:ros2").await, 3);
+    // 2 app commands + the type-in note + 3 user-type commands.
+    assert_eq!(count(svc, "tag:ros2").await, 6);
     assert_eq!(count(svc, "house").await, 1);
     assert_eq!(count(svc, "-deck:\"5000 palavras\" house").await, 0);
     Ok(())

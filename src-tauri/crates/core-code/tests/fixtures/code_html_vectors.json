@@ -1,0 +1,153 @@
+[
+  {
+    "name": "plain command",
+    "text": "ros2 topic list",
+    "html": "ros2 topic list"
+  },
+  {
+    "name": "less than and ampersand",
+    "text": "if a < b && c > d:\n    print(\"x & y\")",
+    "html": "if a &lt; b &amp;&amp; c &gt; d:<br>    print(\"x &amp; y\")"
+  },
+  {
+    "name": "literal entity text",
+    "text": "&amp;lt; stays literal &lt; &amp; too &#60;",
+    "html": "&amp;amp;lt; stays literal &amp;lt; &amp;amp; too &amp;#60;"
+  },
+  {
+    "name": "literal br tag text",
+    "text": "line<br>still one line <br/> <div>x</div>",
+    "html": "line&lt;br&gt;still one line &lt;br/&gt; &lt;div&gt;x&lt;/div&gt;"
+  },
+  {
+    "name": "script text",
+    "text": "<script>alert(1)</script>",
+    "html": "&lt;script&gt;alert(1)&lt;/script&gt;"
+  },
+  {
+    "name": "tabs",
+    "text": "a\tb\t\tc\n\tindented",
+    "html": "a\tb\t\tc<br>\tindented"
+  },
+  {
+    "name": "trailing spaces",
+    "text": "trailing spaces   \nnext line  ",
+    "html": "trailing spaces   <br>next line  "
+  },
+  {
+    "name": "empty lines",
+    "text": "first\n\n\nafter empty lines",
+    "html": "first<br><br><br>after empty lines"
+  },
+  {
+    "name": "leading and trailing newlines",
+    "text": "\n\nmiddle\n\n",
+    "html": "<br><br>middle<br><br>"
+  },
+  {
+    "name": "only newline",
+    "text": "\n",
+    "html": "<br>"
+  },
+  {
+    "name": "empty",
+    "text": "",
+    "html": ""
+  },
+  {
+    "name": "unicode",
+    "text": "unicode: ação → ✓ 日本語 🚀",
+    "html": "unicode: ação → ✓ 日本語 🚀"
+  },
+  {
+    "name": "nbsp char stays",
+    "text": "a b",
+    "html": "a b"
+  },
+  {
+    "name": "quotes",
+    "text": "echo \"$HOME\" 'single' `tick`",
+    "html": "echo \"$HOME\" 'single' `tick`"
+  },
+  {
+    "name": "cpp",
+    "text": "#include <vector>\nint main() {\n  std::vector<int> v{1, 2};\n  return v[0] >> 1;\n}\n",
+    "html": "#include &lt;vector&gt;<br>int main() {<br>  std::vector&lt;int&gt; v{1, 2};<br>  return v[0] &gt;&gt; 1;<br>}<br>"
+  },
+  {
+    "name": "crlf is normalized",
+    "text": "a\r\nb\rc",
+    "html": "a<br>b<br>c",
+    "readsAs": "a\nb\nc"
+  },
+  {
+    "name": "anki div lines",
+    "html": "<div>ros2 run turtlesim</div><div>turtlesim_node</div>",
+    "readsAs": "ros2 run turtlesim\nturtlesim_node"
+  },
+  {
+    "name": "anki empty div line",
+    "html": "<div>a</div><div><br></div><div>b</div>",
+    "readsAs": "a\n\nb"
+  },
+  {
+    "name": "text then div",
+    "html": "first<div>second</div>",
+    "readsAs": "first\nsecond"
+  },
+  {
+    "name": "br then div",
+    "html": "a<br><div>b</div>",
+    "readsAs": "a\nb"
+  },
+  {
+    "name": "nbsp runs",
+    "html": "a&nbsp;&nbsp;&nbsp;b&nbsp;",
+    "readsAs": "a   b "
+  },
+  {
+    "name": "br variants",
+    "html": "a<br/>b<br />c<BR>d",
+    "readsAs": "a\nb\nc\nd"
+  },
+  {
+    "name": "bold inside",
+    "html": "<b>sudo</b> apt <i>install</i> x",
+    "readsAs": "sudo apt install x"
+  },
+  {
+    "name": "numeric entities",
+    "html": "&#60;tag&#x3E; &#X41;",
+    "readsAs": "<tag> A"
+  },
+  {
+    "name": "one pass unescape",
+    "html": "&amp;lt;",
+    "readsAs": "&lt;"
+  },
+  {
+    "name": "unknown entity kept",
+    "html": "&foo; &#0; &",
+    "readsAs": "&foo; &#0; &"
+  },
+  {
+    "name": "paragraphs",
+    "html": "<p>one</p><p>two</p>",
+    "readsAs": "one\ntwo"
+  },
+  {
+    "name": "span with attributes",
+    "html": "<span style=\"color: red\">x</span>&gt;y",
+    "readsAs": "x>y"
+  },
+  {
+    "name": "not a tag",
+    "html": "a <not_a_tag> b < c",
+    "readsAs": "a <not_a_tag> b < c"
+  },
+  {
+    "name": "leading empty div",
+    "html": "<div><br></div><div>x</div>",
+    "readsAs": "\nx"
+  }
+]

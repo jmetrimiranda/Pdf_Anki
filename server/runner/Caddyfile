@@ -1,0 +1,25 @@
+# The only ingress of the local runner (compose.dev.yml, service runner-dev-proxy), mirroring Caddy on the VPS
+# (`https://runner.<domínio>/`, server/compose.leitor.yml). Local tests only: plain HTTP on the dev network.
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+:8080 {
+	# Coarse guard well above the runner's own 1 MiB limit: the runner answers 413 itself (Caddy turns its own
+	# limit into a 502 mid-proxy, which clients can't tell from a dead upstream).
+	request_body {
+		max_size 8MB
+	}
+	reverse_proxy runner-dev:8080 {
+		transport http {
+			read_timeout 60s
+			write_timeout 60s
+		}
+	}
+	log {
+		output stderr
+		level WARN
+	}
+}

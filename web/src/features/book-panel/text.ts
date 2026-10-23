@@ -1,5 +1,5 @@
 // Text helpers of the card form (spec 10.2): PDF selections come with line breaks, hyphenation and odd spacing.
-import type { PageWords, Rect } from '../../lib/core/types';
+import type { BookCardKind, PageWords, Rect } from '../../lib/core/types';
 import { escapeHtml } from './fonte';
 
 /** Prose: joins words hyphenated across lines ("wind-\nmill" → "windmill") and collapses whitespace to spaces. */
@@ -138,4 +138,156 @@ export function previewLine(text: string, max = 80): string {
         .slice(0, max - 1)
         .join('')
         .trimEnd()}…`;
+}
+
+// ---------------------------------------------------------------- Code selections (spec 10.2, 11.7)
+
+/** Programs that make a line read as a shell command (spec 11.3 tools and common utilities). */
+export const COMMAND_PROGRAMS: readonly string[] = [
+  'ros2',
+  'sudo',
+  'apt',
+  'apt-get',
+  'colcon',
+  'source',
+  '.',
+  'ls',
+  'cd',
+  'cp',
+  'mv',
+  'rm',
+  'mkdir',
+  'grep',
+  'tar',
+  'chmod',
+  'git',
+  'pip',
+  'python3',
+  'docker',
+  'cmake',
+  'make',
+  'g++',
+  'gcc',
+  'catkin',
+  'rosdep',
+  'export',
+];
+
+/** Programs that are also English words: they need a technical token (`-x`, `a/b`, `x.y`, `A=1`…) or a prompt. */
+const WORDLIKE = new Set(['source', '.', 'make', 'export', 'git', 'pip', 'docker', 'tar', 'cd', 'cp', 'mv', 'rm']);
+
+/** Subcommands that make a word-like program a command on their own (`pip install numpy`, `git status`). */
+const SUBCOMMANDS: Record<string, readonly string[]> = {
+  pip: ['install', 'uninstall', 'list', 'show', 'freeze'],
+  git: ['clone', 'status', 'add', 'commit', 'push', 'pull', 'checkout', 'log', 'diff', 'branch', 'init', 'switch'],
+  docker: ['run', 'build', 'ps', 'pull', 'push', 'exec', 'compose', 'images'],
+  make: ['install', 'clean', 'all', 'test'],
+};
+
+const PROMPT = /^\s*[$#]\s+/;
+
+/** A command line without its `$ ` / `# ` prompt. */
+export function stripPrompt(line: string): string {
+  return line.replace(PROMPT, '');
+}
+
+/** Selected command text with the prompt of every line removed (code layout kept). */
+export function commandText(raw: string): string {
+  return codeText(raw)
+    .split('\n')
+    .map((l) => stripPrompt(l))
+    .join('\n');
+}
+
+/** Sentence-like punctuation: a word ending in `.!?` (not `./x`), `, ` between words, typographic quotes/dashes. */
+function looksLikeProse(line: string): boolean {
+  if (/[“”‘’—–]/.test(line)) return true;
+  if (/\p{L}{2,}[.!?]["')]?$/u.test(line)) return true;
+  if (/\p{L}, \p{L}/u.test(line)) return true;
+  return false;
+}
+
+const TECHNICAL = /(^|\s)(-{1,2}[\w-]|[\w.~-]*\/[\w./~-]*|\S+\.\S+|[A-Z_][A-Z0-9_]*=|\$[\w({]|~)/;
+
+function commandLine(line: string): boolean {
+  const prompted = PROMPT.test(line);
+  const l = stripPrompt(line).trim();
+  if (!l) return false;
+  const first = l.split(/\s+/)[0]!;
+  const program = COMMAND_PROGRAMS.includes(first);
+  const operators = /\s--[a-z][\w-]*|\s\|\s|\s&&\s/.test(l);
+  // A prompt with a program-looking first word is enough ("$ foo bar").
+  if (prompted && /^[\w./+-]+$/.test(first)) return true;
+  if (looksLikeProse(l)) return false;
+  if (program) {
+    if (!WORDLIKE.has(first)) return true;
+    const rest = l.slice(first.length);
+    const sub = rest.trim().split(/\s+/)[0] ?? '';
+    return TECHNICAL.test(rest) || operators || (SUBCOMMANDS[first]?.includes(sub) ?? false);
+  }
+  return operators && /^[a-z0-9_./+-]+$/.test(first);
+}
+
+/** 1–3 lines that read as shell commands (a line ending in `\` continues on the next). */
+export function looksLikeCommand(raw: string): boolean {
+  const lines = codeText(raw)
+    .split('\n')
+    .filter((l) => l.trim());
+  if (!lines.length || lines.length > 3) return false;
+  let continued = false;
+  for (const line of lines) {
+    if (!continued && !commandLine(line)) return false;
+    continued = /\\$/.test(line);
+  }
+  return true;
+}
+
+export type CodeLanguage = 'python' | 'cpp';
+
+interface CodeScore {
+  python: number;
+  cpp: number;
+}
+
+function codeScore(code: string): CodeScore {
+  const lines = code.split('\n').filter((l) => l.trim());
+  let python = 0;
+  let cpp = 0;
+  if (/^\s*def \w+\s*\(.*\)\s*(->\s*[\w[\], .]+)?:\s*$/m.test(code)) python += 2;
+  if (/^\s*class \w+(\([\w., ]*\))?:\s*$/m.test(code)) python += 2;
+  if (/^\s*from [\w.]+ import [\w*, ]+$/m.test(code)) python += 2;
+  if (/^\s*import [\w.]+(\s+as \w+)?(, [\w.]+)*\s*$/m.test(code)) python += 1;
+  if (/^\s*print\(.*\)\s*$/m.test(code)) python += 2;
+  if (/^\s*(if|for|while|elif|else|try|except|with)\b.*:\s*\n[ \t]+\S/m.test(code)) python += 1;
+  if (/^\s*#include\s*[<"]/m.test(code)) cpp += 3;
+  if (/\bstd::\w/.test(code)) cpp += 2;
+  if (/\bint\s+main\s*\(/.test(code)) cpp += 3;
+  const cLike = lines.filter((l) => /[;{}]\s*$/.test(l)).length;
+  if (lines.length >= 2 && cLike / lines.length >= 0.5) cpp += 1;
+  if (/^\s*(auto|int|void|double|float|bool|char|const)\s+[\w:*&<>]+\s*[(=;]/m.test(code)) cpp += 1;
+  return { python, cpp };
+}
+
+/** `python` or `cpp` by the code's markers (`python` when undecided). */
+export function guessLanguage(raw: string): CodeLanguage {
+  const s = codeScore(codeText(raw));
+  return s.cpp > s.python ? 'cpp' : 'python';
+}
+
+/** Multi-line text with clear Python or C++ markers. */
+export function looksLikeProgram(raw: string): boolean {
+  const code = codeText(raw);
+  if (code.split('\n').filter((l) => l.trim()).length < 2) return false;
+  const s = codeScore(code);
+  return Math.max(s.python, s.cpp) >= 2;
+}
+
+/**
+ * The card kind a selection suggests (spec 10.2/11.7): Código · Comando for 1–3 shell command lines, Código ·
+ * Programa for multi-line Python/C++, otherwise Básico (prose never becomes code).
+ */
+export function suggestKind(text: string): BookCardKind {
+  if (looksLikeCommand(text)) return 'codeCommand';
+  if (looksLikeProgram(text)) return 'codeProgram';
+  return 'basic';
 }

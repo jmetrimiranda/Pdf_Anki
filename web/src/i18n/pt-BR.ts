@@ -5,6 +5,8 @@ import { ankiShellMessages } from './pt-BR/ankiShell';
 import { ankiStudyMessages } from './pt-BR/ankiStudy';
 import { ankiSyncMessages } from './pt-BR/ankiSync';
 import { bookPanelMessages } from './pt-BR/bookPanel';
+import { codeAuthoringMessages } from './pt-BR/codeAuthoring';
+import { codeReviewMessages } from './pt-BR/codeReview';
 import { leitorBridgeMessages } from './pt-BR/leitorBridge';
 import { miniReviewMessages } from './pt-BR/miniReview';
 
@@ -283,6 +285,8 @@ export const messageSections = {
   bookPanel: bookPanelMessages,
   miniReview: miniReviewMessages,
   leitorBridge: leitorBridgeMessages,
+  codeReview: codeReviewMessages,
+  codeAuthoring: codeAuthoringMessages,
 } as const;
 
 export const ptBR = {
@@ -294,6 +298,8 @@ export const ptBR = {
   ...bookPanelMessages,
   ...miniReviewMessages,
   ...leitorBridgeMessages,
+  ...codeReviewMessages,
+  ...codeAuthoringMessages,
 } as const;
 
 export type Messages = typeof ptBR;

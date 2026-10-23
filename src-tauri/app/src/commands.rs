@@ -2,6 +2,7 @@
 //! a thin wrapper over an [`AppState`] method run on the blocking pool. File bytes travel as raw
 //! IPC bodies (`tauri::ipc::Request` / `Response`), never as JSON arrays.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -16,13 +17,20 @@ use core_anki::{
     BackupInfo, DeckName, DeckTree, ExportOptions, ExportResult, FullSyncDirection, ImportSummary,
     PrepareReport,
 };
+use core_code::ImportPreview;
+use core_cpp::CppRunResult;
 use core_pdf::PageWords;
+use core_store::CodeMappingFields;
 use core_store::{ClosedSession, LibraryEntry, ReadingPosition};
 use tauri::State;
 use tauri::ipc::{InvokeBody, Request, Response};
 
 use crate::anki::{ChangeNotetypePrepared, DeckDeleted};
 use crate::book_panel::{BookPanelInfo, BookPanelPatch, WordDefinition};
+use crate::code::{
+    self, CodeAcceptResult, CodeFormatted, CodeImportResult, CodeMapping, CodeNoteExtra,
+    CodeSettings, CodeSettingsPatch, CodeStatus, RunnerTestResult,
+};
 use crate::deep_link::DeepLink;
 use crate::error::AppError;
 use crate::library::{AddedBook, BookOpen, LibraryPatch, SavedVersion};
@@ -865,4 +873,112 @@ mod tests {
         assert_eq!(kind, ExportKind::Apkg);
         assert!(serde_json::from_value::<ExportKind>(serde_json::json!("exe")).is_err());
     }
+}
+
+// --- Code cards (spec 11) -------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn code_mapping_list(state: Shared<'_>) -> Result<Vec<CodeMapping>, AppError> {
+    anki_ready(&state).await?;
+    state.code_mapping_list().await
+}
+
+#[tauri::command]
+pub async fn code_mapping_set(
+    state: Shared<'_>,
+    notetype_id: i64,
+    fields: Option<CodeMappingFields>,
+) -> Result<Vec<CodeMapping>, AppError> {
+    anki_ready(&state).await?;
+    state.code_mapping_set(notetype_id, fields).await
+}
+
+#[tauri::command]
+pub async fn code_note_extra_get(
+    state: Shared<'_>,
+    note_id: i64,
+) -> Result<CodeNoteExtra, AppError> {
+    blocking(&state, move |s| s.code_note_extra_get(note_id)).await
+}
+
+#[tauri::command]
+pub async fn code_note_extra_set(
+    state: Shared<'_>,
+    note_id: i64,
+    accepted: Vec<String>,
+    requires: Vec<String>,
+) -> Result<CodeNoteExtra, AppError> {
+    blocking(&state, move |s| {
+        s.code_note_extra_set(note_id, accepted, requires)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn code_accept_answer(
+    state: Shared<'_>,
+    note_id: i64,
+    answer: String,
+) -> Result<CodeAcceptResult, AppError> {
+    anki_ready(&state).await?;
+    state.code_accept_answer(note_id, answer).await
+}
+
+#[tauri::command]
+pub async fn code_run_cpp(
+    state: Shared<'_>,
+    files: BTreeMap<String, String>,
+    stdin: String,
+) -> Result<CppRunResult, AppError> {
+    let target = blocking(&state, |s| s.code_cpp_target()).await?;
+    code::run_cpp_on(target, files, stdin).await
+}
+
+#[tauri::command]
+pub async fn code_format_cpp(code: String) -> Result<CodeFormatted, AppError> {
+    code::format_cpp(code).await
+}
+
+#[tauri::command]
+pub async fn code_status(state: Shared<'_>) -> Result<CodeStatus, AppError> {
+    blocking(&state, |s| s.code_status()).await
+}
+
+#[tauri::command]
+pub async fn code_settings_get(state: Shared<'_>) -> Result<CodeSettings, AppError> {
+    blocking(&state, |s| s.code_settings_get()).await
+}
+
+#[tauri::command]
+pub async fn code_settings_set(
+    state: Shared<'_>,
+    patch: CodeSettingsPatch,
+) -> Result<CodeSettings, AppError> {
+    blocking(&state, move |s| s.code_settings_set(patch)).await
+}
+
+#[tauri::command]
+pub async fn code_runner_test(state: Shared<'_>) -> Result<RunnerTestResult, AppError> {
+    let runner = blocking(&state, |s| s.code_runner()).await?;
+    code::code_runner_test(runner).await
+}
+
+#[tauri::command]
+pub async fn code_import_markdown(
+    state: Shared<'_>,
+    text: String,
+) -> Result<ImportPreview, AppError> {
+    anki_ready(&state).await?;
+    state.code_import_markdown(text).await
+}
+
+#[tauri::command]
+pub async fn code_import_commit(
+    state: Shared<'_>,
+    text: String,
+    deck_id: i64,
+    include: Vec<u32>,
+) -> Result<CodeImportResult, AppError> {
+    anki_ready(&state).await?;
+    state.code_import_commit(text, deck_id, include).await
 }

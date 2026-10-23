@@ -7,6 +7,7 @@ import type { Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
 import ankiCard from './vite-plugin-anki-card';
 import pdfcraft from './vite-plugin-pdfcraft';
+import pyodide from './vite-plugin-pyodide';
 
 const PAGE_BRIDGE = fileURLToPath(new URL('../src-tauri/app/assets/anki-page/page-bridge.js', import.meta.url));
 const MOCK_ANKI_PAGE = '/__mock-anki-page/';
@@ -81,8 +82,9 @@ function mockAnkiPages(): Plugin {
 // Tauri expects a fixed dev port and exposes TAURI_* env vars to the frontend.
 export default defineConfig({
   // pdfcraft(): PdfCraft web at /pdfcraft/ on the same origin (spec 6.1).
+  // pyodide(): the vendored Pyodide at /pyodide/ for the Python code cards' worker (spec 11.4).
   // ankiCard(): the card frame for the study screen in dev/mock; mockAnkiPages(): Anki pages of the mock core.
-  plugins: [react(), tailwindcss(), pdfcraft(), ankiCard(), mockAnkiPages()],
+  plugins: [react(), tailwindcss(), pdfcraft(), pyodide(), ankiCard(), mockAnkiPages()],
   clearScreen: false,
   envPrefix: ['VITE_', 'TAURI_'],
   server: {
@@ -93,6 +95,8 @@ export default defineConfig({
     // Performance runs (LEITOR_PERF=1): a hot update would remount the Leitor mid-measurement.
     hmr: process.env.LEITOR_PERF !== '1',
   },
+  // The Python worker is a module worker (it imports Pyodide's pyodide.mjs at run time).
+  worker: { format: 'es' },
   build: {
     target: 'es2022',
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
@@ -101,8 +105,16 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
-    include: ['src/**/*.test.{ts,tsx}', 'vite-plugin-pdfcraft.test.ts', 'vite-plugin-anki-card.test.ts'],
+    include: [
+      'src/**/*.test.{ts,tsx}',
+      'vite-plugin-pdfcraft.test.ts',
+      'vite-plugin-anki-card.test.ts',
+      'vite-plugin-pyodide.test.ts',
+      'pyodide-harness.test.ts',
+    ],
     setupFiles: ['src/test/setup.ts'],
     css: false,
+    // The vendored Pyodide (harness.test.ts) is loaded by Node itself, not transformed.
+    server: { deps: { external: [/resources\/pyodide\//] } },
   },
 });

@@ -6,6 +6,7 @@
 pub mod anki;
 pub mod anki_web;
 pub mod book_panel;
+pub mod code;
 mod commands;
 pub mod deep_link;
 mod error;
@@ -275,6 +276,19 @@ macro_rules! app_commands {
             commands::reading_session_stop,
             commands::pending_open_paths,
             commands::pending_deep_links,
+            commands::code_mapping_list,
+            commands::code_mapping_set,
+            commands::code_note_extra_get,
+            commands::code_note_extra_set,
+            commands::code_accept_answer,
+            commands::code_run_cpp,
+            commands::code_format_cpp,
+            commands::code_status,
+            commands::code_settings_get,
+            commands::code_settings_set,
+            commands::code_runner_test,
+            commands::code_import_markdown,
+            commands::code_import_commit,
             $($extra),*
         ]
     };

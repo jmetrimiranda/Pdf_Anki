@@ -149,6 +149,7 @@ fn serde_shapes_match_the_ts_contract() {
                 record(&mut out, "StudyNext.card", &v);
                 let card = &v["card"];
                 record(&mut out, "StudyCard", card);
+                record_code(&mut out, card);
                 record(&mut out, "QueueCounts", &card["counts"]);
                 record_av(&mut out, &card["questionAv"]);
                 record_av(&mut out, &card["answerAv"]);
@@ -344,6 +345,7 @@ fn serde_shapes_match_the_ts_contract() {
         query: Some("windmill".into()),
     };
     record(&mut out, "DeepLink", &serde_json::to_value(link).unwrap());
+    code_samples(&state, &info, &mut out);
     state.shutdown();
 
     for required in [
@@ -370,6 +372,25 @@ fn serde_shapes_match_the_ts_contract() {
         "WordDefinition",
         "WordDefinition.note",
         "DeepLink",
+        "CodeCard",
+        "CodeCardFields",
+        "CodeMapping",
+        "CodeMappingFields",
+        "CodeNoteExtra",
+        "CodeAcceptResult",
+        "CppRunResult",
+        "CppCompileResult",
+        "CppRunOutput",
+        "CodeStatus",
+        "CppStatus",
+        "LocalCppStatus",
+        "RemoteCppStatus",
+        "CodeSettings",
+        "RunnerTestResult",
+        "CodeFormatted",
+        "ImportPreview",
+        "ImportItem",
+        "CodeImportResult",
     ] {
         assert!(
             out.contains_key(required),
@@ -391,4 +412,159 @@ fn serde_shapes_match_the_ts_contract() {
     });
     let expected: BTreeMap<String, Vec<String>> = serde_json::from_str(&expected).unwrap();
     assert_eq!(out, expected, "Rust serde shapes differ from contract.json");
+}
+
+/// `StudyCard.code` of a code card (`null` for the others).
+fn record_code(out: &mut BTreeMap<String, Vec<String>>, card: &Value) {
+    let code = &card["code"];
+    if !code.is_null() {
+        record(out, "CodeCard", code);
+        record(out, "CodeCardFields", &code["fields"]);
+    }
+}
+
+/// Code cards (spec 11): the mapped user type studied as a code card, the mapping, extras,
+/// "Contestar", C++ results, status/settings and the Markdown import of the spec's example.
+fn code_samples(
+    state: &AppState,
+    info: &fixture::FixtureInfo,
+    out: &mut BTreeMap<String, Vec<String>>,
+) {
+    use leitor_app::code::{
+        CodeFormatted, CodeStatus, CppBackendEffective, CppStatus, LocalCppStatus, RemoteCppStatus,
+        RunnerTestResult,
+    };
+
+    let user = info.notetypes["usuarioComando"];
+    let fields = core_store::CodeMappingFields {
+        question: "Frente".into(),
+        answer: "Comando".into(),
+        notes: Some("Explicação".into()),
+    };
+    let list = block_on(state.code_mapping_set(user, Some(fields))).unwrap();
+    let mapping = serde_json::to_value(&list[0]).unwrap();
+    record(out, "CodeMapping", &mapping);
+    record(out, "CodeMappingFields", &mapping["fields"]);
+    // The mapped user card, studied as a code card.
+    let ros = info.decks["ROS 2 — Revisão"];
+    let mut next = block_on(state.anki_study_next(ros, None)).unwrap();
+    let mut mapped = false;
+    for _ in 0..20 {
+        let StudyNext::Card { card } = &next else {
+            break;
+        };
+        let v = serde_json::to_value(card).unwrap();
+        record(out, "StudyCard", &v);
+        record_code(out, &v);
+        if card.code.as_ref().is_some_and(|c| c.notetype_id == user) {
+            mapped = true;
+            break;
+        }
+        next = block_on(state.anki_answer(card.card_id, 3, 1000)).unwrap();
+    }
+    assert!(
+        mapped,
+        "the mapped user card was not studied as a code card"
+    );
+    state.anki_study_close(None).unwrap();
+
+    let note = info.notes["comandoUsuario"];
+    let extra = state
+        .code_note_extra_set(note, vec!["ls -la".into()], vec!["sudo".into()])
+        .unwrap();
+    record(out, "CodeNoteExtra", &serde_json::to_value(&extra).unwrap());
+    let accepted = block_on(state.code_accept_answer(note, "ls -l -a".into())).unwrap();
+    record(
+        out,
+        "CodeAcceptResult",
+        &serde_json::to_value(&accepted).unwrap(),
+    );
+
+    // C++ results are built here so the snapshot does not depend on a compiler being installed.
+    let run = core_cpp::CppRunResult {
+        backend: core_cpp::Backend::Local,
+        compiler: Some("g++ (Debian 12.2.0-14) 12.2.0".into()),
+        compile: core_cpp::CompileResult {
+            ok: true,
+            stderr: String::new(),
+            time_ms: 420,
+        },
+        run: Some(core_cpp::RunResult {
+            exit_code: Some(0),
+            signal: None,
+            stdout: "PASS quadrado(3) == 9\n".into(),
+            stderr: String::new(),
+            time_ms: 3,
+            timed_out: false,
+            truncated: false,
+        }),
+    };
+    let run = serde_json::to_value(&run).unwrap();
+    record(out, "CppRunResult", &run);
+    record(out, "CppCompileResult", &run["compile"]);
+    record(out, "CppRunOutput", &run["run"]);
+    let status = CodeStatus {
+        cpp: CppStatus {
+            local: Some(LocalCppStatus {
+                compiler: Some("g++ (Debian 12.2.0-14) 12.2.0".into()),
+                clang_format: true,
+            }),
+            remote: RemoteCppStatus {
+                url: Some("http://runner-proxy:8080/".into()),
+                token_set: true,
+            },
+        },
+        cpp_backend: CppBackendEffective::Local,
+    };
+    let status = serde_json::to_value(&status).unwrap();
+    record(out, "CodeStatus", &status);
+    record(out, "CppStatus", &status["cpp"]);
+    record(out, "LocalCppStatus", &status["cpp"]["local"]);
+    record(out, "RemoteCppStatus", &status["cpp"]["remote"]);
+    let real = serde_json::to_value(state.code_status().unwrap()).unwrap();
+    record(out, "CodeStatus", &real);
+    record(out, "RemoteCppStatus", &real["cpp"]["remote"]);
+    let settings = serde_json::to_value(state.code_settings_get().unwrap()).unwrap();
+    record(out, "CodeSettings", &settings);
+    let test = RunnerTestResult {
+        ok: false,
+        message: "Informe o endereço e o token do runner.".into(),
+    };
+    record(
+        out,
+        "RunnerTestResult",
+        &serde_json::to_value(&test).unwrap(),
+    );
+    let real = block_on(state.code_runner_test()).unwrap();
+    record(
+        out,
+        "RunnerTestResult",
+        &serde_json::to_value(&real).unwrap(),
+    );
+    let formatted = CodeFormatted {
+        formatted: "int main() {}\n".into(),
+        formatter: Some("clang-format"),
+    };
+    record(
+        out,
+        "CodeFormatted",
+        &serde_json::to_value(&formatted).unwrap(),
+    );
+
+    let example = include_str!("../../crates/core-code/tests/fixtures/import_example.md");
+    let preview =
+        serde_json::to_value(block_on(state.code_import_markdown(example.into())).unwrap())
+            .unwrap();
+    record(out, "ImportPreview", &preview);
+    for item in preview["items"].as_array().unwrap() {
+        record(out, "ImportItem", item);
+    }
+    let words = info.decks[fixture::DECK_WORDS];
+    let imported = block_on(state.code_import_commit(example.into(), words, vec![0, 1])).unwrap();
+    assert_eq!(imported.added, 2);
+    record(
+        out,
+        "CodeImportResult",
+        &serde_json::to_value(&imported).unwrap(),
+    );
 }

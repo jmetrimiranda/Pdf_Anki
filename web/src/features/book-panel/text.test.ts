@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { PageWords } from '../../lib/core/types';
-import { codeText, exampleSentence, previewLine, proseText, proseToHtml, singleWord } from './text';
+import {
+  codeText,
+  commandText,
+  exampleSentence,
+  guessLanguage,
+  previewLine,
+  proseText,
+  proseToHtml,
+  singleWord,
+  suggestKind,
+} from './text';
 
 function page(text: string): PageWords {
   const words = [...text.matchAll(/\S+/g)].map((m, index) => ({
@@ -79,5 +89,73 @@ describe('previewLine', () => {
   it('cuts with an ellipsis', () => {
     expect(previewLine('a\nb')).toBe('a b');
     expect(previewLine('x'.repeat(100), 10)).toBe(`${'x'.repeat(9)}…`);
+  });
+});
+
+describe('suggestKind', () => {
+  const cases: [string, 'basic' | 'codeCommand' | 'codeProgram'][] = [
+    // Commands (1–3 lines).
+    ['ros2 run turtlesim turtlesim_node', 'codeCommand'],
+    ['$ ros2 run turtlesim turtlesim_node', 'codeCommand'],
+    ['# apt install ros-jazzy-desktop', 'codeCommand'],
+    ['sudo apt install ros-humble-desktop', 'codeCommand'],
+    ['apt-get update', 'codeCommand'],
+    ['colcon build --packages-select my_pkg', 'codeCommand'],
+    ['source install/setup.bash', 'codeCommand'],
+    ['. install/setup.bash', 'codeCommand'],
+    ['ls -la', 'codeCommand'],
+    ['cd ~/ros2_ws/src', 'codeCommand'],
+    ['mkdir -p ~/ros2_ws/src', 'codeCommand'],
+    ['grep -rn "talker" src', 'codeCommand'],
+    ['tar -xzf ros.tar.gz', 'codeCommand'],
+    ['chmod +x script.py', 'codeCommand'],
+    ['git clone https://github.com/ros/ros_tutorials.git -b jazzy', 'codeCommand'],
+    ['pip install numpy', 'codeCommand'],
+    ['python3 talker.py', 'codeCommand'],
+    ['docker run --rm -it ros:jazzy', 'codeCommand'],
+    ['cmake ..', 'codeCommand'],
+    ['make -j4', 'codeCommand'],
+    ['g++ -std=c++20 main.cpp -o main', 'codeCommand'],
+    ['rosdep install -i --from-path src --rosdistro jazzy -y', 'codeCommand'],
+    ['export ROS_DOMAIN_ID=5', 'codeCommand'],
+    ['ros2 topic echo /chatter | head -n 5', 'codeCommand'],
+    ['mytool --verbose run', 'codeCommand'],
+    ['cd ~/ros2_ws\ncolcon build --symlink-install\nsource install/setup.bash', 'codeCommand'],
+    ['ros2 topic pub /turtle1/cmd_vel geometry_msgs/msg/Twist \\\n  "{linear: {x: 2.0}}"', 'codeCommand'],
+    // Programs (multi-line).
+    ['def soma_pares(xs):\n    return sum(x for x in xs if x % 2 == 0)', 'codeProgram'],
+    ['import rclpy\nfrom rclpy.node import Node\n\nclass Talker(Node):\n    pass', 'codeProgram'],
+    ['for i in range(3):\n    print(i)', 'codeProgram'],
+    ['#include <iostream>\nint main() {\n  std::cout << "oi";\n}', 'codeProgram'],
+    ['int soma(int a, int b) {\n  return a + b;\n}', 'codeProgram'],
+    // Prose (Animal Farm) never becomes code.
+    ['All animals are equal, but some animals are more equal than others.', 'basic'],
+    ['Four legs good, two legs bad.', 'basic'],
+    ['Napoleon is always right.', 'basic'],
+    ['make the windmill work again', 'basic'],
+    ['source of all their troubles', 'basic'],
+    ['export the surplus grain to the neighbouring farms.', 'basic'],
+    [
+      'Mr. Jones, of the Manor Farm, had locked the hen-houses for the night,\nbut was too drunk to remember to shut the pop-holes.',
+      'basic',
+    ],
+    [
+      'The creatures outside looked from pig to man, and from man to pig,\nand from pig to man again; but already it was impossible to say which was which.',
+      'basic',
+    ],
+    ['windmill', 'basic'],
+    ['', 'basic'],
+    ['I will work harder.\nNapoleon is always right.\nFour legs good, two legs bad.\nAll animals are equal.', 'basic'],
+  ];
+  it.each(cases)('%j → %s', (text, kind) => {
+    expect(suggestKind(text)).toBe(kind);
+  });
+
+  it('guesses the language and strips prompts', () => {
+    expect(guessLanguage('def f():\n    return 1')).toBe('python');
+    expect(guessLanguage('#include <vector>\nstd::vector<int> v;')).toBe('cpp');
+    expect(commandText('$ ros2 run turtlesim turtlesim_node\n# apt update')).toBe(
+      'ros2 run turtlesim turtlesim_node\napt update',
+    );
   });
 });

@@ -163,6 +163,9 @@ for (const theme of ['light', 'dark'] as const) {
     await page.setViewportSize({ width: 720, height: 900 });
     await page.waitForTimeout(250);
     await page.screenshot({ path: shot(`anki-add-code-narrow-${theme}`, info.project.name) });
+    // Code notes are added once the reference answer passes (spec 11.7).
+    await page.getByRole('button', { name: 'Testar resposta de referência' }).click();
+    await expect(page.getByText('A resposta de referência passou.')).toBeVisible();
     await page.keyboard.press('ControlOrMeta+Enter');
     await expect(page.getByText('Card adicionado')).toBeVisible();
     const log = (await addLogs(page)).at(-1)!;

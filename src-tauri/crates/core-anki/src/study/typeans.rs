@@ -10,6 +10,11 @@ use regex::{Captures, NoExpand, Regex};
 static TYPE_ANS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[\[type:(.+?)\]\]").expect("valid regex"));
 
+/// Removes every `[[type:…]]` marker (code cards have no Anki type box, spec 11.2).
+pub fn strip_type_markers(text: &str) -> String {
+    TYPE_ANS.replace_all(text, "").into_owned()
+}
+
 /// Per-card state set by the question filter and read by the answer filter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeState {

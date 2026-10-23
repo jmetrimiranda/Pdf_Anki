@@ -86,19 +86,23 @@ const ankiDecksRoute = createRoute({ getParentRoute: () => ankiRoute, path: '/',
 const ankiStudyRoute = createRoute({
   getParentRoute: () => ankiRoute,
   path: 'estudar',
-  validateSearch: (s: Record<string, unknown>): { deck?: number; nome?: string; resposta?: boolean } => ({
+  validateSearch: (
+    s: Record<string, unknown>,
+  ): { deck?: number; nome?: string; resposta?: boolean; codigo?: string } => ({
     deck: parseId(s.deck),
     nome: parseText(s.nome),
     resposta: parseFlag(s.resposta),
+    // A typed code answer to check right away (tests, links); kept verbatim (not trimmed).
+    codigo: typeof s.codigo === 'string' && s.codigo ? s.codigo : undefined,
   }),
   component: StudyRoute,
 });
 
 function StudyRoute(): ReactNode {
-  const { deck, nome, resposta } = ankiStudyRoute.useSearch();
+  const { deck, nome, resposta, codigo } = ankiStudyRoute.useSearch();
   return (
     <Lazy>
-      <StudyPage deckId={deck} deckName={nome} showAnswer={resposta} />
+      <StudyPage deckId={deck} deckName={nome} showAnswer={resposta} codeAnswer={codigo} />
     </Lazy>
   );
 }
@@ -116,6 +120,26 @@ function BrowseRoute(): ReactNode {
     <Lazy>
       {/* Remounts when a new search arrives (graphs page, links), so it becomes the initial query. */}
       <BrowsePage key={busca ?? ''} initialQuery={busca} />
+    </Lazy>
+  );
+}
+
+const CodeImportPage = lazy(() =>
+  import('./features/code-import/CodeImportPage').then((m) => ({ default: m.CodeImportPage })),
+);
+
+const ankiCodeImportRoute = createRoute({
+  getParentRoute: () => ankiRoute,
+  path: 'importar-codigo',
+  validateSearch: (s: Record<string, unknown>): { deck?: number } => ({ deck: parseId(s.deck) }),
+  component: CodeImportRoute,
+});
+
+function CodeImportRoute(): ReactNode {
+  const { deck } = ankiCodeImportRoute.useSearch();
+  return (
+    <Lazy>
+      <CodeImportPage deckId={deck} />
     </Lazy>
   );
 }
@@ -209,6 +233,12 @@ const settingsAnkiRoute = createRoute({
   component: lazyRouteComponent(() => import('./features/settings/AnkiSyncSettings'), 'AnkiSyncSettings'),
 });
 
+const settingsCodeRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: 'codigo',
+  component: lazyRouteComponent(() => import('./features/settings/CodeSettings'), 'CodeSettings'),
+});
+
 const settingsAiRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: 'ia',
@@ -235,12 +265,13 @@ const routeTree = rootRoute.addChildren([
     ankiStudyRoute,
     ankiBrowseRoute,
     ankiAddRoute,
+    ankiCodeImportRoute,
     ankiStatsRoute,
     ankiOptionsRoute,
     ankiInfoRoute,
     ankiGenericPageRoute,
   ]),
-  settingsRoute.addChildren([settingsIndexRoute, settingsAnkiRoute, settingsAiRoute]),
+  settingsRoute.addChildren([settingsIndexRoute, settingsAnkiRoute, settingsCodeRoute, settingsAiRoute]),
   ...(devRoutesEnabled ? [devUiRoute, devSmokeRoute] : []),
 ]);
 

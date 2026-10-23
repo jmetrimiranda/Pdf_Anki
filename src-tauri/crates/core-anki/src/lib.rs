@@ -12,6 +12,7 @@ pub mod backup;
 pub mod book;
 pub mod bridge;
 pub mod browse;
+pub mod code;
 pub mod decks;
 pub mod demo;
 mod error;
@@ -27,6 +28,7 @@ pub mod types;
 
 pub use anki;
 pub use anki::collection::Collection;
+pub use code::{CodeNoteFields, CodeRole};
 pub use error::{Error, Result};
 pub use service::{AnkiService, CollectionPaths};
 pub use sync::{

@@ -15,7 +15,8 @@ describe('mock search (subset of Anki syntax)', () => {
     expect(mockSearch('deck:current', null)).toHaveLength(7);
     expect(fronts(mockSearch('kitch*', null))).toEqual(['kitchen']);
     expect(mockSearch('deck:Oxford -abandon', null)).toHaveLength(2);
-    expect(mockSearch('abandon OR able', null)).toHaveLength(2);
+    // "able" also matches "ros2 pkg executables" (a word search is a substring search, like Anki).
+    expect(mockSearch('abandon OR able', null)).toHaveLength(3);
     expect(mockSearch('(abandon OR able) deck:Oxford*', null)).toHaveLength(2);
     expect(mockSearch('', null).length).toBeGreaterThan(15);
   });

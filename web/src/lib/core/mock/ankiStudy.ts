@@ -32,6 +32,7 @@ import {
   NT_CLOZE,
   NT_CLOZE_LEITOR,
   NT_CODE_COMMAND,
+  NT_USER_COMMAND,
   NT_VOCAB_BOOK,
   persistAnki,
   subtree,
@@ -42,6 +43,7 @@ import {
   type MockNote,
   type MockNotetype,
 } from './ankiData';
+import { CODE_COMMAND, CODE_PROGRAM, mockCodeCard, mockCodeType } from './code';
 
 /** The card protocol stand-in of vite-plugin-anki-card.ts. */
 export const MOCK_CARD_BASE = '/__card/';
@@ -59,6 +61,8 @@ const DEFAULT_CSS =
 const CLOZE_CSS =
   '.cloze {\n    font-weight: bold;\n    color: blue;\n}\n.nightMode .cloze {\n    color: lightblue;\n}\n';
 const SOURCE_CSS = '.fonte { margin-top: 1.5em; font-size: 14px; opacity: .7 }\n';
+/** The app code types' extra CSS (core_anki::notetypes::CODE_CSS): code blocks left-aligned, scrolling sideways. */
+export const CODE_CSS = '\n.card pre{text-align:left;overflow-x:auto;max-width:100%}\n';
 
 // ---------------------------------------------------------------- session
 
@@ -408,6 +412,15 @@ interface Rendered {
   css: string;
 }
 
+const USER_COMMAND_CSS =
+  '.rotulo{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8a8a8a;margin-bottom:12px}.pergunta{font-size:20px;margin-bottom:12px}#cmd{width:100%;box-sizing:border-box;font-family:ui-monospace,monospace;font-size:15px;padding:8px}hr#answer{border:none;border-top:2px solid #333}pre.cmd{background:#f0f0f0;border:1px solid #e2e2e2;border-radius:3px;padding:12px 16px;font-size:15px;white-space:pre-wrap}blockquote{margin:12px 0;padding-left:12px;border-left:3px solid #c8c8c8;color:#555;font-size:16px}';
+
+/** The user type's back template (core_anki::fixture USER_COMMAND_BACK). */
+function userCommandBack(note: MockNote, nt: MockNotetype): string {
+  const expl = field(note, nt, 'Explicação');
+  return `<div class="pergunta">${field(note, nt, 'Frente')}</div><hr id=answer><pre class="cmd"><code>${field(note, nt, 'Comando')}</code></pre>${expl ? `<blockquote>${expl}</blockquote>` : ''}`;
+}
+
 function render(card: MockCard, note: MockNote, nt: MockNotetype): Rendered {
   const f = (i: number) => note.fields[i] ?? '';
   let css = DEFAULT_CSS;
@@ -415,7 +428,29 @@ function render(card: MockCard, note: MockNote, nt: MockNotetype): Rendered {
   let back: (frontSide: string) => string;
   let typeCorrect: string | null = null;
   const tts: AvTag[] = [];
-  if (nt.kind === 'cloze' || nt.id === NT_CLOZE || nt.id === NT_CLOZE_LEITOR) {
+  const code = mockCodeType(nt);
+  if (code) {
+    // A code card (spec 11.2): the question is only the question field, no type box; the answer template is the
+    // card's own with {{FrontSide}} = that question (core render_card_with).
+    front = field(note, nt, code.question);
+    if (nt.id === NT_USER_COMMAND) {
+      css += USER_COMMAND_CSS;
+      back = () => userCommandBack(note, nt);
+    } else if (code.role === 'program') {
+      const obs = field(note, nt, 'Observação');
+      back = (fs) =>
+        `${fs}<hr id=answer><pre><code class="language-${field(note, nt, 'Linguagem')}">${field(note, nt, 'Resposta')}</code></pre>${obs ? `<blockquote>${obs}</blockquote>` : ''}${sourceBlock(note, nt)}`;
+    } else if (nt.id === NT_CODE_COMMAND || code.appType) {
+      const obs = field(note, nt, 'Observação');
+      back = (fs) => `${fs}<hr id=answer>${obs ? `<blockquote>${obs}</blockquote>` : ''}${sourceBlock(note, nt)}`;
+    } else {
+      back = (fs) => `${fs}\n\n<hr id=answer>\n\n${field(note, nt, code.answer)}`;
+    }
+  } else if (nt.id === NT_USER_COMMAND) {
+    css += USER_COMMAND_CSS;
+    front = `<div class="rotulo">DIGITE O COMANDO · CTRL+ENTER RESPONDE</div><div class="pergunta">${field(note, nt, 'Frente')}</div><textarea id="cmd" rows="3"></textarea>`;
+    back = () => userCommandBack(note, nt);
+  } else if (nt.kind === 'cloze' || nt.id === NT_CLOZE || nt.id === NT_CLOZE_LEITOR) {
     css += CLOZE_CSS;
     front = renderCloze(f(0), card.ord, false);
     const extra = f(1);
@@ -441,6 +476,7 @@ function render(card: MockCard, note: MockNote, nt: MockNotetype): Rendered {
     back = (fs) => `${fs}\n\n<hr id=answer>\n\n${f(1)}${sourceBlock(note, nt)}`;
   }
   if (nt.fields.some((x) => x.toLowerCase() === 'fonte')) css += SOURCE_CSS;
+  if (nt.appType === CODE_COMMAND || nt.appType === CODE_PROGRAM) css += CODE_CSS;
   const q = extractAv(front, 'q', tts);
   // {{FrontSide}} = the question AFTER the AV extraction (its buttons keep `play:q:N`).
   const a = extractAv(back(q.html), 'a');
@@ -540,6 +576,7 @@ function nextFor(s: Session, forced?: MockCard): StudyNext {
     canUndo: s.undo !== null,
     showTimer: false,
     timerMaxSecs: 60,
+    code: mockCodeCard(note, nt),
   };
   return { kind: 'card', card: study };
 }

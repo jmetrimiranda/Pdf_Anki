@@ -12,6 +12,28 @@ export function isCodeField(notetypeName: string, fieldName: string): boolean {
   return CODE_FIELDS[notetypeName]?.includes(fieldName) ?? false;
 }
 
+/** Fields edited with the CodeMirror editor (the rest of CODE_FIELDS keep the monospace textarea). */
+const EDITOR_FIELDS = ['Resposta', 'Inicial', 'Setup', 'Testes'];
+
+/** Values of the Linguagem and Modo selects of "Código · Programa" (spec 11.1). */
+export const LANGUAGES = ['python', 'cpp'] as const;
+export const MODES = ['testes', 'saida', 'estrutura'] as const;
+
+/** How a field of a notetype is edited: CodeMirror, a select, the monospace textarea, or null (rich editor). */
+export type CodeFieldKind = 'editor' | 'language' | 'mode' | 'mono';
+
+export function codeFieldKind(
+  notetype: { name: string; appType: string | null },
+  fieldName: string,
+): CodeFieldKind | null {
+  const type = notetype.appType ?? notetype.name;
+  if (!isCodeField(type, fieldName)) return null;
+  if (EDITOR_FIELDS.includes(fieldName)) return 'editor';
+  if (type === 'Código · Programa' && fieldName === 'Linguagem') return 'language';
+  if (type === 'Código · Programa' && fieldName === 'Modo') return 'mode';
+  return 'mono';
+}
+
 /** Plain text → field HTML: escape `&`, `<`, `>` and turn line breaks into `<br>`. */
 export function codeToHtml(text: string): string {
   return text

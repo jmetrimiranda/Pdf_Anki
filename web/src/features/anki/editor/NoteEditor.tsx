@@ -17,7 +17,18 @@ import { cn } from '../../../lib/cn';
 import { core, CoreError } from '../../../lib/core/client';
 import { q } from '../../../lib/core/queries';
 import { draftFields, editField, isDirty, markSaved, newDraft, setTags, type Draft } from './draft';
+import {
+  CodeExtraFields,
+  codeNoteExtraQuery,
+  extraDirty,
+  extraDraft,
+  extraLines,
+  useCommandRole,
+  type ExtraDraft,
+} from './CodeExtraFields';
 import { NoteFields } from './NoteFields';
+import { ReferenceTest } from './ReferenceTest';
+import { codeRoleOf, fieldsByName, gateKey, useReferenceGate } from './referenceTest';
 import { TagsInput } from './TagsInput';
 import { checkError, useNoteCheck } from './useNoteCheck';
 
@@ -45,11 +56,13 @@ export const NoteEditor = forwardRef<
     /** After a save, with the note that was saved (it may be one the editor already left). */
     onSaved?: (noteId: number) => void;
     onDirtyChange?: (dirty: boolean) => void;
+    /** A code field changed and the reference test has not passed yet (spec 11.7): saving is blocked. */
+    onSaveBlockedChange?: (blocked: boolean) => void;
     /** Ctrl+Enter; saves when not given. */
     onSubmit?: () => void;
     className?: string;
   }
->(function NoteEditor({ noteId, autosave, onSaved, onDirtyChange, onSubmit, className }, ref) {
+>(function NoteEditor({ noteId, autosave, onSaved, onDirtyChange, onSaveBlockedChange, onSubmit, className }, ref) {
   const qc = useQueryClient();
   const toast = useToast();
   const note = useQuery(noteQuery(noteId));
@@ -66,8 +79,8 @@ export const NoteEditor = forwardRef<
   draftRef.current = draft;
   const setDraft = useCallback((f: (d: Draft) => Draft) => setEdit((e) => (e ? { ...e, draft: f(e.draft) } : e)), []);
   const saving = useRef<Promise<boolean> | null>(null);
-  const callbacks = useRef({ onSaved, onDirtyChange });
-  callbacks.current = { onSaved, onDirtyChange };
+  const callbacks = useRef({ onSaved, onDirtyChange, onSaveBlockedChange });
+  callbacks.current = { onSaved, onDirtyChange, onSaveBlockedChange };
 
   // The draft is built once per note; later refetches never overwrite what the user is typing.
   useEffect(() => {
@@ -78,48 +91,103 @@ export const NoteEditor = forwardRef<
   }, [note.data, noteId, loadedFor]);
 
   const notetype = notetypes.data?.find((nt) => nt.id === note.data?.notetypeId) ?? null;
-  const dirty = draft ? isDirty(draft) : false;
+
+  // A user type with the Comando role: its Aceitas/Exige live in `code_note_extra` (spec 11.1).
+  const commandRole = useCommandRole(notetype && note.data?.notetypeId === notetype.id ? notetype : null);
+  const extraQ = useQuery({ ...codeNoteExtraQuery(noteId), enabled: commandRole, staleTime: 0 });
+  const [extra, setExtra] = useState<ExtraDraft | null>(null);
+  const extraRef = useRef(extra);
+  extraRef.current = extra;
+  useEffect(() => {
+    if (extraQ.data && extraQ.data.noteId === noteId && extraRef.current?.noteId !== noteId) {
+      setExtra(extraDraft(extraQ.data));
+    }
+  }, [extraQ.data, noteId]);
+  const extraForNote = commandRole && extra?.noteId === noteId ? extra : null;
+
+  const fieldsDirty = draft ? isDirty(draft) : false;
+  const dirty = fieldsDirty || extraDirty(extraForNote);
   useEffect(() => callbacks.current.onDirtyChange?.(dirty), [dirty]);
 
   const fields = useMemo(() => (draft ? draftFields(draft) : null), [draft]);
-  const check = useNoteCheck(notetype?.id ?? null, dirty ? fields : null);
+  const check = useNoteCheck(notetype?.id ?? null, fieldsDirty ? fields : null);
   const err = checkError(check);
 
-  const save = useCallback(async (): Promise<boolean> => {
-    const e = editRef.current;
-    if (saving.current) await saving.current;
-    if (!e || !isDirty(e.draft)) return true;
-    const d = e.draft;
-    const job = (async () => {
-      setSaveState('saving');
-      try {
-        await core.ankiNoteUpdate(e.noteId, draftFields(d), [...d.tags]);
-        // Keep later keystrokes: only what was saved becomes the new original.
-        setEdit((cur) =>
-          cur && cur.noteId === e.noteId
-            ? { ...cur, draft: { ...markSaved(d), edits: diffEdits(cur.draft, d), tags: cur.draft.tags } }
-            : cur,
-        );
-        void qc.invalidateQueries({ queryKey: ['anki', 'note', e.noteId] });
-        setSaveState('saved');
-        void qc.invalidateQueries({ queryKey: ['anki', 'tags'] });
-        callbacks.current.onSaved?.(e.noteId);
-        return true;
-      } catch (e) {
-        setSaveState('error');
-        toast.show(e instanceof CoreError || e instanceof Error ? e.message : t('errors.unexpected'), {
-          tone: 'error',
-        });
-        return false;
-      } finally {
-        saving.current = null;
-      }
-    })();
-    saving.current = job;
-    return job;
-  }, [qc, toast]);
+  // App code types: when a code field changed, the reference must pass again before saving (spec 11.7).
+  const byName = useMemo(() => (notetype && fields ? fieldsByName(notetype, fields) : null), [notetype, fields]);
+  const codeChanged = useMemo(
+    () => !!notetype && !!draft && !!byName && gateKey(byName) !== gateKey(fieldsByName(notetype, draft.original)),
+    [notetype, draft, byName],
+  );
+  const gate = useReferenceGate(codeRoleOf(notetype), byName, codeChanged);
+  const gateRef = useRef(gate);
+  gateRef.current = gate;
+  const blocked = !gate.canSave;
+  useEffect(() => callbacks.current.onSaveBlockedChange?.(blocked), [blocked]);
 
-  useImperativeHandle(ref, () => ({ save, dirty: () => !!draftRef.current && isDirty(draftRef.current) }), [save]);
+  const save = useCallback(
+    async (untested = false): Promise<boolean> => {
+      const e = editRef.current;
+      if (saving.current) await saving.current;
+      if (!e) return true;
+      const x = extraRef.current?.noteId === e.noteId && extraDirty(extraRef.current) ? extraRef.current : null;
+      const notesDirty = isDirty(e.draft);
+      if (!notesDirty && !x) return true;
+      if (notesDirty && !untested && !gateRef.current.canSave) {
+        toast.show(t('codeAuthoring.testNeeded'), { tone: 'error' });
+        return false;
+      }
+      const d = e.draft;
+      const job = (async () => {
+        setSaveState('saving');
+        try {
+          if (notesDirty) {
+            await core.ankiNoteUpdate(e.noteId, draftFields(d), [...d.tags]);
+            // Keep later keystrokes: only what was saved becomes the new original.
+            setEdit((cur) =>
+              cur && cur.noteId === e.noteId
+                ? { ...cur, draft: { ...markSaved(d), edits: diffEdits(cur.draft, d), tags: cur.draft.tags } }
+                : cur,
+            );
+            void qc.invalidateQueries({ queryKey: ['anki', 'note', e.noteId] });
+          }
+          if (x) {
+            const saved = await core.codeNoteExtraSet(e.noteId, extraLines(x.accepted), extraLines(x.requires));
+            qc.setQueryData(codeNoteExtraQuery(e.noteId).queryKey, saved);
+            const savedText = extraDraft(saved).saved;
+            // Later keystrokes stay; what was saved becomes the new baseline.
+            setExtra((cur) => (cur && cur.noteId === e.noteId ? { ...cur, saved: savedText } : cur));
+          }
+          setSaveState('saved');
+          void qc.invalidateQueries({ queryKey: ['anki', 'tags'] });
+          callbacks.current.onSaved?.(e.noteId);
+          return true;
+        } catch (e) {
+          setSaveState('error');
+          toast.show(e instanceof CoreError || e instanceof Error ? e.message : t('errors.unexpected'), {
+            tone: 'error',
+          });
+          return false;
+        } finally {
+          saving.current = null;
+        }
+      })();
+      saving.current = job;
+      return job;
+    },
+    [qc, toast],
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      save: () => save(),
+      dirty: () =>
+        (!!draftRef.current && isDirty(draftRef.current)) ||
+        (extraRef.current?.noteId === editRef.current?.noteId && extraDirty(extraRef.current)),
+    }),
+    [save],
+  );
 
   // Leaving the note (another row, closing the panel) saves it.
   const saveRef = useRef(save);
@@ -136,6 +204,8 @@ export const NoteEditor = forwardRef<
     const next = e.relatedTarget as Node | null;
     // Popovers (tag suggestions) render inside; portals (menus) do not steal the save.
     if (next && e.currentTarget.contains(next)) return;
+    // A code change waiting for its reference test is saved only after it passes.
+    if (!gateRef.current.canSave) return;
     void save();
   };
 
@@ -189,6 +259,21 @@ export const NoteEditor = forwardRef<
         onImageError={(m) => toast.show(m, { tone: 'error' })}
       />
       {check === 'duplicate' && <Notice tone="info">{t('anki.editor.duplicate')}</Notice>}
+      {commandRole && (
+        <CodeExtraFields
+          draft={extraForNote}
+          error={extraQ.isError}
+          onRetry={() => void extraQ.refetch()}
+          onChange={(patch) => setExtra((cur) => (cur && cur.noteId === noteId ? { ...cur, ...patch } : cur))}
+        />
+      )}
+      <ReferenceTest
+        gate={gate}
+        onSaveUntested={() => {
+          gate.allowUntested();
+          void save(true);
+        }}
+      />
       <div className="flex flex-col gap-1">
         <span className="text-xs text-muted">{t('anki.editor.tags')}</span>
         <TagsInput
@@ -203,7 +288,7 @@ export const NoteEditor = forwardRef<
           <span className="hidden text-xs text-muted lg:inline-flex lg:items-center lg:gap-1.5">
             <Kbd>Ctrl+Enter</Kbd> {t('anki.editor.saveHint')}
           </span>
-          <Button size="sm" disabled={!dirty} loading={saveState === 'saving'} onClick={() => void save()}>
+          <Button size="sm" disabled={!dirty || blocked} loading={saveState === 'saving'} onClick={() => void save()}>
             {t('common.save')}
           </Button>
         </div>

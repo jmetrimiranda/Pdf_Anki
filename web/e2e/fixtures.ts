@@ -92,6 +92,14 @@ export interface MockAnkiHandle {
   fireChanged(reason?: 'import' | 'colpkg' | 'page' | 'backup' | 'sync' | 'syncFull'): void;
   firePageEvent(e: { kind: string } & Record<string, unknown>): void;
   dailyBackup(): unknown;
+  /** No C++ compiler and no runner (`code_cpp_unavailable`). */
+  setCppAvailable(available: boolean): void;
+  codeExtra(noteId: number): { accepted: string[]; requires: string[] };
+  noteFields(noteId: number): Record<string, string>;
+  /** Suspends the cards matching an Anki search; returns how many. */
+  suspend(query: string): number;
+  moveCards(query: string, deckName: string): number;
+  mapCommand(notetypeName: string, fields: { question: string; answer: string; notes: string | null } | null): void;
 }
 
 type MockWindow = { __leitorMock: LeitorMockHandle };
@@ -133,6 +141,18 @@ export async function stubPdfcraft(page: Page) {
 
 async function mockReady(page: Page) {
   await page.waitForFunction(() => !!(window as unknown as Partial<MockWindow>).__leitorMock);
+}
+
+/** Suspends the cards matching an Anki search in the mock collection (choose which card a deck shows first). */
+export async function suspendCards(page: Page, query: string): Promise<number> {
+  await mockReady(page);
+  return page.evaluate((q) => (window as unknown as MockWindow).__leitorMock.anki.suspend(q), query);
+}
+
+/** The mock C++ compiler is there (default) or not (`code_cpp_unavailable`). */
+export async function setCppAvailable(page: Page, available: boolean) {
+  await mockReady(page);
+  await page.evaluate((a) => (window as unknown as MockWindow).__leitorMock.anki.setCppAvailable(a), available);
 }
 
 /** Path the next Anki package dialog returns (mock core). */

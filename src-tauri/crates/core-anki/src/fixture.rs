@@ -4,14 +4,22 @@
 //! new cards), "Oxford::Oxford 3000" (new), "Oxford::Oxford 5000" (empty), "ROS 2 — Revisão"
 //! (type-answer via "Código · Comando" and the stock "Basic (type in the answer)"), "Matemática"
 //! (MathJax), "Gramática::Cloze" (c1/c2), "Livros::Animal Farm" (`Fonte` with a `leitor://`
-//! link) and, optionally, "Isolamento (teste)" with the card isolation probe.
+//! link), "Programação" (five "Código · Programa" notes, in this order: Python `testes`, Python `saida`, Python
+//! `estrutura`, C++ `testes`, C++ `saida`; code fields HTML-encoded like the UI's `codeToHtml`) and, optionally,
+//! "Isolamento (teste)" with the card isolation probe.
+//!
+//! "ROS 2 — Revisão" also has three notes of a user-shaped type, [`USER_COMMAND_NOTETYPE`] (fields `Frente`,
+//! `Comando`, `Explicação`; a textarea + Ctrl+Enter front like the user's real deck, docs/referencia/capturas/06..09).
+//! It is a normal user type (not an app type, not created by "Preparar coleção"), used to test assigning it the
+//! "Comando" role. Order in that deck: the two "Código · Comando" notes, the stock type-in note, then the three
+//! user-type notes.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use anki::collection::{Collection, CollectionBuilder};
 use anki::decks::tree::DeckCollapseScope;
-use anki::notetype::all_stock_notetypes;
+use anki::notetype::{CardTemplate, NoteField, all_stock_notetypes};
 use anki::prelude::{CardId, DeckId, I18n, Note, NoteId, Notetype, TimestampMillis};
 use anki::scheduler::answering::{CardAnswer, Rating};
 use anki::search::SortMode;
@@ -19,7 +27,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::notetypes::{
-    BASIC_LEITOR, CLOZE_LEITOR, CODE_COMMAND, VOCAB_BOOK, prepare_collection, stock_basic,
+    BASIC_LEITOR, CLOZE_LEITOR, CODE_COMMAND, CODE_PROGRAM, VOCAB_BOOK, card_1_name,
+    prepare_collection, stock_basic,
 };
 use crate::service::CollectionPaths;
 
@@ -34,6 +43,170 @@ pub const DECK_CLOZE: &str = "Gramática::Cloze";
 pub const DECK_BOOKS: &str = "Livros";
 pub const DECK_ANIMAL_FARM: &str = "Livros::Animal Farm";
 pub const DECK_ISOLATION: &str = "Isolamento (teste)";
+pub const DECK_PROGRAMMING: &str = "Programação";
+
+/// Name of the fixture's user-shaped command notetype (like the user's "DIGITE O COMANDO · CTRL+ENTER RESPONDE").
+pub const USER_COMMAND_NOTETYPE: &str = "ROS 2 · Digite o comando";
+
+const USER_COMMAND_FRONT: &str = r#"<div class="rotulo">DIGITE O COMANDO · CTRL+ENTER RESPONDE</div><div class="pergunta">{{Frente}}</div><textarea id="cmd" rows="3"></textarea>
+<script>
+(function () {
+  var cmd = document.getElementById("cmd");
+  if (!cmd) return;
+  cmd.focus();
+  cmd.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      pycmd("ans");
+    }
+  });
+})();
+</script>"#;
+
+const USER_COMMAND_BACK: &str = r#"<div class="pergunta">{{Frente}}</div><hr id=answer><pre class="cmd"><code>{{Comando}}</code></pre>{{#Explicação}}<blockquote>{{Explicação}}</blockquote>{{/Explicação}}"#;
+
+const USER_COMMAND_CSS: &str = ".card {
+  font-family: system-ui, sans-serif;
+  font-size: 18px;
+  text-align: left;
+  color: #1f1f1f;
+  background-color: #fafafa;
+}
+.rotulo {
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: #8a8a8a;
+  margin-bottom: 12px;
+}
+.pergunta { font-size: 20px; margin-bottom: 12px; }
+#cmd {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, monospace;
+  font-size: 15px;
+  padding: 8px;
+}
+hr#answer { border: none; border-top: 2px solid #333; }
+pre.cmd {
+  background: #f0f0f0;
+  border: 1px solid #e2e2e2;
+  border-radius: 3px;
+  padding: 12px 16px;
+  font-size: 15px;
+  white-space: pre-wrap;
+}
+blockquote {
+  margin: 12px 0;
+  padding-left: 12px;
+  border-left: 3px solid #c8c8c8;
+  color: #555;
+  font-size: 16px;
+}
+";
+
+/// The fixture's user-type command notes (Frente, Comando, Explicação), from the captures.
+pub const USER_COMMAND_NOTES: [(&str, &str, &str); 3] = [
+    (
+        "Ver a transformação entre os frames world e turtle1",
+        "ros2 run tf2_ros tf2_echo world turtle1",
+        "Imprime Translation e Rotation (quaternion) a cada atualização.",
+    ),
+    (
+        "Listar os executáveis disponíveis dentro do pacote turtlesim",
+        "ros2 pkg executables turtlesim",
+        "Retorna turtlesim draw_square, turtlesim mimic, turtlesim turtle_teleop_key, turtlesim turtlesim_node.",
+    ),
+    (
+        "Instalar o pacote turtlesim (Humble)",
+        "sudo apt install ros-humble-turtlesim",
+        "",
+    ),
+];
+
+/// One "Código · Programa" note of the fixture, as plain text (encoded with [`code_to_html`] when added).
+pub struct FixtureProgram {
+    /// Role in [`FixtureInfo::notes`].
+    pub role: &'static str,
+    pub question: &'static str,
+    pub language: &'static str,
+    pub mode: &'static str,
+    pub answer: &'static str,
+    pub tests: &'static str,
+    pub input: &'static str,
+    pub expected_output: &'static str,
+    pub notes: &'static str,
+}
+
+/// The "Programação" deck's notes, in creation order (so the deck's first card is the first one).
+pub const PROGRAMS: [FixtureProgram; 5] = [
+    FixtureProgram {
+        role: "programaPython",
+        question: "Função que soma os pares de uma lista",
+        language: "python",
+        mode: "testes",
+        answer: "def soma_pares(xs):\n    return sum(x for x in xs if x % 2 == 0)",
+        tests: "assert soma_pares([1, 2, 3, 4]) == 6\nassert soma_pares([]) == 0",
+        input: "",
+        expected_output: "",
+        notes: "Uma expressão geradora dentro de sum() evita a lista intermediária.",
+    },
+    FixtureProgram {
+        role: "programaPythonSaida",
+        question: "Ler dois inteiros e imprimir a soma",
+        language: "python",
+        mode: "saida",
+        answer: "a, b = map(int, input().split())\nprint(a + b)",
+        tests: "",
+        input: "2 3\n",
+        expected_output: "5\n",
+        notes: "",
+    },
+    FixtureProgram {
+        role: "programaEstrutura",
+        question: "Criar um nó rclpy mínimo",
+        language: "python",
+        mode: "estrutura",
+        answer: "import rclpy\nfrom rclpy.node import Node\n\n\nclass Minimo(Node):\n    def __init__(self):\n        super().__init__(\"minimo\")\n\n\ndef main():\n    rclpy.init()\n    rclpy.spin(Minimo())\n    rclpy.shutdown()",
+        tests: "",
+        input: "",
+        expected_output: "",
+        notes: "rclpy.init() antes de criar o nó; spin() mantém o nó vivo.",
+    },
+    FixtureProgram {
+        role: "programaCpp",
+        question: "Função int quadrado(int x)",
+        language: "cpp",
+        mode: "testes",
+        answer: "int quadrado(int x) { return x * x; }",
+        tests: "int main() {\n    CHECK(quadrado(3) == 9);\n    CHECK(quadrado(-2) == 4);\n}",
+        input: "",
+        expected_output: "",
+        notes: "",
+    },
+    FixtureProgram {
+        role: "programaCppSaida",
+        question: "Imprimir Olá, mundo!",
+        language: "cpp",
+        mode: "saida",
+        answer: "#include <iostream>\nint main() { std::cout << \"Olá, mundo!\\n\"; }",
+        tests: "",
+        input: "",
+        expected_output: "Olá, mundo!\n",
+        notes: "",
+    },
+];
+
+/// Plain text → field HTML exactly like the UI's `codeToHtml` (spec 11.1): CRLF/CR → LF, `&`, `<`, `>` escaped,
+/// newlines → `<br>`.
+fn code_to_html(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\n', "<br>")
+}
 
 pub const IMAGE_FILE: &str = "fixture-image.png";
 pub const AUDIO_FILE: &str = "fixture-audio.wav";
@@ -96,7 +269,11 @@ pub struct FixtureInfo {
     pub first_card: BTreeMap<String, i64>,
     /// Role → note id: "imagem", "audio", "tts", "matematica", "cloze", "comando",
     /// "digitarResposta", "fonte", "isolamento".
+    /// Also "comandoUsuario" (first user-type command note), "programaPython", "programaPythonSaida",
+    /// "programaEstrutura", "programaCpp", "programaCppSaida".
     pub notes: BTreeMap<String, i64>,
+    /// Role → notetype id: "usuarioComando" ([`USER_COMMAND_NOTETYPE`]).
+    pub notetypes: BTreeMap<String, i64>,
     pub book_uid: String,
 }
 
@@ -146,6 +323,10 @@ pub fn populate(col: &mut Collection, opts: FixtureOptions) -> Result<FixtureInf
     let basic_leitor = notetype(col, BASIC_LEITOR)?;
     let cloze_leitor = notetype(col, CLOZE_LEITOR)?;
     let command = notetype(col, CODE_COMMAND)?;
+    let program = notetype(col, CODE_PROGRAM)?;
+    let user_command = user_command_notetype(col)?;
+    info.notetypes
+        .insert("usuarioComando".into(), user_command.id.0);
     let vocab = notetype(col, VOCAB_BOOK)?;
     let basic_typing = stock_basic_typing(col)?;
 
@@ -158,6 +339,7 @@ pub fn populate(col: &mut Collection, opts: FixtureOptions) -> Result<FixtureInf
         DECK_MATH,
         DECK_CLOZE,
         DECK_ANIMAL_FARM,
+        DECK_PROGRAMMING,
     ] {
         decks.push((name, crate::decks::create(col, name)?));
     }
@@ -283,6 +465,40 @@ pub fn populate(col: &mut Collection, opts: FixtureOptions) -> Result<FixtureInf
         &["ros2"],
     )?;
     info.notes.insert("digitarResposta".into(), typing);
+    // The user's own command type (not an app type), as in the user's real deck.
+    for (i, (front, cmd, explanation)) in USER_COMMAND_NOTES.iter().enumerate() {
+        let (nid, _) = add(
+            col,
+            &user_command,
+            ros,
+            &[front, cmd, explanation],
+            &["ros2"],
+        )?;
+        if i == 0 {
+            info.notes.insert("comandoUsuario".into(), nid);
+        }
+    }
+
+    // --- Programação: "Código · Programa" notes (Python and C++, every mode).
+    let programming = deck_id(col, DECK_PROGRAMMING)?;
+    for p in &PROGRAMS {
+        let fields = [
+            p.question.to_string(),
+            p.language.to_string(),
+            p.mode.to_string(),
+            code_to_html(p.answer),
+            String::new(),
+            String::new(),
+            code_to_html(p.tests),
+            code_to_html(p.input),
+            code_to_html(p.expected_output),
+            p.notes.to_string(),
+            String::new(),
+        ];
+        let fields: Vec<&str> = fields.iter().map(String::as_str).collect();
+        let (nid, _) = add(col, &program, programming, &fields, &["programacao"])?;
+        info.notes.insert(p.role.into(), nid);
+    }
 
     // --- Matemática: MathJax inline and display.
     let math = deck_id(col, DECK_MATH)?;
@@ -363,6 +579,30 @@ pub fn populate(col: &mut Collection, opts: FixtureOptions) -> Result<FixtureInf
         info.decks.insert(d.name, d.id);
     }
     Ok(info)
+}
+
+/// [`USER_COMMAND_NOTETYPE`]: added as a plain user type (fields, one "Cartão 1" template, CSS), or the existing one.
+fn user_command_notetype(col: &mut Collection) -> Result<std::sync::Arc<Notetype>> {
+    if let Some(existing) = col.get_notetype_by_name(USER_COMMAND_NOTETYPE)? {
+        return Ok(existing);
+    }
+    let mut nt = Notetype {
+        name: USER_COMMAND_NOTETYPE.to_string(),
+        fields: ["Frente", "Comando", "Explicação"]
+            .into_iter()
+            .map(NoteField::new)
+            .collect(),
+        templates: vec![CardTemplate::new(
+            card_1_name(),
+            USER_COMMAND_FRONT,
+            USER_COMMAND_BACK,
+        )],
+        ..Default::default()
+    };
+    nt.config.sort_field_idx = 0;
+    nt.config.css = USER_COMMAND_CSS.to_string();
+    col.add_notetype(&mut nt, false)?;
+    notetype(col, USER_COMMAND_NOTETYPE)
 }
 
 fn notetype(col: &mut Collection, name: &str) -> Result<std::sync::Arc<Notetype>> {
@@ -504,4 +744,32 @@ fn fixture_wav() -> Vec<u8> {
         out.extend_from_slice(&sample.to_le_bytes());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::code_to_html;
+
+    /// The shared vectors of the UI's `codeToHtml` (core-code), plus the literal cases of `codeField.test.ts`.
+    #[test]
+    fn code_to_html_matches_the_ui() {
+        assert_eq!(
+            code_to_html("a < b & c > d\nnext"),
+            "a &lt; b &amp; c &gt; d<br>next"
+        );
+        assert_eq!(code_to_html("x\r\ny"), "x<br>y");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../core-code/tests/fixtures/code_html_vectors.json");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let vectors: Vec<serde_json::Value> = serde_json::from_str(&text).expect("vectors JSON");
+        assert!(!vectors.is_empty());
+        for v in vectors {
+            let (Some(input), Some(html)) = (v["text"].as_str(), v["html"].as_str()) else {
+                continue;
+            };
+            assert_eq!(code_to_html(input), html, "{}", v["name"]);
+        }
+    }
 }

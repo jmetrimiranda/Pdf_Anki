@@ -614,10 +614,12 @@ async fn serializes_like_the_ts_contract() -> anyhow::Result<()> {
         "canUndo",
         "showTimer",
         "timerMaxSecs",
+        "code",
     ] {
         assert!(card.get(key).is_some(), "missing {key}");
     }
     assert!(card["bodyClass"].as_str().unwrap().starts_with("card card"));
+    assert!(card["code"].is_null(), "not a code card");
     let done = serde_json::to_value(StudyNext::Done {
         deck_id: 1,
         deck_name: "x".into(),

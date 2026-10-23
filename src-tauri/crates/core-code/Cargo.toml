@@ -1,0 +1,16 @@
+[package]
+name = "core-code"
+description = "Code cards (spec 11): HTML <-> code in Anki fields and the Markdown batch importer. Pure, no I/O."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

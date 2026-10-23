@@ -26,6 +26,9 @@ core-epub.workspace = true
 core-vocab.workspace = true
 core-store.workspace = true
 core-ai.workspace = true
+# Code cards (spec 11): HTML <-> code, the Markdown importer; C++ local (desktop) and remote runner.
+core-code.workspace = true
+core-cpp.workspace = true
 # Same version as Anki's (one libsqlite3-sys); only for `Store::connection` reads.
 rusqlite.workspace = true
 serde.workspace = true

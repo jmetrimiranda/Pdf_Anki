@@ -25,13 +25,14 @@ export function ankiSectionOf(pathname: string): AnkiSection | null {
 /**
  * The Anki tab (spec 8.2): sub-tabs Decks | Adicionar | Navegar | Estatísticas over the routed screen. Studying
  * and Anki's own pages (options, card info…) have no tab: study shows a way back to the decks, the pages a
- * "Fechar" button.
+ * "Fechar" button; the Markdown import of code cards, the same way back as study.
  */
 export function AnkiPage() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
   const section = ankiSectionOf(pathname);
-  const studying = pathname.startsWith('/anki/estudar');
+  // Screens without a sub-tab that lead back to the deck list.
+  const backToDecks = pathname.startsWith('/anki/estudar') || pathname.startsWith('/anki/importar-codigo');
 
   return (
     <div className="flex h-full flex-col">
@@ -57,7 +58,7 @@ export function AnkiPage() {
           />
         </div>
       )}
-      {studying && (
+      {backToDecks && (
         <div className="shrink-0 px-3 pt-2 sm:px-4">
           <Link
             to="/anki"

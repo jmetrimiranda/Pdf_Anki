@@ -1,6 +1,7 @@
 //! The study session on the actor thread: the top of the queue, its render and its (possibly mutated) states.
 //! Port of the desktop reviewer flow (`qt/aqt/reviewer.py`, `pylib/anki/scheduler/v3.py`).
-use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use anki::config::StringKey;
 use anki::prelude::*;
@@ -11,11 +12,19 @@ use anki_proto::scheduler::card_answer::Rating as ProtoRating;
 use anki_proto::scheduler::queued_cards::Queue;
 use anki_proto::scheduler::{QueuedCards, SchedulingContext, SchedulingStates};
 
-use super::render::{answer_for_review, render_for_review};
+use super::render::{answer_for_review, render_for_review_with};
 use super::source::{SOURCE_FIELD, parse_source};
 use super::typeans::TypeState;
 use super::types::*;
+use crate::code::{CodeRoleMap, code_card, code_type};
 use crate::error::{Error, Result};
+
+/// What a study job needs besides the collection: the media folder and the code roles in force (a snapshot taken
+/// on the actor, so a [`crate::AnkiService::set_code_roles`] applies from the next rendered card).
+pub(crate) struct StudyEnv {
+    pub media: PathBuf,
+    pub code_roles: Arc<CodeRoleMap>,
+}
 
 /// Tag the desktop uses for "Marcar" (`reviewer.py:1106`).
 pub const MARKED_TAG: &str = "marked";
@@ -88,7 +97,11 @@ fn note_has_marked(note: &Note) -> bool {
 }
 
 /// Shows the top of `session.deck_id`'s queue (making it the current deck first, like the desktop).
-pub(crate) fn next(col: &mut Collection, session: &mut Session, media: &Path) -> Result<StudyNext> {
+pub(crate) fn next(
+    col: &mut Collection,
+    session: &mut Session,
+    env: &StudyEnv,
+) -> Result<StudyNext> {
     session.current = None;
     session.key = new_key();
     let did = DeckId(session.deck_id);
@@ -120,7 +133,6 @@ pub(crate) fn next(col: &mut Collection, session: &mut Session, media: &Path) ->
     };
 
     let cid = CardId(card.id);
-    let review = render_for_review(col, cid, media)?;
     let note = col
         .storage
         .get_note(NoteId(card.note_id))?
@@ -128,6 +140,22 @@ pub(crate) fn next(col: &mut Collection, session: &mut Session, media: &Path) ->
     let notetype = col
         .get_notetype(note.notetype_id)?
         .ok_or_else(|| not_found("notetype"))?;
+    let code_kind = code_type(&notetype, &env.code_roles);
+    let review = render_for_review_with(
+        col,
+        cid,
+        &env.media,
+        code_kind.as_ref().map(|c| c.question.as_str()),
+    )?;
+    let code = code_kind.as_ref().map(|kind| {
+        let answer_template = notetype
+            .templates
+            .get(usize::try_from(review.ord).unwrap_or(0))
+            .or_else(|| notetype.templates.first())
+            .map(|t| t.config.a_format.as_str())
+            .unwrap_or_default();
+        code_card(&notetype, &note, kind, answer_template)
+    });
     let source = notetype
         .fields
         .iter()
@@ -182,6 +210,7 @@ pub(crate) fn next(col: &mut Collection, session: &mut Session, media: &Path) ->
         can_undo: can_undo_answer(col),
         show_timer: conf.show_timer,
         timer_max_secs: conf.cap_answer_time_to_secs,
+        code,
     };
     session.current = Some(Current {
         card_id: card.id,
@@ -226,7 +255,7 @@ pub(crate) fn show_answer(
 pub(crate) fn answer(
     col: &mut Collection,
     session: &mut Session,
-    media: &Path,
+    env: &StudyEnv,
     card_id: i64,
     rating: u8,
     ms: u32,
@@ -255,22 +284,26 @@ pub(crate) fn answer(
         milliseconds_taken: ms,
     };
     let _changes = SchedulerService::answer_card(col, input)?;
-    next(col, session, media)
+    next(col, session, env)
 }
 
 /// Ctrl+Z: only when the last operation is an answer (spec 10.1).
-pub(crate) fn undo(col: &mut Collection, session: &mut Session, media: &Path) -> Result<StudyNext> {
+pub(crate) fn undo(
+    col: &mut Collection,
+    session: &mut Session,
+    env: &StudyEnv,
+) -> Result<StudyNext> {
     if !can_undo_answer(col) {
         return Err(Error::UndoUnavailable);
     }
     col.undo()?;
-    next(col, session, media)
+    next(col, session, env)
 }
 
 pub(crate) fn card_action(
     col: &mut Collection,
     session: &mut Session,
-    media: &Path,
+    env: &StudyEnv,
     card_id: i64,
     action: CardAction,
     flag: Option<u8>,
@@ -297,7 +330,7 @@ pub(crate) fn card_action(
                 _ => BuryOrSuspendMode::Suspend,
             };
             col.bury_or_suspend_cards(&cids, mode)?;
-            let next = next(col, session, media)?;
+            let next = next(col, session, env)?;
             Ok(CardActionResult {
                 flag: 0,
                 marked: false,

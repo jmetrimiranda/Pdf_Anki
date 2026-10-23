@@ -100,7 +100,15 @@ async fn lists_the_app_notetypes_with_their_exact_fields() -> anyhow::Result<()>
     // Note counts and the user's own types.
     assert_eq!(by_name(&all, CODE_COMMAND).note_count, 2);
     assert_eq!(by_name(&all, CLOZE_LEITOR).note_count, 1);
-    assert_eq!(by_name(&all, CODE_PROGRAM).note_count, 0);
+    assert_eq!(
+        by_name(&all, CODE_PROGRAM).note_count,
+        5,
+        "the Programação deck"
+    );
+    assert_eq!(
+        by_name(&all, core_anki::fixture::USER_COMMAND_NOTETYPE).note_count,
+        3
+    );
     let own: Vec<_> = all.iter().filter(|nt| nt.app_type.is_none()).collect();
     assert!(
         own.iter().any(|nt| nt.note_count >= 13),
@@ -337,13 +345,8 @@ async fn add_defaults_follow_the_current_deck_or_the_given_one() -> anyhow::Resu
         .await?;
     assert_eq!(current.deck_id, words, "fixture's current deck");
     assert_eq!(given.deck_id, ros);
-    // The notetype last used in "ROS 2 — Revisão": the fixture adds the stock type-in note last.
-    let typing = fx.info.notes["digitarResposta"];
-    let typing_ntid = fx
-        .svc
-        .call(move |col| Ok(notes::get(col, typing)?.notetype_id))
-        .await?;
-    assert_eq!(given.notetype_id, typing_ntid);
+    // The notetype last used in "ROS 2 — Revisão": the fixture adds the user-type command notes last.
+    assert_eq!(given.notetype_id, fx.info.notetypes["usuarioComando"]);
     assert_eq!(missing.deck_id, current.deck_id, "unknown deck falls back");
     Ok(())
 }

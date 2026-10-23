@@ -372,6 +372,7 @@ fn fixture_builds_twice_with_every_deck_and_media() -> anyhow::Result<()> {
             fixture::DECK_CLOZE,
             fixture::DECK_BOOKS,
             fixture::DECK_ANIMAL_FARM,
+            fixture::DECK_PROGRAMMING,
         ] {
             assert!(info.decks.contains_key(deck), "{deck}: {info:?}");
         }
@@ -388,9 +389,17 @@ fn fixture_builds_twice_with_every_deck_and_media() -> anyhow::Result<()> {
             "comando",
             "digitarResposta",
             "fonte",
+            "comandoUsuario",
+            "programaPython",
+            "programaPythonSaida",
+            "programaEstrutura",
+            "programaCpp",
+            "programaCppSaida",
         ] {
             assert!(info.notes.contains_key(role), "{role}");
         }
+        assert!(info.notetypes.contains_key("usuarioComando"));
+        assert!(info.first_card.contains_key(fixture::DECK_PROGRAMMING));
         assert_eq!(info.book_uid.len(), 64);
         let media = dir.join("collection.media");
         assert!(media.join(fixture::IMAGE_FILE).is_file());

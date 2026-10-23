@@ -12,13 +12,27 @@
 # LEITOR_CAPTURE_PDF=<file.pdf> imports that book into the library first (one launch with the file, like "Abrir
 # com"); '{book}' in a route becomes its book_uid, and with the seed the fixture's Animal Farm Fonte links to it.
 # LEITOR_CAPTURE_ARGS adds arguments (space-separated) to every capture launch.
+# LEITOR_CAPTURE_EMBEDDED=1 captures the production frontend instead of the Vite dev server: `vite build` + a debug
+# build with `tauri/custom-protocol` (dist embedded, served over tauri:// with the real CSP header, Pyodide from
+# dist/pyodide), copied to target/debug/leitor-estudos-embedded. Each launch's log (WebKit console + bridge probe,
+# CSP violations included) is kept as $OUT/<name>.log.
 set -euo pipefail
 OUT="$1"; shift
 mkdir -p "$OUT"
 export LEITOR_DATA_DIR="${LEITOR_DATA_DIR:-$(mktemp -d)}"
 export XDG_DATA_HOME=/tmp/xdg/data XDG_CACHE_HOME=/tmp/xdg/cache XDG_CONFIG_HOME=/tmp/xdg/config
-(cd src-tauri && cargo build -q -p leitor-estudos)
-BIN=src-tauri/target/debug/leitor-estudos
+EMBEDDED="${LEITOR_CAPTURE_EMBEDDED:-0}"
+if [[ "$EMBEDDED" == 1 ]]; then
+  bash scripts/fetch-pyodide.sh >/dev/null
+  pnpm --dir web build >/tmp/vite-build.log 2>&1
+  (cd src-tauri && cargo build -q -p leitor-estudos --features tauri/custom-protocol \
+    && cp target/debug/leitor-estudos target/debug/leitor-estudos-embedded \
+    && cargo build -q -p leitor-estudos)
+  BIN=src-tauri/target/debug/leitor-estudos-embedded
+else
+  (cd src-tauri && cargo build -q -p leitor-estudos)
+  BIN=src-tauri/target/debug/leitor-estudos
+fi
 BOOK_UID=""
 SEED_ARGS=()
 if [[ -n "${LEITOR_CAPTURE_PDF:-}" ]]; then
@@ -33,10 +47,12 @@ if [[ "${LEITOR_CAPTURE_SEED:-}" == 1 ]]; then
   src-tauri/target/debug/examples/seed_fixture "$LEITOR_DATA_DIR/anki" --force "${SEED_ARGS[@]}" >"$LEITOR_FIXTURE_JSON"
   echo "fixture seeded: $LEITOR_FIXTURE_JSON"
 fi
-pnpm --dir web exec vite --port 5173 --strictPort >/tmp/vite.log 2>&1 &
-VITE=$!
-trap 'kill $VITE 2>/dev/null || true' EXIT
-for _ in $(seq 60); do curl -sf http://localhost:5173 >/dev/null && break; sleep 0.5; done
+if [[ "$EMBEDDED" != 1 ]]; then
+  pnpm --dir web exec vite --port 5173 --strictPort >/tmp/vite.log 2>&1 &
+  VITE=$!
+  trap 'kill $VITE 2>/dev/null || true' EXIT
+  for _ in $(seq 60); do curl -sf http://localhost:5173 >/dev/null && break; sleep 0.5; done
+fi
 if [[ -n "$BOOK_UID" ]]; then
   # Deep link and "Abrir com" stay inside this throwaway profile: never register the scheme here.
   PDF="$LEITOR_CAPTURE_PDF" xvfb-run -a -s "-screen 0 1280x820x24" bash -c "
@@ -61,7 +77,8 @@ for spec in "$@"; do
   route=$(resolve "$spec")
   name=$(echo "${spec#/}" | tr -d '{}' | tr '/?=&%: ' '-------'); name=${name:-root}
   ROUTE="$route" xvfb-run -a -s "-screen 0 1280x820x24" bash -c "
-    LEITOR_DEEP_LINK_REGISTER=0 LEITOR_START_ROUTE=\"\$ROUTE\" $BIN ${LEITOR_CAPTURE_ARGS:-} >/tmp/app-\$\$.log 2>&1 &
+    LEITOR_DEEP_LINK_REGISTER=0 LEITOR_WEBKIT_CONSOLE=1 LEITOR_BRIDGE_PROBE=1 LEITOR_START_ROUTE=\"\$ROUTE\" \\
+      $BIN ${LEITOR_CAPTURE_ARGS:-} >'$OUT/$name.log' 2>&1 &
     APP=\$!; sleep \${LEITOR_CAPTURE_WAIT:-8}
     import -window root '$OUT/$name.png'
     kill \$APP 2>/dev/null; wait \$APP 2>/dev/null || true"

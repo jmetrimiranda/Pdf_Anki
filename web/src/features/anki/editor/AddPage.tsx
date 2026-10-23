@@ -10,6 +10,9 @@ import { DeckPicker } from '../shared/DeckPicker';
 import { draftFields, editField, newDraft, setTags, type Draft } from './draft';
 import { NoteFields, type NoteFieldsHandle } from './NoteFields';
 import { NotetypePicker } from './NotetypePicker';
+import { codeToHtml } from './codeField';
+import { ReferenceTest } from './ReferenceTest';
+import { codeRoleOf, fieldsByName, PROGRAM_TYPE, useReferenceGate } from './referenceTest';
 import { TagsInput } from './TagsInput';
 import { useGo } from './useGo';
 import { checkError, useNoteCheck } from './useNoteCheck';
@@ -35,9 +38,16 @@ function loadPinned(nt: NotetypeInfo): boolean[] {
   return nt.fields.map(() => false);
 }
 
+/** Defaults of the Linguagem and Modo selects of a new "Código · Programa" note. */
+const PROGRAM_DEFAULTS: Record<string, string> = { Linguagem: 'python', Modo: 'testes' };
+
 /** Fields carried over to another notetype, by position (as Anki's Add window does). */
 function carryOver(fields: readonly string[], to: NotetypeInfo): string[] {
-  return to.fields.map((_, i) => fields[i] ?? '');
+  return to.fields.map((f, i) => {
+    const v = fields[i] ?? '';
+    const fallback = to.appType === PROGRAM_TYPE ? PROGRAM_DEFAULTS[f.name] : undefined;
+    return fallback && !v.trim() ? codeToHtml(fallback) : v;
+  });
 }
 
 /** "Adicionar" (spec 8.2): own editor, notetype and deck pickers, tags; Ctrl+Enter adds. */
@@ -102,6 +112,13 @@ export function AddPage({ deckId: deckProp, notetypeId: notetypeProp }: { deckId
 
   const missingAppTypes = notetypes.data ? APP_TYPE_COUNT - notetypes.data.filter((nt) => nt.appType).length : 0;
 
+  // App code types: the reference must pass before adding (spec 11.7).
+  const codeRole = codeRoleOf(notetype);
+  const byName = useMemo(() => (notetype && fields ? fieldsByName(notetype, fields) : null), [notetype, fields]);
+  const gate = useReferenceGate(codeRole, byName);
+  const gateRef = useRef(gate);
+  gateRef.current = gate;
+
   const togglePin = (i: number) => {
     if (!notetype) return;
     setPinned((p) => {
@@ -115,9 +132,10 @@ export function AddPage({ deckId: deckProp, notetypeId: notetypeProp }: { deckId
     });
   };
 
-  const add = async () => {
+  const add = async (untested = false) => {
     const d = draftRef.current;
     if (!d || !notetype || deckId === null || adding) return;
+    if (!untested && !gateRef.current.canSave) return;
     const values = draftFields(d);
     setAdding(true);
     try {
@@ -140,6 +158,7 @@ export function AddPage({ deckId: deckProp, notetypeId: notetypeProp }: { deckId
       );
       setResetKey((k) => k + 1);
       setAttempted(false);
+      gateRef.current.reset();
       void qc.invalidateQueries({ queryKey: ['anki'], refetchType: 'active' });
       requestAnimationFrame(() => fieldsRef.current?.focusFirst());
     } catch (e) {
@@ -249,6 +268,13 @@ export function AddPage({ deckId: deckProp, notetypeId: notetypeProp }: { deckId
             </Notice>
           )}
         </Card>
+        <ReferenceTest
+          gate={gate}
+          onSaveUntested={() => {
+            gate.allowUntested();
+            void add(true);
+          }}
+        />
         <div className="flex flex-col gap-1">
           <span className="text-xs text-muted">{t('anki.editor.tags')}</span>
           <TagsInput
@@ -259,6 +285,18 @@ export function AddPage({ deckId: deckProp, notetypeId: notetypeProp }: { deckId
           />
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
+          {codeRole && (
+            <a
+              href={`/anki/importar-codigo${deckId !== null ? `?deck=${deckId}` : ''}`}
+              onClick={(e) => {
+                e.preventDefault();
+                go(`/anki/importar-codigo${deckId !== null ? `?deck=${deckId}` : ''}`);
+              }}
+              className="mr-auto text-xs text-link hover:underline"
+            >
+              {t('codeAuthoring.importLink')}
+            </a>
+          )}
           <span className="hidden text-xs text-muted sm:inline-flex sm:items-center sm:gap-1.5">
             <Kbd>Ctrl+Enter</Kbd> {t('anki.editor.addHint')}
           </span>
@@ -266,7 +304,7 @@ export function AddPage({ deckId: deckProp, notetypeId: notetypeProp }: { deckId
             variant="primary"
             icon={Plus}
             loading={adding}
-            disabled={!notetype || deckId === null}
+            disabled={!notetype || deckId === null || !gate.canSave}
             onClick={() => void add()}
           >
             {t('anki.editor.add')}

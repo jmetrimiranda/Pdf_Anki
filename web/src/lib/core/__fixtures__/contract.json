@@ -76,6 +76,96 @@
     "suspended",
     "template"
   ],
+  "CodeAcceptResult": [
+    "accepted",
+    "target"
+  ],
+  "CodeCard": [
+    "acceptedField",
+    "answerShowsAnswer",
+    "answerShowsNotes",
+    "appType",
+    "fields",
+    "notetypeId",
+    "role"
+  ],
+  "CodeCardFields": [
+    "accepted",
+    "answer",
+    "expectedOutput",
+    "initial",
+    "input",
+    "language",
+    "mode",
+    "notes",
+    "requires",
+    "setup",
+    "tests"
+  ],
+  "CodeFormatted": [
+    "formatted",
+    "formatter"
+  ],
+  "CodeImportResult": [
+    "added",
+    "noteIds",
+    "skipped"
+  ],
+  "CodeMapping": [
+    "fields",
+    "missingFields",
+    "noteCount",
+    "notetypeId",
+    "notetypeName",
+    "role",
+    "updatedAt"
+  ],
+  "CodeMappingFields": [
+    "answer",
+    "notes",
+    "question"
+  ],
+  "CodeNoteExtra": [
+    "accepted",
+    "noteId",
+    "requires"
+  ],
+  "CodeSettings": [
+    "cppBackend",
+    "outputExact",
+    "runnerTokenSet",
+    "runnerUrl",
+    "suggestEasy",
+    "suggestEasySecs"
+  ],
+  "CodeStatus": [
+    "cpp",
+    "cppBackend"
+  ],
+  "CppCompileResult": [
+    "ok",
+    "stderr",
+    "timeMs"
+  ],
+  "CppRunOutput": [
+    "exitCode",
+    "signal",
+    "stderr",
+    "stdout",
+    "timeMs",
+    "timedOut",
+    "truncated"
+  ],
+  "CppRunResult": [
+    "backend",
+    "compile",
+    "compiler",
+    "run"
+  ],
+  "CppStatus": [
+    "local",
+    "remote"
+  ],
   "DeckNode": [
     "children",
     "collapsed",
@@ -114,6 +204,27 @@
     "backup",
     "status"
   ],
+  "ImportItem": [
+    "errors",
+    "fields",
+    "index",
+    "kind",
+    "language",
+    "line",
+    "mode",
+    "tags",
+    "title",
+    "warnings"
+  ],
+  "ImportPreview": [
+    "errors",
+    "items",
+    "warnings"
+  ],
+  "LocalCppStatus": [
+    "clangFormat",
+    "compiler"
+  ],
   "MiniReviewClosed": [
     "restoredDeckId"
   ],
@@ -136,6 +247,14 @@
     "new",
     "review"
   ],
+  "RemoteCppStatus": [
+    "tokenSet",
+    "url"
+  ],
+  "RunnerTestResult": [
+    "message",
+    "ok"
+  ],
   "SourceLink": [
     "bookUid",
     "label",
@@ -154,6 +273,7 @@
     "buttons",
     "canUndo",
     "cardId",
+    "code",
     "counts",
     "deckId",
     "deckName",

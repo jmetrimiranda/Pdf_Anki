@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ToastProvider, TooltipProvider } from '../../../components/ui';
 import { core } from '../../../lib/core/client';
-import { mockHandle } from '../../../lib/core/mock';
+import { mockClient, mockHandle } from '../../../lib/core/mock';
 import { animalFarmUid, deckByName } from '../../../lib/core/mock/ankiData';
 import { resetStudyMock } from '../../../lib/core/mock/ankiStudy';
 import { installDomStubs } from '../../../lib/testing/dom';
@@ -200,6 +200,9 @@ describe('StudyPage', () => {
   });
 
   it('pycmd from the card: ans shows the answer (asking for the typed text first), ease answers', async () => {
+    // The stock "type in the answer" card of the ROS deck (the code cards there use the code panel instead).
+    const others = await mockClient.ankiSearch('deck:"ROS 2 — Revisão" -note:"Básico (digite a resposta)"', null);
+    await mockClient.ankiCardsSuspend(others, true);
     renderStudy({ deckId: deckId('ROS 2 — Revisão') });
     const f = await cardFrame();
     await f.send({ t: 'ready' });
@@ -208,7 +211,7 @@ describe('StudyPage', () => {
     expect(q && q.t === 'showQuestion' && q.q).toContain('id=typeans');
     await f.send({ t: 'pycmd', cmd: 'ans', id: 0 });
     await waitFor(() => expect(f.last('getTypedAnswer')).toBeTruthy());
-    await f.send({ t: 'typed', v: 'ros2 run tf2_ros tf2_echo world turtle1' });
+    await f.send({ t: 'typed', v: 'colcon build' });
     await waitFor(() => expect(f.last('showAnswer')).toBeTruthy());
     const a = f.last('showAnswer');
     expect(a && a.t === 'showAnswer' && a.a).toContain('typeGood');

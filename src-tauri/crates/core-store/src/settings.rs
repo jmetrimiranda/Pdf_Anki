@@ -24,6 +24,15 @@ pub mod keys {
     /// The account (`user@endpoint`) whose first sync (always a download) completed.
     pub const ANKI_SYNC_FIRST_DONE: &str = "anki_sync_first_done";
     pub const RUNNER_URL: &str = "runner_url";
+    /// Code review (spec 11.2): suggest "Fácil" when the answer is correct in under
+    /// [`CODE_SUGGEST_EASY_SECS`] seconds. Off by default.
+    pub const CODE_SUGGEST_EASY: &str = "code_suggest_easy";
+    /// Threshold in seconds for [`CODE_SUGGEST_EASY`] (1..=600, default 10).
+    pub const CODE_SUGGEST_EASY_SECS: &str = "code_suggest_easy_secs";
+    /// Program cards in mode `saida`: compare the output exactly (default: ignore trailing whitespace).
+    pub const CODE_OUTPUT_EXACT: &str = "code_output_exact";
+    /// Where C++ runs (spec 11.5): `auto` (local compiler, else the runner), `local` or `remote`.
+    pub const CODE_CPP_BACKEND: &str = "code_cpp_backend";
     pub const AI_PROVIDER: &str = "ai_provider";
     pub const AI_BASE_URL: &str = "ai_base_url";
     pub const AI_MODEL_FAST: &str = "ai_model_fast";
@@ -36,7 +45,7 @@ pub mod keys {
 #[derive(Clone, Copy)]
 enum Kind {
     Bool,
-    Int { min: i64 },
+    Int { min: i64, max: i64 },
     Number { min: f64 },
     Text,
     Choice(&'static [&'static str]),
@@ -65,10 +74,24 @@ fn null() -> Value {
 use keys::*;
 
 const SPECS: &[Spec] = &[
-    spec(VOCAB_ROOT_DECK_ID, Kind::Int { min: i64::MIN }, true, null),
-    spec(VOCAB_KNOWN_IVL_DAYS, Kind::Int { min: 1 }, false, || {
-        21.into()
-    }),
+    spec(
+        VOCAB_ROOT_DECK_ID,
+        Kind::Int {
+            min: i64::MIN,
+            max: i64::MAX,
+        },
+        true,
+        null,
+    ),
+    spec(
+        VOCAB_KNOWN_IVL_DAYS,
+        Kind::Int {
+            min: 1,
+            max: i64::MAX,
+        },
+        false,
+        || 21.into(),
+    ),
     spec(VOCAB_COUNT_YOUNG, Kind::Bool, false, || false.into()),
     spec(
         VOCAB_SUSPENDED_POLICY,
@@ -82,9 +105,31 @@ const SPECS: &[Spec] = &[
     spec(ANKI_SYNC_URL, Kind::Text, true, null),
     spec(ANKI_SYNC_USER, Kind::Text, true, null),
     spec(ANKI_SYNC_CA_CERT, Kind::Text, true, null),
-    spec(ANKI_SYNC_LAST_AT, Kind::Int { min: 0 }, true, null),
+    spec(
+        ANKI_SYNC_LAST_AT,
+        Kind::Int {
+            min: 0,
+            max: i64::MAX,
+        },
+        true,
+        null,
+    ),
     spec(ANKI_SYNC_FIRST_DONE, Kind::Text, true, null),
     spec(RUNNER_URL, Kind::Text, true, null),
+    spec(CODE_SUGGEST_EASY, Kind::Bool, false, || false.into()),
+    spec(
+        CODE_SUGGEST_EASY_SECS,
+        Kind::Int { min: 1, max: 600 },
+        false,
+        || 10.into(),
+    ),
+    spec(CODE_OUTPUT_EXACT, Kind::Bool, false, || false.into()),
+    spec(
+        CODE_CPP_BACKEND,
+        Kind::Choice(&["auto", "local", "remote"]),
+        false,
+        || "auto".into(),
+    ),
     spec(
         AI_PROVIDER,
         Kind::Choice(&["anthropic", "openai_compatible"]),
@@ -127,9 +172,10 @@ fn validate(spec: &Spec, value: &Value) -> Result<()> {
     match spec.kind {
         Kind::Bool if value.is_boolean() => Ok(()),
         Kind::Bool => Err(invalid("esperado verdadeiro ou falso.".into())),
-        Kind::Int { min } => match value.as_i64() {
-            Some(n) if n >= min => Ok(()),
-            Some(_) => Err(invalid(format!("o mínimo é {min}."))),
+        Kind::Int { min, max } => match value.as_i64() {
+            Some(n) if n >= min && n <= max => Ok(()),
+            Some(n) if n < min => Err(invalid(format!("o mínimo é {min}."))),
+            Some(_) => Err(invalid(format!("o máximo é {max}."))),
             None => Err(invalid("esperado um número inteiro.".into())),
         },
         Kind::Number { min } => match value.as_f64() {

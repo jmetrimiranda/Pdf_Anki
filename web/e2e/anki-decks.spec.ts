@@ -92,7 +92,7 @@ test('prepare the collection, back up and list backups', async ({ page }) => {
   await page.goto('/anki');
   await page.getByRole('button', { name: 'Mais ações' }).click();
   await page.getByRole('menuitem', { name: 'Preparar coleção' }).click();
-  await expect(page.getByText('Tipos de nota criados: Cloze (Leitor), Código · Programa.')).toBeVisible();
+  await expect(page.getByText('Tipos de nota criados: Cloze (Leitor).')).toBeVisible();
   await page.getByRole('button', { name: 'Mais ações' }).click();
   await page.getByRole('menuitem', { name: 'Preparar coleção' }).click();
   await expect(page.getByText(/^A coleção já está preparada/)).toBeVisible();

@@ -15,6 +15,7 @@ import { t } from '../../../i18n';
 import { core } from '../../../lib/core/client';
 import { NoteEditorDialog } from '../../anki/editor/NoteEditorDialog';
 import { AnswerButtons, ShowAnswerButton, StudyCounts } from '../../anki/study/AnswerBar';
+import { CodePanel } from '../../code-review/CodePanel';
 import { StudyStage } from '../../anki/study/StudyStage';
 import { focusWithin, studyInOrder, useStudySession } from '../../anki/study/useStudySession';
 import { leitor, useLeitorSelector } from '../../leitor';
@@ -257,14 +258,29 @@ export function MiniReview({ bookUid, decks, initialDeckId, onClose }: MiniRevie
         </div>
       )}
 
-      <StudyStage
-        session={session}
+      <div
         className={
           view.kind === 'done' || view.kind === 'error'
             ? 'hidden'
-            : 'relative min-h-48 flex-1 overflow-hidden rounded-box border border-(--pc-border) bg-card'
+            : card?.code
+              ? 'flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto'
+              : 'flex min-h-0 flex-1 flex-col'
         }
-      />
+      >
+        <StudyStage
+          session={session}
+          className={
+            card?.code
+              ? 'relative min-h-36 shrink-0 basis-[35%] overflow-hidden rounded-box border border-(--pc-border) bg-card'
+              : 'relative min-h-48 flex-1 overflow-hidden rounded-box border border-(--pc-border) bg-card'
+          }
+        />
+        {card?.code && (
+          <div className="shrink-0 pb-1">
+            <CodePanel key={card.cardId} compact session={session} card={card} />
+          </div>
+        )}
+      </div>
 
       {card && (
         <footer className="flex shrink-0 flex-col items-stretch gap-1.5 pt-2">
@@ -286,7 +302,9 @@ export function MiniReview({ bookUid, decks, initialDeckId, onClose }: MiniRevie
             )}
           </div>
           {side === 'question' ? (
-            <ShowAnswerButton compact ref={session.showRef} onClick={session.showAnswer} disabled={busy || paused} />
+            !card.code && (
+              <ShowAnswerButton compact ref={session.showRef} onClick={session.showAnswer} disabled={busy || paused} />
+            )
           ) : (
             <AnswerButtons
               compact
@@ -295,6 +313,8 @@ export function MiniReview({ bookUid, decks, initialDeckId, onClose }: MiniRevie
               onAnswer={session.answer}
               disabled={busy || !statesMutated || paused}
               goodRef={session.goodRef}
+              groupRef={session.answerBarRef}
+              suggested={session.codeSuggestion ? session.codeSuggestion.rating : undefined}
             />
           )}
         </footer>

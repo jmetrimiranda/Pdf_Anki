@@ -19,6 +19,7 @@ export function NoteEditorDialog({
   const editor = useRef<NoteEditorHandle>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [blocked, setBlocked] = useState(false);
 
   const save = async () => {
     if (!editor.current) return;
@@ -37,7 +38,7 @@ export function NoteEditorDialog({
       footer={
         <>
           <Button onClick={() => onOpenChange(false)}>{t('common.cancel')}</Button>
-          <Button variant="primary" loading={saving} disabled={!dirty} onClick={() => void save()}>
+          <Button variant="primary" loading={saving} disabled={!dirty || blocked} onClick={() => void save()}>
             {t('common.save')}
           </Button>
         </>
@@ -50,6 +51,7 @@ export function NoteEditorDialog({
             noteId={noteId}
             onSaved={onSaved}
             onDirtyChange={setDirty}
+            onSaveBlockedChange={setBlocked}
             onSubmit={() => void save()}
           />
         </div>

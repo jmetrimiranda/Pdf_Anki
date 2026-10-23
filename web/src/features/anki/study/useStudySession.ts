@@ -150,6 +150,19 @@ export function useStudySession(opts: StudySessionOptions) {
 
   const frame = useRef<CardFrameHandle>(null);
   const goodRef = useRef<HTMLButtonElement>(null);
+  /** The answer buttons' group (code cards focus the suggested button, or the group when there is none). */
+  const answerBarRef = useRef<HTMLDivElement>(null);
+  /**
+   * Code cards (spec 11.2): after a check (or "Mostrar resposta") Enter/Space answer with the suggested rating
+   * instead of "Bom"; `rating: null` = no suggestion (Enter does nothing, the user picks 1–4). `null` = not a code
+   * answer side (the usual keys).
+   */
+  const [codeSuggestion, setCodeSuggestionState] = useState<{ rating: Rating | null } | null>(null);
+  const codeSuggestionRef = useRef<{ rating: Rating | null } | null>(null);
+  const setCodeSuggestion = useCallback((s: { rating: Rating | null } | null) => {
+    codeSuggestionRef.current = s;
+    setCodeSuggestionState(s);
+  }, []);
   const showRef = useRef<HTMLButtonElement>(null);
   const viewRef = useRef<StudyView>(view);
   viewRef.current = view;
@@ -245,14 +258,17 @@ export function useStudySession(opts: StudySessionOptions) {
       }
       shownAt.current = performance.now();
       setStartedAt(Date.now());
+      setCodeSuggestion(null);
       if (card.autoplay && card.questionAv.length > 0) player.play(card.questionAv);
       else player.stop();
+      // Code cards: the CodePanel's input/editor takes the focus.
+      if (card.code) return;
       if (card.typeAnswer) f.focus();
       // The button appears with the next render when the answer side was on screen.
       else if (showRef.current) showRef.current.focus({ preventScroll: true });
       else requestAnimationFrame(() => showRef.current?.focus({ preventScroll: true }));
     },
-    [player, settleMutation],
+    [player, settleMutation, setCodeSuggestion],
   );
 
   const apply = useCallback(
@@ -400,28 +416,61 @@ export function useStudySession(opts: StudySessionOptions) {
     }
   }
 
-  async function showAnswer() {
+  /** Focuses the answer bar of a code card: its suggested button, else the group itself (Enter does nothing there). */
+  function focusCodeAnswerBar(tries = 10) {
+    requestAnimationFrame(() => {
+      // The bar appears with the render of the answer side: wait for it (a few frames at most).
+      const bar = answerBarRef.current;
+      const rating = codeSuggestionRef.current?.rating ?? null;
+      const btn = rating ? bar?.querySelector<HTMLButtonElement>(`[data-rating="${rating}"]`) : null;
+      if (!bar || (rating && (!btn || btn.disabled))) {
+        if (tries > 0) focusCodeAnswerBar(tries - 1);
+        return;
+      }
+      (btn ?? bar).focus({ preventScroll: true });
+    });
+  }
+
+  /**
+   * Code cards: shows the answer side after a check (`rating` = the suggested one, preselected; `null` = none,
+   * e.g. "Não verificável" or "Mostrar resposta"). Returns once the answer side is on screen (false if it is not).
+   */
+  async function revealCode(rating: Rating | null): Promise<boolean> {
     const v = viewRef.current;
-    if (pausedRef.current || v.kind !== 'card' || v.side !== 'question') return;
+    if (pausedRef.current || v.kind !== 'card' || !v.card.code) return false;
+    setCodeSuggestion({ rating });
+    if (v.side === 'answer') {
+      focusCodeAnswerBar();
+      return true;
+    }
+    const ok = await showAnswer(false);
+    if (ok) focusCodeAnswerBar();
+    return ok;
+  }
+
+  async function showAnswer(focusGood = true): Promise<boolean> {
+    const v = viewRef.current;
+    if (pausedRef.current || v.kind !== 'card' || v.side !== 'question') return false;
     const card = v.card;
     // The answer buttons describe the states the answer will use: wait for the custom scheduling JS first
     // (reviewer.py `_showEaseButtons` waits for `_states_mutated` the same way).
     await mutationSettled();
     const still = viewRef.current;
-    if (still.kind !== 'card' || still.side !== 'question' || still.card.cardId !== card.cardId) return;
+    if (still.kind !== 'card' || still.side !== 'question' || still.card.cardId !== card.cardId) return false;
     const side = await run(async () => {
       const typed = card.typeAnswer ? await requestTyped() : null;
       return core.ankiShowAnswer(card.cardId, typed);
     });
-    if (!side) return;
+    if (!side) return false;
     const now = viewRef.current;
-    if (now.kind !== 'card' || now.card.cardId !== card.cardId) return;
+    if (now.kind !== 'card' || now.card.cardId !== card.cardId) return false;
     setShown(null);
     setView({ kind: 'card', card, side: 'answer', answer: side });
     frame.current?.post({ t: 'showAnswer', a: side.html });
     if (card.autoplay && side.av.length > 0) player.play(side.av);
     else player.stop();
-    requestAnimationFrame(() => goodRef.current?.focus({ preventScroll: true }));
+    if (focusGood) requestAnimationFrame(() => goodRef.current?.focus({ preventScroll: true }));
+    return true;
   }
 
   async function answer(rating: Rating) {
@@ -530,13 +579,23 @@ export function useStudySession(opts: StudySessionOptions) {
   }
 
   function doAction(a: StudyKeyAction, source: KeyLike): boolean {
+    const v = viewRef.current;
+    const code = v.kind === 'card' && !!v.card.code;
     switch (a.kind) {
       case 'showAnswer':
-        void showAnswer();
+        // Code cards are answered through the CodePanel (Verificar / Mostrar resposta).
+        if (!code) void showAnswer();
         return true;
-      case 'answer':
+      case 'answer': {
+        const suggestion = codeSuggestionRef.current;
+        if (code && suggestion && (source.key === 'Enter' || source.key === ' ')) {
+          // Enter confirms the suggestion; with none ("Não verificável") it does nothing.
+          if (suggestion.rating) void answer(suggestion.rating);
+          return true;
+        }
         void answer(a.rating);
         return true;
+      }
       case 'edit':
         if (viewRef.current.kind === 'card') setEditing(true);
         return true;
@@ -576,6 +635,16 @@ export function useStudySession(opts: StudySessionOptions) {
     const accept = optsRef.current.acceptKey;
     if (accept && !accept(e)) return;
     const v = viewRef.current;
+    // Code cards: Enter/Space on a control of the code panel (Verificar, Contestar…) activate that control.
+    if (
+      v.kind === 'card' &&
+      v.card.code &&
+      (e.key === 'Enter' || e.key === ' ') &&
+      e.target instanceof Element &&
+      e.target.closest('button,a,summary,input') &&
+      !answerBarRef.current?.contains(e.target)
+    )
+      return;
     const side = v.kind === 'card' ? v.side : 'question';
     const action = studyKeyAction(keyLikeOf(e), side, canUndo());
     if (!action || action.kind === 'forward') return;
@@ -607,7 +676,7 @@ export function useStudySession(opts: StudySessionOptions) {
       case 'shown': {
         const v = viewRef.current;
         if (v.kind === 'card') setShown(v.side);
-        if (autoShowAnswer && !autoShown.current && v.kind === 'card' && v.side === 'question') {
+        if (autoShowAnswer && !autoShown.current && v.kind === 'card' && v.side === 'question' && !v.card.code) {
           autoShown.current = true;
           void showAnswer();
         }
@@ -643,7 +712,8 @@ export function useStudySession(opts: StudySessionOptions) {
   function onPycmd(cmd: string) {
     const v = viewRef.current;
     if (cmd === 'ans') {
-      void showAnswer();
+      // Code cards are answered through the CodePanel.
+      if (!(v.kind === 'card' && v.card.code)) void showAnswer();
     } else if (/^ease[1-4]$/.test(cmd)) {
       if (v.kind === 'card' && v.side === 'answer') void answer(Number(cmd.slice(4)) as Rating);
     } else if (cmd.startsWith('play:')) {
@@ -681,9 +751,16 @@ export function useStudySession(opts: StudySessionOptions) {
     frame,
     goodRef,
     showRef,
+    answerBarRef,
+    /** Code cards: the suggested rating on the answer side (`null` = not a code answer side). */
+    codeSuggestion,
+    setCodeSuggestion,
+    revealCode,
     player,
     onCardMessage,
     showAnswer: () => void showAnswer(),
+    /** Time on the card so far (ms), for "Fácil se rápido". */
+    elapsedMs: () => Math.max(0, performance.now() - shownAt.current),
     answer: (r: Rating) => void answer(r),
     undo: () => void undo(),
     cardAction: (a: CardAction, flag?: number) => void cardAction(a, flag),

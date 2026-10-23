@@ -6,13 +6,36 @@ import { ToastProvider, TooltipProvider } from '../../components/ui';
 import { mockClient, mockHandle } from '../../lib/core/mock';
 import type { BookPanelInfo } from '../../lib/core/types';
 import { installDomStubs } from '../../lib/testing/dom';
-import { CardForm, defaultDeck, noteFields, prefill, wrapCloze, type CardSelection } from './CardForm';
+import {
+  CardForm,
+  defaultDeck,
+  initialKind,
+  KIND_ORDER,
+  noteFields,
+  prefill,
+  wrapCloze,
+  type CardSelection,
+} from './CardForm';
+import { runCodeCheck } from '../code-review/run';
+import { outcome } from '../anki/editor/codeTesting';
 import { fonteHtml } from './fonte';
+
+vi.mock(
+  '../../components/code/CodeEditor',
+  async () => (await import('../anki/editor/codeTesting')).fakeCodeEditorModule,
+);
+vi.mock('../code-review/run', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../code-review/run')>()),
+  runCodeCheck: vi.fn(),
+}));
+const check = vi.mocked(runCodeCheck);
 
 beforeAll(() => installDomStubs());
 beforeEach(async () => {
   mockHandle.reset();
   localStorage.clear();
+  check.mockReset();
+  check.mockResolvedValue(outcome('correct', { modeUsed: 'command' }));
   // The seed collection lacks some app notetypes ("Preparar coleção" is tested on its own).
   await mockClient.ankiPrepareCollection();
 });
@@ -59,7 +82,17 @@ describe('card form helpers', () => {
     expect(prefill('basic', 'The wind-\nmill  fell.')).toEqual({ Frente: 'The windmill fell.', Verso: '' });
     expect(prefill('cloze', 'a\nb')).toEqual({ Texto: 'a b', 'Verso extra': '' });
     expect(prefill('codeCommand', 'ros2 run\n  demo')).toEqual({ Pergunta: '', Resposta: 'ros2 run\n  demo' });
-    expect(prefill('codeProgram', 'x = 1')).toEqual({ Pergunta: '', Linguagem: 'python', Resposta: 'x = 1' });
+    expect(prefill('codeCommand', '$ ros2 run turtlesim turtlesim_node')).toEqual({
+      Pergunta: '',
+      Resposta: 'ros2 run turtlesim turtlesim_node',
+    });
+    expect(prefill('codeProgram', 'x = 1')).toEqual({
+      Pergunta: '',
+      Linguagem: 'python',
+      Modo: 'estrutura',
+      Resposta: 'x = 1',
+    });
+    expect(prefill('codeProgram', '#include <cstdio>\nint main() { return 0; }').Linguagem).toBe('cpp');
     expect(prefill('vocab', '“Animals,”')).toEqual({ Palavra: 'Animals', Lema: 'animals', Exemplo: 'Animals' });
   });
 
@@ -108,6 +141,14 @@ describe('card form helpers', () => {
     expect(defaultDeck('cloze', { ...base, lastDeckId: null, contentDeck: null, vocabDeck: noVocab }, 1)).toBe(1);
     expect(defaultDeck('vocab', base, 1)).toBe(7);
     expect(defaultDeck('vocab', { ...base, vocabDeck: { ...base.vocabDeck, exists: false, deckId: null } }, 1)).toBe(9);
+  });
+
+  it('opens with the kind the selection suggests; prose never gets a code kind', () => {
+    expect(initialKind('$ ros2 run turtlesim turtlesim_node', null, KIND_ORDER)).toBe('codeCommand');
+    expect(initialKind('def f(x):\n    return x', 'cloze', KIND_ORDER)).toBe('codeProgram');
+    expect(initialKind('All animals are equal.', 'cloze', KIND_ORDER)).toBe('cloze');
+    expect(initialKind('All animals are equal.', 'codeCommand', KIND_ORDER)).toBe('basic');
+    expect(initialKind('All animals are equal.', null, KIND_ORDER)).toBe('basic');
   });
 
   it('wraps a range in a cloze', () => {
@@ -198,18 +239,59 @@ describe('CardForm', () => {
     const question = within(form).getByRole('textbox', { name: 'Pergunta' });
     await waitFor(() => expect(document.activeElement).toBe(question));
     fireEvent.change(question, { target: { value: 'Listar e filtrar' } });
-    fireEvent.click(within(form).getByRole('button', { name: 'Adicionar' }));
+    const add = within(form).getByRole('button', { name: 'Adicionar' }) as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+    fireEvent.click(within(form).getByRole('button', { name: 'Testar' }));
+    await waitFor(() => expect(add.disabled).toBe(false));
+    fireEvent.click(add);
     await screen.findByText('Card adicionado');
     const fields = addLogs().at(-1)!.fields as string[];
     expect(fields[0]).toBe('Listar e filtrar');
     expect(fields[1]).toBe('ls -la | grep "&lt;x&gt;"<br>  cd /tmp');
   });
 
-  it('prefills Código · Programa with python', async () => {
+  it('prefills Código · Programa with the guessed language and mode estrutura', async () => {
     const { form } = await renderForm(sel('print(1)'));
     await chooseKind('Código · Programa');
-    expect((within(form).getByRole('textbox', { name: 'Linguagem' }) as HTMLInputElement).value).toBe('python');
+    expect((within(form).getByRole('combobox', { name: 'Linguagem' }) as HTMLSelectElement).value).toBe('python');
+    expect((within(form).getByRole('combobox', { name: 'Modo' }) as HTMLSelectElement).value).toBe('estrutura');
     expect((within(form).getByRole('textbox', { name: 'Resposta' }) as HTMLTextAreaElement).value).toBe('print(1)');
+  });
+
+  it('opens a command selection as Código · Comando without the prompt, Pergunta focused', async () => {
+    const { form } = await renderForm(sel('$ ros2 run turtlesim turtlesim_node'), { lastKind: 'cloze' });
+    expect(screen.getByRole('radio', { name: 'Código · Comando', checked: true })).toBeTruthy();
+    expect((within(form).getByRole('textbox', { name: 'Resposta' }) as HTMLTextAreaElement).value).toBe(
+      'ros2 run turtlesim turtlesim_node',
+    );
+    const question = within(form).getByRole('textbox', { name: 'Pergunta' });
+    await waitFor(() => expect(document.activeElement).toBe(question));
+    // Ctrl+Enter waits for the test.
+    fireEvent.change(question, { target: { value: 'Abrir o turtlesim' } });
+    const before = addLogs().length;
+    fireEvent.keyDown(question, { key: 'Enter', ctrlKey: true });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(addLogs().length).toBe(before);
+    fireEvent.click(within(form).getByRole('button', { name: 'Testar' }));
+    expect(await within(form).findByText('A resposta de referência passou.')).toBeTruthy();
+    fireEvent.keyDown(question, { key: 'Enter', ctrlKey: true });
+    await screen.findByText('Card adicionado');
+    expect((addLogs().at(-1)!.fields as string[]).slice(0, 2)).toEqual([
+      'Abrir o turtlesim',
+      'ros2 run turtlesim turtlesim_node',
+    ]);
+  });
+
+  it('opens a Python block as Código · Programa', async () => {
+    await renderForm(sel('def soma(xs):\n    return sum(xs)'));
+    expect(screen.getByRole('radio', { name: 'Código · Programa', checked: true })).toBeTruthy();
+  });
+
+  it('keeps prose on Básico even when the last kind was code', async () => {
+    await renderForm(sel('All animals are equal, but some animals are more equal than others.'), {
+      lastKind: 'codeCommand',
+    });
+    expect(screen.getByRole('radio', { name: 'Básico', checked: true })).toBeTruthy();
   });
 
   it('offers Vocabulário only for a single word, with the lemma and the sentence around it', async () => {

@@ -1,0 +1,22 @@
+// The exact Markdown example of spec 11.7 (tests and the e2e import it verbatim).
+export const SPEC_EXAMPLE = [
+  '### Ver a transformação entre os frames world e turtle1',
+  '```bash',
+  'ros2 run tf2_ros tf2_echo world turtle1',
+  '```',
+  '> Imprime Translation e Rotation (quaternion) a cada atualização.',
+  'aceitas: ros2 run tf2_ros tf2_echo world turtle1 --ros-args -r __node:=eco',
+  'tags: ros2 tf2',
+  '',
+  '### Função que soma os pares de uma lista',
+  '```python',
+  'def soma_pares(xs):',
+  '    return sum(x for x in xs if x % 2 == 0)',
+  '```',
+  '```tests',
+  'assert soma_pares([1, 2, 3, 4]) == 6',
+  'assert soma_pares([]) == 0',
+  '```',
+  'tags: python',
+  '',
+].join('\n');

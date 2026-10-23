@@ -239,6 +239,8 @@ export interface StudyCard {
   canUndo: boolean;
   showTimer: boolean;
   timerMaxSecs: number;
+  /** Code card (spec 11.2): studied with the app's editor and checker; `null` for every other card. */
+  code: CodeCard | null;
 }
 
 export type StudyNext =
@@ -446,6 +448,193 @@ export interface DeepLink {
   query: string | null;
 }
 
+// ---------------------------------------------------------------- code cards (spec 11, 14, 15)
+
+/** Kind of code card (spec 11.1). */
+export type CodeCardRole = 'command' | 'program';
+
+/** Raw field HTML of a code card (`''` when the type lacks the field); decode with `htmlToCode`. */
+export interface CodeCardFields {
+  answer: string;
+  accepted: string;
+  requires: string;
+  notes: string;
+  language: string;
+  mode: string;
+  initial: string;
+  setup: string;
+  tests: string;
+  input: string;
+  expectedOutput: string;
+}
+
+/**
+ * What the code review needs from a code card. For code cards `StudyCard.questionHtml` is only the question field
+ * (no type box) and `typeAnswer` is false.
+ */
+export interface CodeCard {
+  role: CodeCardRole;
+  notetypeId: number;
+  /** One of the app's types ("Código · Comando"/"Código · Programa") rather than a mapped user type. */
+  appType: boolean;
+  /** The notetype has an `Aceitas` field ("Contestar" adds there; otherwise to `code_note_extra`). */
+  acceptedField: boolean;
+  /** The card's answer template shows the notes field (the UI then doesn't repeat it). */
+  answerShowsNotes: boolean;
+  /** The card's answer template prints the answer field (the UI then doesn't repeat the reference answer). */
+  answerShowsAnswer: boolean;
+  fields: CodeCardFields;
+}
+
+/** Fields of a user notetype with the "Comando" role (names of that notetype's fields). */
+export interface CodeMappingFields {
+  question: string;
+  answer: string;
+  notes: string | null;
+}
+
+/** Role of a mapped notetype (`notetype_mapping.role`); the UI only assigns `code_command`. */
+export type CodeMappingRole = 'code_command' | 'code_program';
+
+/** A user notetype with the "Comando" role (Configurações → Código, `code_mapping_list`). */
+export interface CodeMapping {
+  notetypeId: number;
+  notetypeName: string;
+  role: CodeMappingRole;
+  fields: CodeMappingFields;
+  noteCount: number;
+  /** Mapped fields the notetype no longer has (its cards are then studied normally). */
+  missingFields: string[];
+  updatedAt: number;
+}
+
+/** Extra accepted answers / required prefixes of a note (`code_note_extra`; empty lists when none). */
+export interface CodeNoteExtra {
+  noteId: number;
+  accepted: string[];
+  requires: string[];
+}
+
+/** "Contestar" → where the answer went: the Aceitas field, `code_note_extra`, or nowhere (already accepted). */
+export type CodeAcceptTarget = 'field' | 'extra' | 'already';
+
+export interface CodeAcceptResult {
+  target: CodeAcceptTarget;
+  /** Every accepted answer of the note afterwards (plain text). */
+  accepted: string[];
+}
+
+export interface CompileResult {
+  ok: boolean;
+  stderr: string;
+  timeMs: number;
+}
+
+export interface RunResult {
+  /** `null` when killed by a signal. */
+  exitCode: number | null;
+  /** `SIGKILL`, `SIGXCPU`, `SIGXFSZ`… */
+  signal: string | null;
+  stdout: string;
+  stderr: string;
+  timeMs: number;
+  timedOut: boolean;
+  truncated: boolean;
+}
+
+/** `code_run_cpp` (spec 11.5). */
+export interface CppRunResult {
+  backend: 'local' | 'remote';
+  compiler: string | null;
+  compile: CompileResult;
+  /** `null` when the compilation failed. */
+  run: RunResult | null;
+}
+
+/** `code_format_cpp`: clang-format's output (`formatter: null` = returned unchanged, no clang-format). */
+export interface CppFormatResult {
+  formatted: string;
+  formatter: 'clang-format' | null;
+}
+
+export type CppBackendChoice = 'auto' | 'local' | 'remote';
+
+/** What can run C++ on this device (Configurações → Código). */
+export interface CodeStatus {
+  cpp: {
+    /** `null` on builds without local compilation (mobile). */
+    local: { compiler: string | null; clangFormat: boolean } | null;
+    remote: { url: string | null; tokenSet: boolean };
+  };
+  /** Where C++ runs now (`none`: nowhere, the cards use `estrutura`). */
+  cppBackend: 'local' | 'remote' | 'none';
+}
+
+export interface CodeSettings {
+  /** Suggest "Fácil" when correct in under `suggestEasySecs` seconds (off by default, spec 11.2). */
+  suggestEasy: boolean;
+  suggestEasySecs: number;
+  /** Mode `saida`: compare exactly (default: ignore trailing whitespace). */
+  outputExact: boolean;
+  cppBackend: CppBackendChoice;
+  runnerUrl: string | null;
+  /** The runner token is in the system keychain (it never leaves the core). */
+  runnerTokenSet: boolean;
+}
+
+/** Absent = unchanged; `runnerToken: null` removes the token, `runnerUrl: null` clears the URL. */
+export interface CodeSettingsPatch {
+  suggestEasy?: boolean;
+  suggestEasySecs?: number;
+  outputExact?: boolean;
+  cppBackend?: CppBackendChoice;
+  runnerUrl?: string | null;
+  runnerToken?: string | null;
+}
+
+/** "Testar runner". */
+export interface RunnerTestResult {
+  ok: boolean;
+  /** pt-BR. */
+  message: string;
+}
+
+export type ImportItemKind = 'command' | 'program';
+export type ProgramMode = 'testes' | 'saida' | 'estrutura';
+
+/** One `###` of the Markdown import (spec 11.7). */
+export interface ImportItem {
+  /** 0-based position (what `include` refers to). */
+  index: number;
+  /** 1-based line of the heading. */
+  line: number;
+  title: string;
+  kind: ImportItemKind | null;
+  language: string | null;
+  mode: ProgramMode | null;
+  /** Plain text by field name (Pergunta, Resposta, Aceitas, …). */
+  fields: Record<string, string>;
+  tags: string[];
+  /** The item cannot be added (pt-BR). */
+  errors: string[];
+  /** Added, but something was ignored (pt-BR). */
+  warnings: string[];
+}
+
+export interface ImportPreview {
+  items: ImportItem[];
+  warnings: string[];
+  /** The whole text was refused (no items then). */
+  errors: string[];
+}
+
+export interface CodeImportResult {
+  added: number;
+  noteIds: number[];
+  /** Items not added (errors, or not included). */
+  skipped: number;
+}
+
 // ---------------------------------------------------------------- Anki sync (spec 9)
 
 /**
@@ -624,6 +813,26 @@ export interface CoreClient {
   ankiSyncNotify(event: SyncNotifyEvent): Promise<void>;
   /** `anki://sync`: the sync status changed. */
   onAnkiSync(cb: (s: AnkiSyncStatus) => void): Unlisten;
+
+  // Code cards (spec 11, 15)
+  codeMappingList(): Promise<CodeMapping[]>;
+  /** Assigns the "Comando" role to a user notetype (`fields`), or removes it (`null`). App types are refused. */
+  codeMappingSet(notetypeId: number, fields: CodeMappingFields | null): Promise<CodeMapping[]>;
+  codeNoteExtraGet(noteId: number): Promise<CodeNoteExtra>;
+  codeNoteExtraSet(noteId: number, accepted: string[], requires: string[]): Promise<CodeNoteExtra>;
+  /** "Contestar": adds `answer` to the note's accepted answers (Aceitas field, else `code_note_extra`). */
+  codeAcceptAnswer(noteId: number, answer: string): Promise<CodeAcceptResult>;
+  /** Compiles and runs C++ (local compiler on desktop, else the runner); `code_cpp_unavailable` when neither. */
+  codeRunCpp(files: Record<string, string>, stdin: string): Promise<CppRunResult>;
+  codeFormatCpp(code: string): Promise<CppFormatResult>;
+  codeStatus(): Promise<CodeStatus>;
+  codeSettingsGet(): Promise<CodeSettings>;
+  codeSettingsSet(patch: CodeSettingsPatch): Promise<CodeSettings>;
+  codeRunnerTest(): Promise<RunnerTestResult>;
+  /** Parses a Markdown batch (preview with the errors of each item). */
+  codeImportMarkdown(text: string): Promise<ImportPreview>;
+  /** Adds the items `include` (indexes) of `text` to `deckId`. */
+  codeImportCommit(text: string, deckId: number, include: number[]): Promise<CodeImportResult>;
 
   // Library
   libraryList(): Promise<LibraryEntry[]>;

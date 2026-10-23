@@ -6,6 +6,7 @@ import {
   ChevronDown,
   DatabaseBackup,
   Ellipsis,
+  FileCode,
   Import,
   Package,
   Plus,
@@ -170,6 +171,12 @@ export function DecksPage() {
             items={[
               { label: t('anki.import.apkg'), icon: Package, onSelect: () => void imports.pickPackage() },
               { label: t('anki.import.colpkg'), icon: Archive, onSelect: () => void imports.pickPackage() },
+              { kind: 'separator' },
+              {
+                label: t('codeImport.menu'),
+                icon: FileCode,
+                onSelect: () => void navigate({ to: '/anki/importar-codigo', search: {} }),
+              },
             ]}
             trigger={
               <Button variant="ghost" size="sm" icon={Import} iconRight={ChevronDown}>

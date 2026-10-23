@@ -15,7 +15,7 @@ import {
   type MockAnkiLog,
 } from './mock/ankiData';
 import { createAnkiDecksMock, mockDailyBackup } from './mock/ankiDecks';
-import { ankiNotesMock } from './mock/ankiNotes';
+import { ankiNotesMock, mockSearch } from './mock/ankiNotes';
 import { ankiStudyMock, mockStudyOwner, resetStudyMock } from './mock/ankiStudy';
 import {
   createBookPanelMock,
@@ -25,6 +25,7 @@ import {
   resetBookPanel,
 } from './mock/bookPanel';
 import { ankiSyncMock, mockSyncHandle, resetSync, syncCollectionReplaced, type MockSyncHandle } from './mock/ankiSync';
+import { codeMock, mockSetCppAvailable, resetCodeMock } from './mock/code';
 import {
   CoreError,
   type AddedBook,
@@ -687,6 +688,7 @@ export const mockClient: CoreClient = {
   ...ankiStudyMock,
   ...ankiNotesMock,
   ...ankiSyncMock,
+  ...codeMock,
   ...createBookPanelMock({
     book: (uid) => {
       const b = liveRec(uid).book;
@@ -752,6 +754,18 @@ export interface MockAnkiHandle {
   readonly currentDeckId: number;
   /** Who studies now (`anki://study-owner`). */
   readonly studyOwner: StudyOwner | null;
+  /** C++ of the code cards: `false` = no compiler and no runner (`code_cpp_unavailable`). */
+  setCppAvailable(available: boolean): void;
+  /** `code_note_extra` of a note (empty lists when none). */
+  codeExtra(noteId: number): { accepted: string[]; requires: string[] };
+  /** Raw HTML of a note's fields (by field name). */
+  noteFields(noteId: number): Record<string, string>;
+  /** Suspends the cards matching an Anki search (e2e: choose which card a deck shows first); returns how many. */
+  suspend(query: string): number;
+  /** Moves the cards matching an Anki search to a deck (full name); returns how many. */
+  moveCards(query: string, deckName: string): number;
+  /** Configurações → Código: gives a user notetype the "Comando" role (`null` removes it). */
+  mapCommand(notetypeName: string, fields: { question: string; answer: string; notes: string | null } | null): void;
 }
 
 const ankiHandle: MockAnkiHandle = {
@@ -793,6 +807,42 @@ const ankiHandle: MockAnkiHandle = {
   get studyOwner() {
     return mockStudyOwner();
   },
+  setCppAvailable: (available) => mockSetCppAvailable(available),
+  codeExtra(noteId) {
+    const e = ankiState().codeExtras?.[String(noteId)];
+    return { accepted: [...(e?.accepted ?? [])], requires: [...(e?.requires ?? [])] };
+  },
+  suspend(query) {
+    const ids = new Set(mockSearch(query, null));
+    const st = ankiState();
+    for (const c of st.cards) if (ids.has(c.id)) c.queue = 'suspended';
+    persistAnki();
+    return ids.size;
+  },
+  moveCards(query, deckName) {
+    const ids = new Set(mockSearch(query, null));
+    const st = ankiState();
+    const deck = st.decks.find((d) => d.name === deckName);
+    if (!deck) throw new Error(`no deck ${deckName}`);
+    for (const c of st.cards) if (ids.has(c.id)) c.deckId = deck.id;
+    persistAnki();
+    return ids.size;
+  },
+  mapCommand(notetypeName, fields) {
+    const st = ankiState();
+    const nt = st.notetypes.find((n) => n.name === notetypeName);
+    if (!nt) throw new Error(`no notetype ${notetypeName}`);
+    const others = (st.codeMappings ?? []).filter((m) => m.notetypeId !== nt.id);
+    st.codeMappings = fields ? [...others, { notetypeId: nt.id, fields, updatedAt: Date.now() }] : others;
+    persistAnki();
+  },
+  noteFields(noteId) {
+    const s = ankiState();
+    const note = s.notes.find((n) => n.id === noteId);
+    const nt = note && s.notetypes.find((x) => x.id === note.notetypeId);
+    if (!note || !nt) return {};
+    return Object.fromEntries(nt.fields.map((f, i) => [f, note.fields[i] ?? '']));
+  },
 };
 
 export const mockHandle: LeitorMockHandle = {
@@ -824,6 +874,7 @@ export const mockHandle: LeitorMockHandle = {
     resetSync();
     resetStudyMock();
     resetBookPanel();
+    resetCodeMock();
   },
   setVocabRoot: (deckId) => mockSetVocabRoot(deckId),
   deepLink: (url) => mockDeepLink(url),

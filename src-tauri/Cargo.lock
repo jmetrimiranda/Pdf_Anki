@@ -1104,6 +1104,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-code"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "core-cpp"
+version = "0.1.0"
+dependencies = [
+ "nix",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "core-epub"
 version = "0.1.0"
 dependencies = [
@@ -3305,6 +3328,8 @@ dependencies = [
  "chrono",
  "core-ai",
  "core-anki",
+ "core-code",
+ "core-cpp",
  "core-epub",
  "core-pdf",
  "core-store",

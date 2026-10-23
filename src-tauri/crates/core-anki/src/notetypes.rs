@@ -37,6 +37,9 @@ pub const SOURCE_FIELD: &str = "Fonte";
 /// Shared CSS for the source link at the bottom of the answer.
 pub const SOURCE_CSS: &str = "\n.leitor-fonte{font-size:.8em;opacity:.75;margin-top:1em}\n";
 
+/// Code types: long code lines scroll inside their block instead of being cut at narrow widths.
+pub const CODE_CSS: &str = "\n.card pre{text-align:left;overflow-x:auto;max-width:100%}\n";
+
 const SOURCE_BLOCK: &str = "{{#Fonte}}<div class=\"leitor-fonte\">{{Fonte}}</div>{{/Fonte}}";
 
 /// Name of a single-template type's card, as Anki's stock pt-BR types name it ("Cartão 1"), so
@@ -153,6 +156,9 @@ pub fn definition(name: &str) -> Result<Notetype> {
     nt.name = name.to_string();
     nt.config.sort_field_idx = 0;
     nt.config.css.push_str(SOURCE_CSS);
+    if name == CODE_PROGRAM || name == CODE_COMMAND {
+        nt.config.css.push_str(CODE_CSS);
+    }
     Ok(nt)
 }
 

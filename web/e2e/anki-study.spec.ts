@@ -2,7 +2,7 @@
 // reviewer.html + card-bridge.js + reviewer.js, the real one when scripts/fetch-anki-web.sh ran, else a stub), the
 // answer flow, keys, undo, MathJax, type-in-the-answer, and the frame's isolation.
 import type { Frame, Page } from '@playwright/test';
-import { ankiLogs, expect, fakePdfcraft, fakeReceived, shot, stubPdfcraft, test } from './fixtures';
+import { ankiLogs, expect, fakePdfcraft, fakeReceived, shot, stubPdfcraft, suspendCards, test } from './fixtures';
 
 /** Like fixtures' setTheme, but only in the app's top window: the sandboxed card frame has no localStorage. */
 async function setAppTheme(page: Page, theme: 'light' | 'dark') {
@@ -138,11 +138,14 @@ test('Matemática renders MathJax', async ({ page }) => {
 });
 
 test('ROS 2 — Revisão: type the answer, Enter shows the comparison', async ({ page }) => {
+  // The stock "type in the answer" card (the code cards of the deck use the code panel, e2e/code-review.spec.ts).
+  await page.goto('/anki');
+  await suspendCards(page, 'deck:"ROS 2 — Revisão" -note:"Básico (digite a resposta)"');
   await page.goto(studyUrl('ROS 2 — Revisão'));
   await shown(page, 'question');
   const input = card(page).locator('#typeans');
   await expect(input).toBeVisible();
-  await input.fill('ros2 run tf2_ros tf2_echo world turtle1');
+  await input.fill('colcon build');
   await input.press('Enter');
   await shown(page, 'answer');
   await expect(card(page).locator('code#typeans .typeGood').first()).toBeVisible();

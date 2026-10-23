@@ -47,6 +47,14 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r lint
+      - name: Cache Pyodide
+        # scripts/fetch-pyodide.sh pins the version and sha256; a hit leaves it with nothing to do (its stamp matches).
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/resources/pyodide
+          key: pyodide-${{ hashFiles('scripts/fetch-pyodide.sh') }}
+      - name: Pyodide (Python code cards; the harness tests and e2e:mock run the real interpreter)
+        run: scripts/fetch-pyodide.sh
       - run: pnpm -r test
       - name: Anki web assets
         # The mocked card frame then uses the real reviewer.js and MathJax (vite-plugin-anki-card), not the stub.
@@ -87,6 +95,11 @@ jobs:
             src-tauri/resources/pdfcraft-web
           key: pdfcraft-web-linux-${{ hashFiles('.gitmodules') }}-${{ steps.pdfcraft.outputs.commit }}
           restore-keys: pdfcraft-web-linux-
+      - name: Cache Pyodide
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/resources/pyodide
+          key: pyodide-${{ hashFiles('scripts/fetch-pyodide.sh') }}
       - uses: docker/setup-buildx-action@v3
       - name: Build dev image
         uses: docker/build-push-action@v6
@@ -112,12 +125,19 @@ jobs:
           scripts/ankisync-dev-certs.sh
           docker compose -f compose.dev.yml up -d --build --wait
           test "$(docker compose -f compose.dev.yml exec -T ankisync-dev python -c 'import importlib.metadata as m; print(m.version("anki"))')" = 26.9.3
+      - name: C++ runner (local, isolated)
+        # server/runner behind the "runner" profile: only on the internal network, reached through its Caddy proxy on
+        # leitor-dev (docs/tecnico/runner.md). The gated core-cpp isolation suite and the app's runner test use it.
+        run: |
+          docker compose -f compose.dev.yml --profile runner up -d --build --wait runner-dev runner-dev-proxy
+          test "$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' "$(docker compose -f compose.dev.yml --profile runner ps -q runner-dev)")" = true
+          test "$(docker network inspect -f '{{.Internal}}' leitor-runner-internal)" = true
       - name: PdfCraft web, fmt, clippy, test, bridge e2e, bundle (in the dev image)
         # The image's user is dev (uid 1000) but the runner checks out as uid 1001, so run as root;
         # root-owned outputs stay readable for the cache and artifact steps.
         run: |
           mkdir -p ~/cargo-registry ~/cargo-git
-          docker run --rm --user 0 -e HOME=/root --network leitor-dev \
+          docker run --rm --ulimit core=0 --user 0 -e HOME=/root --network leitor-dev \
             -e CARGO_INCREMENTAL -e CARGO_TERM_COLOR -e TAURI_APP_PATH -e APPIMAGE_EXTRACT_AND_RUN=1 \
             -e LEITOR_SYNC_TEST_URL=http://ankisync-dev:8080/ -e LEITOR_SYNC_TEST_TLS_URL=https://ankisync-dev-tls:8443/ \
             -e LEITOR_SYNC_TEST_CA=/workspaces/leitor-estudos/server/ankisync-dev/certs/ca.crt \
@@ -129,6 +149,7 @@ jobs:
               git config --global --add safe.directory "*"
               scripts/fetch-anki-web.sh
               scripts/fetch-ocr-models.sh
+              scripts/fetch-pyodide.sh
               # trunk build --release of the fork (also compiles pdfcraft-web for wasm32, i.e. the fork check)
               CARGO_BUILD_JOBS=2 timeout 40m scripts/build-pdfcraft-web.sh
               pnpm install --frozen-lockfile
@@ -137,6 +158,11 @@ jobs:
               cargo clippy -j 2 --workspace --all-targets -- -D warnings
               # Private D-Bus + unlocked gnome-keyring: the keychain and sync tests run against the dev server.
               timeout 75m ../scripts/with-keyring.sh cargo test -j 2 --workspace
+              # C++ runner isolation suite + the app runner test, serially (the runner takes one run at a time).
+              export LEITOR_RUNNER_TEST_URL=http://runner-dev-proxy:8080 LEITOR_RUNNER_TEST_TOKEN=dev-runner-token
+              cargo test -j 2 -p core-cpp --test remote -- --test-threads=1
+              cargo test -j 2 -p leitor-estudos --test code remote -- --test-threads=1
+              unset LEITOR_RUNNER_TEST_URL LEITOR_RUNNER_TEST_TOKEN
               cd ..
               # Bridge tests against the real PdfCraft web build (browsers are in the image; software WebGL via Mesa)
               pnpm --dir web exec playwright install chromium webkit
@@ -158,6 +184,11 @@ jobs:
             | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d); assert d["revlogCount"] == 1 and "leitor-crosscheck.png" in d["mediaFiles"]'
           docker compose -f compose.dev.yml exec -T ankisync-dev python /opt/ankisync/pyclient.py \
             --url http://ankisync-dev:8080/ --user t12 --password test --dir /tmp/pyclient-d download-and-report
+      - name: Stop C++ runner
+        if: always()
+        run: |
+          docker compose -f compose.dev.yml --profile runner logs --tail 30 runner-dev runner-dev-proxy || true
+          docker compose -f compose.dev.yml --profile runner rm -sfv runner-dev runner-dev-proxy || true
       - name: Stop Anki sync dev server
         if: always()
         run: |

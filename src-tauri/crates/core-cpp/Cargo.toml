@@ -1,0 +1,32 @@
+[package]
+name = "core-cpp"
+description = "C++ for code cards: the local compiler runner (desktop) and the remote runner client (spec 11.5)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "core_cpp"
+
+[lints]
+workspace = true
+
+# Inline versions (not workspace = true) so the crate stays self-contained; they resolve to the same
+# versions already in the workspace graph.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tempfile = "3"
+url = "2"
+# Same reqwest 0.12 as the rest of the graph (rustls only); `json` for the runner API.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+[target.'cfg(unix)'.dependencies]
+# Process-group kill and waitid without `unsafe` (MIT).
+nix = { version = "0.29", default-features = false, features = ["signal", "process"] }
+
+[dev-dependencies]
+tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "time"] }

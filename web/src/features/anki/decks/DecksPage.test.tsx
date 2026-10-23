@@ -220,7 +220,7 @@ describe('DecksPage', () => {
     await renderDecks();
     fireEvent.keyDown(screen.getByRole('button', { name: 'Mais ações' }), { key: 'Enter' });
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Preparar coleção' }));
-    expect(await screen.findByText(/^Tipos de nota criados: Cloze \(Leitor\), Código · Programa\.$/)).toBeTruthy();
+    expect(await screen.findByText(/^Tipos de nota criados: Cloze \(Leitor\)\.$/)).toBeTruthy();
   });
 
   it('the colpkg import from the menu needs both confirmations', async () => {

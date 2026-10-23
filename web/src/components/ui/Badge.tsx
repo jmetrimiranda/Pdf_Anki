@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { cn } from '../../lib/cn';
 import { t } from '../../i18n';
 
-export type BadgeTone = 'neutral' | 'lime' | 'new' | 'learn' | 'review' | 'error';
+export type BadgeTone = 'neutral' | 'lime' | 'new' | 'learn' | 'review' | 'error' | 'info' | 'warning';
 
 const tones: Record<BadgeTone, string> = {
   neutral: 'bg-neutral text-muted border-line',
@@ -11,6 +11,8 @@ const tones: Record<BadgeTone, string> = {
   learn: 'text-anki-learn border-transparent bg-[color-mix(in_srgb,var(--anki-learn)_12%,transparent)]',
   review: 'text-anki-review border-transparent bg-[color-mix(in_srgb,var(--anki-review)_12%,transparent)]',
   error: 'bg-error-soft text-error border-transparent',
+  info: 'text-link border-transparent bg-[color-mix(in_srgb,var(--link)_12%,transparent)]',
+  warning: 'text-(--vocab-learning) border-transparent bg-[color-mix(in_srgb,var(--vocab-learning)_14%,transparent)]',
 };
 
 export function Badge({

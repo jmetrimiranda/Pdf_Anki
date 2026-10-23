@@ -51,6 +51,7 @@ struct Inner {
     paths: CollectionPaths,
     abort: AbortFn,
     sync: crate::sync::SyncControl,
+    code_roles: crate::code::CodeRoles,
 }
 
 /// State of the actor thread. The collection is `None` only between a close and a successful
@@ -153,6 +154,7 @@ impl AnkiService {
                 paths,
                 abort,
                 sync: Default::default(),
+                code_roles: Default::default(),
             }),
         })
     }
@@ -333,6 +335,36 @@ impl AnkiService {
     /// Creates the demo decks/notes if missing; returns the number of notes added.
     pub async fn seed_demo(&self) -> Result<usize> {
         self.call(crate::demo::seed_demo).await
+    }
+
+    /// Replaces the user notetypes with the code "Comando" role (spec 11.1, Configurações → Código). Goes through
+    /// the actor, so it applies from the next card rendered after the jobs already queued. The app calls it at
+    /// startup and after every mapping change. The notetypes themselves are never changed.
+    pub async fn set_code_roles(&self, roles: Vec<crate::code::CodeRole>) -> Result<()> {
+        let cell = self.inner.code_roles.clone();
+        self.call(move |_| {
+            cell.replace(roles);
+            Ok(())
+        })
+        .await
+    }
+
+    pub(crate) fn code_roles_cell(&self) -> crate::code::CodeRoles {
+        self.inner.code_roles.clone()
+    }
+
+    /// A note's notetype, code role and raw fields ("Contestar", spec 11.2).
+    pub async fn code_note(&self, note_id: i64) -> Result<crate::code::CodeNoteFields> {
+        let cell = self.code_roles_cell();
+        self.call(move |col| crate::code::code_note(col, &cell.snapshot(), note_id))
+            .await
+    }
+
+    /// Replaces the HTML of one field of a note (an undoable "update note"); an unknown field is `NotFound`.
+    pub async fn note_field_set(&self, note_id: i64, field_name: &str, html: String) -> Result<()> {
+        let field_name = field_name.to_owned();
+        self.call(move |col| crate::code::note_field_set(col, note_id, &field_name, html))
+            .await
     }
 
     /// Runs the queued jobs, closes the collection and waits for the actor thread. Later calls
