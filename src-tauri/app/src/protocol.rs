@@ -147,18 +147,43 @@ fn with_cors(mut res: Response<Vec<u8>>, origin: &str) -> Response<Vec<u8>> {
 }
 
 /// The UI origins: the bundled app on every platform and, in development, the dev server.
-fn ui_origins<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
+pub(crate) fn ui_origins<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
+    let dev_url = if tauri::is_dev() {
+        app.config().build.dev_url.as_ref()
+    } else {
+        None
+    };
+    ui_origins_with(dev_url.map(|u| u.origin().ascii_serialization()))
+}
+
+/// [`ui_origins`] with the dev server origin given explicitly (first when present).
+pub fn ui_origins_with(dev_origin: Option<String>) -> Vec<String> {
     let mut origins = vec![
         "tauri://localhost".to_owned(),
         "http://tauri.localhost".to_owned(),
         "https://tauri.localhost".to_owned(),
     ];
-    if tauri::is_dev()
-        && let Some(url) = &app.config().build.dev_url
-    {
-        origins.insert(0, url.origin().ascii_serialization());
+    if let Some(origin) = dev_origin {
+        origins.insert(0, origin);
     }
     origins
+}
+
+/// CSP sources for "this scheme": `'self'` plus the scheme and its Windows/Android origin, spelled
+/// out because sandboxed (opaque-origin) documents and some engines do not match custom schemes
+/// with `'self'`.
+pub fn own_sources(scheme: &str) -> String {
+    format!("'self' {scheme}: http://{scheme}.localhost https://{scheme}.localhost")
+}
+
+/// The origins a custom scheme is served from: `<scheme>://localhost` (Linux, macOS, iOS) and
+/// `http(s)://<scheme>.localhost` (Windows, Android).
+pub fn scheme_origins(scheme: &str) -> [String; 3] {
+    [
+        format!("{scheme}://localhost"),
+        format!("http://{scheme}.localhost"),
+        format!("https://{scheme}.localhost"),
+    ]
 }
 
 /// Echoes the request origin when it is the UI; otherwise answers with this platform's UI

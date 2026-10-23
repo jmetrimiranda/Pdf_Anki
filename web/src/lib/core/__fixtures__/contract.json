@@ -1,0 +1,147 @@
+{
+  "AnswerSide": [
+    "av",
+    "buttons",
+    "html"
+  ],
+  "AvTag.sound": [
+    "file",
+    "kind"
+  ],
+  "AvTag.tts": [
+    "kind",
+    "lang",
+    "speed",
+    "text",
+    "voices"
+  ],
+  "BackupInfo": [
+    "createdAt",
+    "fileName",
+    "kind",
+    "path",
+    "size"
+  ],
+  "BrowseRow": [
+    "buried",
+    "cardId",
+    "deck",
+    "due",
+    "flag",
+    "marked",
+    "noteId",
+    "sortField",
+    "suspended",
+    "template"
+  ],
+  "DeckNode": [
+    "children",
+    "collapsed",
+    "filtered",
+    "fullName",
+    "id",
+    "learnCount",
+    "level",
+    "name",
+    "newCount",
+    "reviewCount",
+    "total"
+  ],
+  "DeckTree": [
+    "currentDeckId",
+    "decks",
+    "studiedToday"
+  ],
+  "FieldInfo": [
+    "fontName",
+    "fontSize",
+    "name",
+    "plainText",
+    "rtl"
+  ],
+  "NotetypeInfo": [
+    "appType",
+    "fields",
+    "id",
+    "kind",
+    "name",
+    "noteCount",
+    "templates"
+  ],
+  "QueueCounts": [
+    "learn",
+    "new",
+    "review"
+  ],
+  "SourceLink": [
+    "bookUid",
+    "label",
+    "page",
+    "query"
+  ],
+  "StudiedToday": [
+    "cards",
+    "seconds"
+  ],
+  "StudyCard": [
+    "answerAv",
+    "answerPreloadHtml",
+    "autoplay",
+    "bodyClass",
+    "buttons",
+    "canUndo",
+    "cardId",
+    "counts",
+    "deckId",
+    "deckName",
+    "flag",
+    "marked",
+    "noteId",
+    "questionAv",
+    "questionHtml",
+    "queue",
+    "replayQuestionOnAnswer",
+    "showCounts",
+    "showIntervals",
+    "showTimer",
+    "source",
+    "stateMutation",
+    "timerMaxSecs",
+    "typeAnswer"
+  ],
+  "StudyNext.card": [
+    "card",
+    "kind"
+  ],
+  "StudyNext.done": [
+    "canUndo",
+    "counts",
+    "deckId",
+    "deckName",
+    "kind"
+  ],
+  "Values.browseDueFormats": [
+    "(9-9-9)",
+    "9-9-9",
+    "Novo #⁨9⁩"
+  ],
+  "Values.intervalLabels": [
+    "30=⁨30⁩s",
+    "90=⁨2⁩min(s)",
+    "600=⁨10⁩min(s)",
+    "11520=⁨3,2⁩h",
+    "86400=⁨1⁩dia(s)",
+    "345600=⁨4⁩dia(s)",
+    "2160000=⁨25⁩dia(s)",
+    "3196800=⁨1,2⁩mês(es)",
+    "17280000=⁨6,6⁩mês(es)",
+    "34560000=⁨1,1⁩a",
+    "69120000=⁨2,2⁩a",
+    "60<1200=<⁨1⁩min(s)",
+    "360<1200=<⁨6⁩min(s)",
+    "600<1200=<⁨10⁩min(s)"
+  ],
+  "Values.newCardButtons": [
+    "<⁨1⁩min(s)|<⁨6⁩min(s)|<⁨10⁩min(s)"
+  ]
+}

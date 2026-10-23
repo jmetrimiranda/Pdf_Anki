@@ -10,6 +10,7 @@ import {
   importBytes,
   now,
   pdfcraftFrame,
+  pdfcraftFrames,
   test,
   waitForMessage,
   type Logged,
@@ -119,31 +120,44 @@ test('annotate and bookmark inside PdfCraft → autosave → restart → still t
   await expect.poll(() => canvasVariance(page, pdfcraftFrame(page)), { timeout: 20_000 }).toBeGreaterThan(40);
   const box = await frameBox(page);
 
+  // Every step that needs the UI changed by the previous one waits for PdfCraft frames, not for time (see
+  // pdfcraftFrames): on a slow machine the inputs would otherwise be handled in the same egui pass and get lost.
   // A bookmark at the current page (Ctrl+B, PdfCraft's own shortcut) with a name.
   await page.mouse.click(box.x + box.width * 0.45, box.y + box.height * 0.4);
+  await pdfcraftFrames(page);
   await page.keyboard.press('Control+b');
-  await page.waitForTimeout(400);
+  // The new bookmark is unsaved work; its name field takes the typing from the next frame on.
+  await waitForMessage(page, { type: 'pdfcraft:dirty', dirty: true });
+  await pdfcraftFrames(page);
   await page.keyboard.press('Control+a');
   await page.keyboard.type('Marcador E2E');
   await page.keyboard.press('Enter');
+  await pdfcraftFrames(page);
   // A highlight: PdfCraft's "Highlight text" command, then a drag over the page.
   await page.keyboard.press('Control+k');
+  await pdfcraftFrames(page);
   await page.keyboard.type('Highlight text');
-  await page.waitForTimeout(300);
+  await pdfcraftFrames(page);
   await page.keyboard.press('Enter');
+  await pdfcraftFrames(page);
   await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.3);
+  await pdfcraftFrames(page, 1);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 0.52, box.y + box.height * 0.33, { steps: 8 });
+  await pdfcraftFrames(page, 1);
+  for (let i = 1; i <= 8; i++) {
+    await page.mouse.move(box.x + box.width * (0.4 + 0.015 * i), box.y + box.height * (0.3 + 0.00375 * i));
+    await pdfcraftFrames(page, 1);
+  }
   await page.mouse.up();
+  await pdfcraftFrames(page);
   // A new highlight opens its note for typing; PdfCraft holds host saves while it is open. Show the Comments panel
   // (right rail, first icon), type the note and save it (Ctrl+Enter).
-  await page.waitForTimeout(500);
   await page.mouse.click(box.x + box.width - 23, box.y + 113);
-  await page.waitForTimeout(500);
+  await pdfcraftFrames(page);
   await page.keyboard.type('Nota E2E');
+  await pdfcraftFrames(page);
   await page.keyboard.press('Control+Enter');
 
-  await waitForMessage(page, { type: 'pdfcraft:dirty', dirty: true });
   await expect.poll(() => page.evaluate(() => window.__leitor!.state().unsavedIds)).toEqual([uid]);
 
   // Autosave: 10 s without changes → request-save → save → book_save_version.

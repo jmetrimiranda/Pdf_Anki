@@ -510,10 +510,12 @@ export class LeitorController {
   }
 
   /**
-   * Opens a library book in PdfCraft at its last page (spec 6.4). Resolves true when PdfCraft reports it active;
-   * false when it failed or timed out (the overlay offers the system viewer and a retry).
+   * Opens a library book in PdfCraft at its last page (spec 6.4), or at `opts.page` (0-based; "Abrir no livro" from a
+   * card's Fonte link, spec 8.2). Resolves true when PdfCraft reports it active; false when it failed or timed out
+   * (the overlay offers the system viewer and a retry). A book PdfCraft already has (in front or in another tab) is
+   * brought to front and, when `opts.page` is given, moved to that page; without it, it stays where the reader left it.
    */
-  async openBook(uid: string): Promise<boolean> {
+  async openBook(uid: string, opts?: { page?: number }): Promise<boolean> {
     this.ui?.navigateToLeitor();
     this.set({ openError: null, openingId: uid, openingTitle: this.titles.get(uid) ?? null });
     try {
@@ -537,8 +539,10 @@ export class LeitorController {
     }
     this.titles.set(uid, info.title);
     this.knownPages.set(uid, info.pages);
-    if (this.snap.activeId === uid) {
-      // Already in front: nothing to wait for.
+    const askedPage = opts?.page;
+    const goto = askedPage !== undefined && Number.isFinite(askedPage);
+    if (this.snap.activeId === uid && !goto) {
+      // Already in front and no page asked for: nothing to wait for.
       this.set({ openingId: null, openingTitle: null, activeTitle: info.title });
       return true;
     }
@@ -553,11 +557,14 @@ export class LeitorController {
     const timer = this.timers.setTimeout(() => this.resolveOpen(uid, false), openTimeoutMs(size));
     this.openWaits.set(uid, { d, timer });
     this.openFailures.delete(uid);
-    // Always send the bytes: the fork ignores them and just brings the tab to front when the id is already open.
-    const page = info.pages > 0 ? Math.min(Math.max(0, info.page), info.pages - 1) : Math.max(0, info.page);
+    // Always send the bytes: when the id is already open the fork ignores them, brings the tab to front, shows `page`
+    // if one was sent and answers with `pdfcraft:active`.
+    const wanted = goto ? Math.floor(askedPage) : info.page;
+    const page = info.pages > 0 ? Math.min(Math.max(0, wanted), info.pages - 1) : Math.max(0, wanted);
     // A tab PdfCraft already has keeps the content it was opened from, even if the library got a newer version.
     if (!this.bridge.isOpen(uid) || !this.baseVersions.has(uid)) this.baseVersions.set(uid, info.fileVersion);
-    if (!this.bridge.open({ id: uid, name: info.name, bytes, page })) this.resolveOpen(uid, false);
+    if (!this.bridge.open({ id: uid, name: info.name, bytes, page, goto: goto && this.bridge.isOpen(uid) }))
+      this.resolveOpen(uid, false);
     const ok = await d.promise;
     if (this.snap.openingId === uid) this.set({ openingId: null, openingTitle: null });
     if (!ok) {

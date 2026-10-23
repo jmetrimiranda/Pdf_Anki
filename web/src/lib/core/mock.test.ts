@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { makePdf, pdfBytesToLatin1 } from '../pdf/minimalPdf';
 import { findLeitorBookUid, mockClient, mockHandle } from './mock';
+import { tauriClient } from './tauri';
 import { CoreError, type DeckNode, type LibraryEntry } from './types';
 
 function walk(nodes: DeckNode[], fn: (n: DeckNode) => void) {
@@ -35,6 +36,14 @@ describe('mock core client', () => {
     });
     expect(names).toEqual(expect.arrayContaining(['5000 palavras', 'Oxford', 'Vocabulário::Livros::Teste']));
     expect(tree.studiedToday).toEqual({ cards: expect.any(Number), seconds: expect.any(Number) });
+    expect(names).toEqual(expect.arrayContaining(['Matemática', 'Gramática::Cloze', 'Livros::Animal Farm']));
+    // The empty Default deck is hidden, like Anki; the current deck is a real one.
+    expect(names).not.toContain('Default');
+    const words = tree.decks.find((d) => d.name === '5000 palavras')!;
+    expect([words.newCount, words.learnCount, words.reviewCount]).toEqual([0, 17, 1002]);
+    expect(words.filtered).toBe(false);
+    expect(words.total).toBeGreaterThan(1002);
+    expect(tree.currentDeckId).toBe(words.id);
   });
 
   it('seeds three books: text, scanned and one in a collection', async () => {
@@ -257,5 +266,144 @@ describe('mock core client', () => {
     vi.resetModules();
     const seeded = await import('./mock');
     expect(await seeded.mockClient.libraryList()).toHaveLength(3);
+  });
+});
+
+describe('mock core parity', () => {
+  it('implements every command of the Tauri client, as functions', () => {
+    expect(Object.keys(mockClient).sort()).toEqual(Object.keys(tauriClient).sort());
+    for (const [key, value] of Object.entries(mockClient)) {
+      if (key === 'kind') continue;
+      expect(typeof value, key).toBe('function');
+    }
+  });
+});
+
+describe('mock Anki decks', () => {
+  const find = async (name: string) => (await mockClient.ankiDeckNames()).find((d) => d.name === name);
+
+  it('creates decks with missing parents and validates names', async () => {
+    const id = await mockClient.ankiDeckCreate(' Novo :: Sub ');
+    expect((await find('Novo::Sub'))?.id).toBe(id);
+    expect(await find('Novo')).toBeTruthy();
+    expect(await mockClient.ankiDeckCreate('Novo::Sub')).toBe(id);
+    await expect(mockClient.ankiDeckCreate('A::  ::B')).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('renames and moves a deck with its subdecks; never into itself', async () => {
+    const ros = (await find('ROS 2 — Revisão'))!;
+    await mockClient.ankiDeckRename(ros.id, 'Robótica::ROS 2');
+    expect(await find('Robótica::ROS 2::Comandos')).toBeTruthy();
+    await mockClient.ankiDeckMove([ros.id], null);
+    expect(await find('ROS 2::Comandos')).toBeTruthy();
+    const child = (await find('ROS 2::Comandos'))!;
+    await mockClient.ankiDeckMove([ros.id], child.id);
+    expect(await find('ROS 2::Comandos')).toBeTruthy();
+    const oxford = (await find('Oxford'))!;
+    await mockClient.ankiDeckMove([ros.id], oxford.id);
+    expect(await find('Oxford::ROS 2::Conceitos')).toBeTruthy();
+  });
+
+  it('deletes a deck and its cards, persists collapse and the current deck', async () => {
+    const math = (await find('Matemática'))!;
+    const before = (await mockClient.ankiDeckTree()).decks.find((d) => d.id === math.id)!;
+    expect(before.total).toBe(2);
+    expect(await mockClient.ankiDeckDelete(math.id)).toEqual({ cardsDeleted: 2 });
+    expect(await find('Matemática')).toBeUndefined();
+    expect(mockHandle.anki.logs.at(-1)).toMatchObject({ kind: 'deleteDeck', cardsDeleted: 2 });
+
+    const oxford = (await find('Oxford'))!;
+    await mockClient.ankiDeckSetCollapsed(oxford.id, true);
+    await mockClient.ankiSetCurrentDeck(oxford.id);
+    vi.resetModules();
+    const fresh = await import('./mock');
+    const tree = await fresh.mockClient.ankiDeckTree();
+    expect(tree.decks.find((d) => d.id === oxford.id)?.collapsed).toBe(true);
+    expect(tree.currentDeckId).toBe(oxford.id);
+  });
+
+  it('prepares the collection idempotently', async () => {
+    const first = await mockClient.ankiPrepareCollection();
+    expect(first.created.sort()).toEqual(['Cloze (Leitor)', 'Código · Programa']);
+    expect(first.existing.sort()).toEqual(['Básico (Leitor)', 'Código · Comando', 'Vocabulário · Livro']);
+    const second = await mockClient.ankiPrepareCollection();
+    expect(second.created).toEqual([]);
+    expect(second.existing).toHaveLength(5);
+  });
+
+  it('picks, imports, exports and backs up', async () => {
+    expect(await mockClient.ankiPickPackage()).toMatch(/\.apkg$/);
+    mockHandle.anki.setNextPackagePick(null);
+    expect(await mockClient.ankiPickPackage()).toBeNull();
+
+    const changed = vi.fn();
+    const stop = mockClient.onAnkiChanged(changed);
+    const summary = await mockClient.ankiImport('/tmp/Fazenda.apkg');
+    expect(summary).toEqual({ added: 3, updated: 0, duplicates: 0, conflicts: 0, skipped: 0 });
+    expect((await mockClient.ankiImport('/tmp/Fazenda.apkg')).duplicates).toBe(3);
+    expect(changed).toHaveBeenCalledWith({ reason: 'import' });
+    stop();
+    await expect(mockClient.ankiImport('/tmp/corrompido.apkg')).rejects.toMatchObject({
+      code: 'anki_invalid_package',
+    });
+
+    const words = (await find('5000 palavras'))!;
+    await expect(
+      mockClient.ankiExport(words.id, '/tmp/x.apkg', { withScheduling: true, withMedia: true }),
+    ).rejects.toMatchObject({
+      code: 'export_not_granted',
+    });
+    const path = await mockClient.pickExportPath('5000 palavras.apkg', 'apkg');
+    expect(path).toBe('/home/jorge/Exportados/5000 palavras.apkg');
+    const result = await mockClient.ankiExport(words.id, path!, { withScheduling: false, withMedia: true });
+    expect(result.notes).toBe(7);
+    expect(mockHandle.anki.logs.at(-1)).toMatchObject({ kind: 'export', path, withScheduling: false, withMedia: true });
+
+    const before = (await mockClient.ankiBackups()).length;
+    const manual = await mockClient.ankiBackupNow();
+    expect(manual.kind).toBe('manual');
+    expect(manual.fileName).toMatch(/\.colpkg$/);
+    expect(await mockClient.ankiBackups()).toHaveLength(before + 1);
+  });
+
+  it('replaces the collection with a .colpkg after a pre-import backup', async () => {
+    const backup = await mockClient.ankiImportColpkg('/tmp/colecao.colpkg');
+    expect(backup.kind).toBe('preImport');
+    const names = (await mockClient.ankiDeckTree()).decks.map((d) => d.name);
+    expect(names).toEqual(['5000 palavras', 'Oxford', 'ROS 2 — Revisão']);
+    expect((await mockClient.ankiBackups()).some((b) => b.path === backup.path)).toBe(true);
+    await expect(mockClient.ankiImportColpkg('/tmp/x.apkg')).rejects.toMatchObject({ code: 'anki_invalid_package' });
+  });
+
+  it('keeps only the last 7 daily backups', async () => {
+    const realNow = Date.now;
+    let now = realNow();
+    try {
+      Date.now = () => now;
+      for (let i = 0; i < 10; i++) {
+        now += 86_400_000 + 1000;
+        mockHandle.anki.dailyBackup();
+      }
+      expect(mockHandle.anki.dailyBackup()).toBeNull();
+    } finally {
+      Date.now = realNow;
+    }
+    expect(mockHandle.anki.backups.filter((b) => b.kind === 'daily')).toHaveLength(7);
+  });
+
+  it('points Anki pages at the mock page server and fires page events', () => {
+    expect(mockClient.ankiPageUrl('deck-options/5', true)).toMatch(/\/__mock-anki-page\/deck-options\/5#night$/);
+    const seen = vi.fn();
+    const stop = mockClient.onAnkiPageEvent(seen);
+    mockHandle.anki.firePageEvent({ kind: 'close' });
+    stop();
+    mockHandle.anki.firePageEvent({ kind: 'ready' });
+    expect(seen).toHaveBeenCalledTimes(1);
+  });
+
+  it('links the Fonte field of the Animal Farm note to the mock library book', async () => {
+    const farm = await bookByTitle('Animal Farm');
+    const raw = sessionStorage.getItem('leitor.mock.anki') ?? '';
+    expect(raw).toContain(`leitor://livro/${farm.bookUid}?pagina=37`);
   });
 });

@@ -55,6 +55,15 @@ test('/anki shows the mock deck tree', async ({ page }, info) => {
   await ros.getByRole('button', { name: 'Expandir' }).click();
   await expect(tree.getByRole('treeitem', { name: /Comandos/ })).toBeVisible();
   await page.screenshot({ path: shot('anki', info.project.name) });
+
+  // The Anki sub-tabs are routes.
+  const tabs = page.getByRole('tablist', { name: 'Seções do Anki' });
+  await expect(tabs.getByRole('tab')).toHaveText(['Decks', 'Adicionar', 'Navegar', 'Estatísticas']);
+  for (const tab of await tabs.getByRole('tab').all()) await expect(tab).toBeEnabled();
+  await tabs.getByRole('tab', { name: 'Navegar' }).click();
+  await expect(page).toHaveURL(/\/anki\/navegar$/);
+  await page.getByRole('tab', { name: 'Decks' }).click();
+  await expect(page).toHaveURL(/\/anki$/);
 });
 
 test('app tabs navigate and highlight; shortcuts switch tabs', async ({ page }) => {

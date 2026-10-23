@@ -3,13 +3,29 @@
 // page simulates restarting the app. PDFs are real files produced by `makePdf`.
 import { layoutPageText, makePdf, PDF_PAGE_SIZE, pdfBytesToLatin1 } from '../pdf/minimalPdf';
 import {
+  ankiState,
+  buildDeckTree,
+  emitAnkiChanged,
+  emitAnkiPageEvent,
+  later,
+  listenTo,
+  persistAnki,
+  resetAnki,
+  setMockBookUidProvider,
+  type MockAnkiLog,
+} from './mock/ankiData';
+import { createAnkiDecksMock, mockDailyBackup } from './mock/ankiDecks';
+import { ankiNotesMock } from './mock/ankiNotes';
+import { ankiStudyMock } from './mock/ankiStudy';
+import {
   CoreError,
   type AddedBook,
   type AddOutcome,
   type Book,
   type BookPatch,
   type CoreClient,
-  type DeckNode,
+  type AnkiPageEvent,
+  type BackupInfo,
   type DeckTree,
   type LibraryEntry,
   type PageWord,
@@ -17,63 +33,13 @@ import {
   type ReadingPosition,
   type SavedVersion,
   type StopReason,
-  type Unlisten,
 } from './types';
 
 // ---------------------------------------------------------------- decks
 
-let nextDeckId = 1_700_000_000_000;
-
-function deck(
-  fullName: string,
-  counts: [number, number, number],
-  children: DeckNode[] = [],
-  collapsed = false,
-): DeckNode {
-  const parts = fullName.split('::');
-  return {
-    id: nextDeckId++,
-    name: parts[parts.length - 1] ?? fullName,
-    fullName,
-    level: parts.length,
-    newCount: counts[0],
-    learnCount: counts[1],
-    reviewCount: counts[2],
-    collapsed,
-    children,
-  };
-}
-
+/** The mock collection's deck list (kept for the component gallery at /dev/ui). */
 export function mockDeckTree(): DeckTree {
-  nextDeckId = 1_700_000_000_000;
-  return {
-    decks: [
-      deck('5000 palavras', [0, 17, 1002]),
-      deck(
-        'Grammar A1',
-        [36, 10, 88],
-        [deck('Grammar A1::Unidade 1', [20, 6, 50]), deck('Grammar A1::Unidade 2', [16, 4, 38])],
-        true,
-      ),
-      deck('Leitura de Livros A1', [40, 0, 21], [deck('Leitura de Livros A1::Animal Farm', [40, 0, 21])], true),
-      deck('On Palestine — Noam Chomsky', [40, 21, 24]),
-      deck('Oxford', [40, 35, 96], [deck('Oxford::Oxford 3000', [40, 35, 96]), deck('Oxford::Oxford 5000', [0, 0, 0])]),
-      deck('RimA Summer School — Go2 Prep', [40, 8, 0]),
-      deck(
-        'ROS 2 — Revisão',
-        [40, 23, 26],
-        [deck('ROS 2 — Revisão::Comandos', [20, 15, 18]), deck('ROS 2 — Revisão::Conceitos', [20, 8, 8])],
-        true,
-      ),
-      deck('Verbos Irregulares (Inglês)', [30, 10, 0]),
-      deck(
-        'Vocabulário',
-        [10, 2, 14],
-        [deck('Vocabulário::Livros', [10, 2, 14], [deck('Vocabulário::Livros::Teste', [10, 2, 14])])],
-      ),
-    ],
-    studiedToday: { cards: 5, seconds: 170 },
-  };
+  return buildDeckTree();
 }
 
 // ---------------------------------------------------------------- book contents
@@ -310,14 +276,23 @@ let state: MockState = loadState();
 
 // e2e hook: options injected before the app starts (`mockInit` in e2e/fixtures.ts).
 {
-  const holder = globalThis as { __leitorMockInit?: { pendingOpen?: string[]; nextPick?: string[] } };
+  const holder = globalThis as {
+    __leitorMockInit?: { pendingOpen?: string[]; nextPick?: string[]; nextPackagePick?: string | null };
+  };
   const init = holder.__leitorMockInit;
   if (init) {
     if (init.pendingOpen) state.pendingOpen = init.pendingOpen;
     if (init.nextPick) state.nextPick = init.nextPick;
+    if (init.nextPackagePick !== undefined) {
+      ankiState().nextPackagePick = init.nextPackagePick;
+      persistAnki();
+    }
     delete holder.__leitorMockInit;
   }
 }
+
+// The Fonte links of the mock Anki notes point at the mock library's books.
+setMockBookUidProvider((title) => state.books.find((r) => r.book.title === title)?.book.bookUid ?? null);
 
 function persist(): void {
   try {
@@ -559,40 +534,16 @@ function logSession(
 const openPathListeners = new Set<(paths: string[]) => void>();
 const dropListeners = new Set<(paths: string[]) => void>();
 
-function listenTo<T>(set: Set<T>, cb: T): Unlisten {
-  set.add(cb);
-  return () => {
-    set.delete(cb);
-  };
-}
-
 // ---------------------------------------------------------------- client
 
-/** Simulated latency so loading states are visible; 0 in unit tests. */
-let latencyMs = import.meta.env.MODE === 'test' ? 0 : 120;
-export function setMockLatency(ms: number): void {
-  latencyMs = ms;
-}
-
-function later<T>(fn: () => T): Promise<T> {
-  return new Promise((resolve, reject) => {
-    setTimeout(() => {
-      try {
-        resolve(fn());
-      } catch (err) {
-        reject(err);
-      }
-    }, latencyMs);
-  });
-}
+export { setMockLatency } from './mock/ankiData';
 
 function sortedEntries(): LibraryEntry[] {
   return state.books.filter((r) => !r.removed).map(entry);
 }
 
-export const mockClient: CoreClient = {
+const baseClient = {
   kind: 'mock',
-  ankiDeckTree: () => later(mockDeckTree),
 
   libraryList: () => later(sortedEntries),
   libraryAdd: (path, opts) => later(() => addFromPath(path, !!opts?.replace)),
@@ -688,7 +639,7 @@ export const mockClient: CoreClient = {
       persist();
       return picked;
     }),
-  pickExportPath: (defaultName) =>
+  pickExportPath: (defaultName: string) =>
     later(() => {
       const next = state.nextExportPath;
       delete state.nextExportPath;
@@ -700,6 +651,20 @@ export const mockClient: CoreClient = {
   onOpenPaths: (cb) => listenTo(openPathListeners, cb),
   onDragDropPaths: (cb) => listenTo(dropListeners, cb),
   onWindowCloseRequested: () => () => undefined,
+} satisfies Partial<CoreClient>;
+
+/** The whole mock core: library/reader (above) + the Anki parts, one file per feature package. */
+export const mockClient: CoreClient = {
+  ...baseClient,
+  ...createAnkiDecksMock({
+    takeExportGrant,
+    writeFile: (path, content) => {
+      state.files[path] = btoa(unescape(encodeURIComponent(content)));
+      persist();
+    },
+  }),
+  ...ankiStudyMock,
+  ...ankiNotesMock,
 };
 
 // ---------------------------------------------------------------- e2e handle
@@ -723,7 +688,65 @@ export interface LeitorMockHandle {
   openPaths(paths: string[]): void;
   /** Simulates dropping files on the window. */
   dropPaths(paths: string[]): void;
+  /** The mock Anki collection. */
+  readonly anki: MockAnkiHandle;
 }
+
+/** `window.__leitorMock.anki`: inspects and drives the mock Anki collection. */
+export interface MockAnkiHandle {
+  /** Answers, imports, exports, deletes… in order. */
+  readonly logs: MockAnkiLog[];
+  /** Full deck names. */
+  readonly deckNames: string[];
+  readonly notetypeNames: string[];
+  readonly backups: BackupInfo[];
+  readonly dataset: 'seed' | 'colpkg';
+  /** Path the next "Importar pacote" dialog returns (`null` = cancelled). */
+  setNextPackagePick(path: string | null): void;
+  /** Path the next image dialog of the editor returns (`null` = cancelled). */
+  setNextImageFile(path: string | null): void;
+  /** Fires `anki://changed`. */
+  fireChanged(reason?: 'import' | 'colpkg' | 'page' | 'backup'): void;
+  /** Fires `anki://page` (what the core sends for the Anki pages: ready, close, importDone…). */
+  firePageEvent(e: AnkiPageEvent): void;
+  /** Runs the daily backup like the core's ticker (null when today's already exists). */
+  dailyBackup(): BackupInfo | null;
+}
+
+const ankiHandle: MockAnkiHandle = {
+  get logs() {
+    return structuredClone(ankiState().logs);
+  },
+  get deckNames() {
+    return ankiState()
+      .decks.map((d) => d.name)
+      .sort();
+  },
+  get notetypeNames() {
+    return ankiState().notetypes.map((n) => n.name);
+  },
+  get backups() {
+    return structuredClone(ankiState().backups);
+  },
+  get dataset() {
+    return ankiState().dataset;
+  },
+  setNextPackagePick(path) {
+    ankiState().nextPackagePick = path;
+    persistAnki();
+  },
+  setNextImageFile(path) {
+    ankiState().nextImageFile = path;
+    persistAnki();
+  },
+  fireChanged(reason = 'page') {
+    emitAnkiChanged({ reason });
+  },
+  firePageEvent(e) {
+    emitAnkiPageEvent(e);
+  },
+  dailyBackup: () => mockDailyBackup(),
+};
 
 export const mockHandle: LeitorMockHandle = {
   get books() {
@@ -744,9 +767,13 @@ export const mockHandle: LeitorMockHandle = {
   get openedExternally() {
     return [...state.openedExternally];
   },
+  get anki() {
+    return ankiHandle;
+  },
   reset() {
     state = seedState();
     persist();
+    resetAnki();
   },
   setNextPick(paths) {
     state.nextPick = paths;

@@ -1,0 +1,127 @@
+// Contract snapshot (spec 15, 20): the mock core must produce values with exactly the JSON keys the Rust core
+// serializes. `contract.json` is written and checked by `src-tauri/app/tests/contract.rs` from the fixture collection.
+import { beforeEach, describe, expect, it } from 'vitest';
+import contract from './__fixtures__/contract.json';
+import { mockClient, mockHandle } from './mock';
+import { intervalLabel, NEW_CARD_LABELS } from './mock/ankiStudy';
+import type { AvTag, DeckNode } from './types';
+
+type Shapes = Record<string, string[]>;
+
+/** A "Due" cell reduced to its format, like `due_format` in contract.rs ("Novo #9", "9-9-9", "(9-9-9)"; Fluent wraps
+ * numbers in the isolation marks U+2068/U+2069). */
+function dueFormat(text: string): string {
+  return text.replace(/\d+/g, '9');
+}
+
+function keysOf(v: unknown): string[] {
+  expect(v && typeof v === 'object' && !Array.isArray(v)).toBe(true);
+  return Object.keys(v as object).sort();
+}
+
+function collect(out: Shapes, name: string, v: unknown) {
+  const k = keysOf(v);
+  if (out[name]) expect(k, `${name} keys differ between samples`).toEqual(out[name]);
+  else out[name] = k;
+}
+
+function collectAv(out: Shapes, list: AvTag[]) {
+  for (const tag of list) collect(out, `AvTag.${tag.kind}`, tag);
+}
+
+function walk(nodes: DeckNode[], fn: (n: DeckNode) => void) {
+  for (const n of nodes) {
+    fn(n);
+    walk(n.children, fn);
+  }
+}
+
+beforeEach(() => mockHandle.reset());
+
+describe('mock core vs the Rust contract snapshot', () => {
+  it('serializes the same keys as the Rust core', async () => {
+    const out: Shapes = {};
+    const tree = await mockClient.ankiDeckTree();
+    collect(out, 'DeckTree', tree);
+    walk(tree.decks, (n) => collect(out, 'DeckNode', n));
+    collect(out, 'StudiedToday', tree.studiedToday);
+
+    for (const deck of await mockClient.ankiDeckNames()) {
+      const next = await mockClient.ankiStudyNext(deck.id);
+      if (next.kind === 'card') {
+        collect(out, 'StudyNext.card', next);
+        collect(out, 'StudyCard', next.card);
+        collect(out, 'QueueCounts', next.card.counts);
+        collectAv(out, next.card.questionAv);
+        collectAv(out, next.card.answerAv);
+        if (next.card.source) collect(out, 'SourceLink', next.card.source);
+        const side = await mockClient.ankiShowAnswer(next.card.cardId, 'x');
+        collect(out, 'AnswerSide', side);
+        collectAv(out, side.av);
+      } else {
+        collect(out, 'StudyNext.done', next);
+      }
+    }
+    const empty = await mockClient.ankiDeckCreate('Contrato vazio');
+    collect(out, 'StudyNext.done', await mockClient.ankiStudyNext(empty));
+    await mockClient.ankiStudyClose();
+
+    for (const nt of await mockClient.ankiNotetypes()) {
+      collect(out, 'NotetypeInfo', nt);
+      for (const f of nt.fields) collect(out, 'FieldInfo', f);
+    }
+    const ids = await mockClient.ankiSearch('', null);
+    for (const row of await mockClient.ankiBrowseRows(ids.slice(0, 20))) collect(out, 'BrowseRow', row);
+    collect(out, 'BackupInfo', await mockClient.ankiBackupNow());
+
+    const expected = contract as Shapes;
+    for (const required of [
+      'StudyNext.card',
+      'StudyNext.done',
+      'StudyCard',
+      'SourceLink',
+      'AnswerSide',
+      'BrowseRow',
+      'NotetypeInfo',
+      'FieldInfo',
+      'BackupInfo',
+      'DeckNode',
+    ]) {
+      expect(out[required], `the mock produced no ${required}`).toBeDefined();
+    }
+    for (const [name, keys] of Object.entries(out)) {
+      if (name.startsWith('Values.')) continue;
+      expect(expected[name], `${name} is not in contract.json`).toBeDefined();
+      expect(keys, name).toEqual(expected[name]);
+    }
+  });
+
+  // Value-level samples (the text the UI shows as is), from rslib with the pt-BR translations.
+  it('shows the same pt-BR interval labels as rslib', () => {
+    const samples = (contract as Shapes)['Values.intervalLabels'];
+    expect(samples?.length).toBeGreaterThan(0);
+    for (const sample of samples!) {
+      const m = /^(\d+)(?:<(\d+))?=(.*)$/.exec(sample);
+      expect(m, sample).not.toBeNull();
+      const [, secs, collapse, label] = m!;
+      const collapsed = collapse !== undefined && Number(secs) < Number(collapse);
+      expect(intervalLabel(Number(secs), collapsed), sample).toBe(label);
+    }
+    // Again/hard/good of a new card (the easy interval is fuzzed, so it is checked through the 4-day sample).
+    expect((contract as Shapes)['Values.newCardButtons']).toEqual([NEW_CARD_LABELS.slice(0, 3).join('|')]);
+    expect(samples).toContain(`345600=${NEW_CARD_LABELS[3]}`);
+  });
+
+  it('formats the browser "Due" column like rslib', async () => {
+    const ids = await mockClient.ankiSearch('', null);
+    const rows = await mockClient.ankiBrowseRows(ids.slice(0, 200));
+    const review = rows.find((r) => !r.due.startsWith('Novo'));
+    expect(review).toBeDefined();
+    await mockClient.ankiCardsSuspend([review!.cardId], true);
+    rows.push(...(await mockClient.ankiBrowseRows([review!.cardId])));
+    const formats = new Set(rows.map((r) => dueFormat(r.due)));
+    const expected = (contract as Shapes)['Values.browseDueFormats'];
+    expect(expected).toEqual(expect.arrayContaining(['Novo #\u20689\u2069', '9-9-9', '(9-9-9)']));
+    for (const f of formats) expect(expected, `mock due format ${f}`).toContain(f);
+  });
+});

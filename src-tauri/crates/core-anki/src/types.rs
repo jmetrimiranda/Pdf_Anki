@@ -17,6 +17,10 @@ pub struct DeckNode {
     pub learn_count: u32,
     pub review_count: u32,
     pub collapsed: bool,
+    /// Filtered (custom study) deck.
+    pub filtered: bool,
+    /// Cards in the deck and its subdecks (Anki's `total_including_children`).
+    pub total: u32,
     pub children: Vec<DeckNode>,
 }
 
@@ -33,6 +37,8 @@ pub struct StudiedToday {
 pub struct DeckTree {
     pub decks: Vec<DeckNode>,
     pub studied_today: StudiedToday,
+    /// The collection's current deck (falls back to Default, id 1).
+    pub current_deck_id: i64,
 }
 
 impl DeckNode {
@@ -49,4 +55,76 @@ impl DeckTree {
     pub fn find(&self, full_name: &str) -> Option<&DeckNode> {
         self.decks.iter().find_map(|d| d.find(full_name))
     }
+}
+
+/// A deck for pickers: full name, sorted case-insensitively.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeckName {
+    pub id: i64,
+    pub name: String,
+    pub filtered: bool,
+}
+
+/// Result of "Preparar coleção": which app notetypes were created now and which already existed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareReport {
+    pub created: Vec<String>,
+    pub existing: Vec<String>,
+}
+
+/// Note counts of an `.apkg` import (Anki's import log, grouped).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSummary {
+    pub added: u32,
+    pub updated: u32,
+    pub duplicates: u32,
+    pub conflicts: u32,
+    pub skipped: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportOptions {
+    pub with_scheduling: bool,
+    pub with_media: bool,
+}
+
+impl Default for ExportOptions {
+    fn default() -> Self {
+        Self {
+            with_scheduling: true,
+            with_media: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportResult {
+    /// Number of exported notes.
+    pub notes: u32,
+}
+
+/// Why a `.colpkg` backup was written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackupKind {
+    Daily,
+    PreImport,
+    Manual,
+}
+
+/// One backup file in `<collection dir>/backups/`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupInfo {
+    pub path: String,
+    pub file_name: String,
+    pub kind: BackupKind,
+    /// Local time encoded in the name, as epoch milliseconds.
+    pub created_at: i64,
+    pub size: u64,
 }

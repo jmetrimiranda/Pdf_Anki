@@ -7,9 +7,12 @@ use anki::collection::{Collection, CollectionBuilder};
 use anki::prelude::I18n;
 
 use crate::error::{Error, Result};
-use crate::types::DeckTree;
+use crate::types::{BackupInfo, DeckTree};
 
-type Job = Box<dyn FnOnce(&mut Collection) + Send>;
+type Job = Box<dyn FnOnce(&mut Actor) + Send>;
+/// Type-erased access to rslib's (unnameable) `ProgressState.want_abort`: `Some(v)` sets it,
+/// `None` only reads it.
+type AbortFn = Box<dyn Fn(Option<bool>) -> bool + Send + Sync>;
 
 /// Files of a collection folder, using the desktop layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +30,11 @@ impl CollectionPaths {
             media_db: dir.join("collection.mdb"),
         }
     }
+
+    /// The folder holding the collection file.
+    pub fn dir(&self) -> &Path {
+        self.collection.parent().unwrap_or(Path::new("."))
+    }
 }
 
 /// Handle to the actor thread that owns the collection. Cheap to clone; the collection is
@@ -41,6 +49,57 @@ struct Inner {
     thread: Mutex<Option<JoinHandle<Result<()>>>>,
     thread_id: ThreadId,
     paths: CollectionPaths,
+    abort: AbortFn,
+}
+
+/// State of the actor thread. The collection is `None` only between a close and a successful
+/// reopen (see [`AnkiService::replace_collection`]); the next job retries the reopen.
+pub(crate) struct Actor {
+    col: Option<Collection>,
+    builder: CollectionBuilder,
+    paths: CollectionPaths,
+    tr: I18n,
+}
+
+impl Actor {
+    fn ensure_open(&mut self) -> Result<&mut Collection> {
+        if self.col.is_none() {
+            let col = self.builder.build().map_err(|source| Error::Open {
+                path: self.paths.collection.clone(),
+                message: source.message(&self.tr),
+                source: Box::new(source),
+            })?;
+            self.col = Some(col);
+        }
+        self.col.as_mut().ok_or(Error::Closed)
+    }
+
+    /// Takes the collection out, hands it to `f` (which consumes/closes it) and always reopens
+    /// afterwards. Returns `f`'s result; a reopen failure is reported only if `f` succeeded
+    /// (the next job retries the reopen).
+    fn with_owned<R>(&mut self, f: impl FnOnce(Collection) -> Result<R>) -> Result<R> {
+        let col = match self.col.take() {
+            Some(col) => col,
+            None => self.builder.build().map_err(|source| Error::Open {
+                path: self.paths.collection.clone(),
+                message: source.message(&self.tr),
+                source: Box::new(source),
+            })?,
+        };
+        let res = catch_unwind(AssertUnwindSafe(|| f(col))).unwrap_or_else(|panic| {
+            tracing::error!(
+                panic = panic_message(&panic),
+                "panic while the collection was closed"
+            );
+            Err(Error::Panicked)
+        });
+        let reopened = self.ensure_open().map(|_| ());
+        match (res, reopened) {
+            (Err(e), _) => Err(e.localized(&self.tr)),
+            (Ok(_), Err(e)) => Err(e),
+            (Ok(r), Ok(())) => Ok(r),
+        }
+    }
 }
 
 impl AnkiService {
@@ -54,20 +113,36 @@ impl AnkiService {
             })?;
         }
         let tr = I18n::new(&["pt-BR"]);
-        let col = CollectionBuilder::new(&paths.collection)
+        let progress = Arc::new(Mutex::new(Default::default()));
+        let mut builder = CollectionBuilder::new(&paths.collection);
+        builder
             .set_media_paths(paths.media_folder.clone(), paths.media_db.clone())
             .set_tr(tr.clone())
-            .build()
-            .map_err(|source| Error::Open {
-                path: paths.collection.clone(),
-                message: source.message(&tr),
-                source: Box::new(source),
-            })?;
+            .set_shared_progress_state(Arc::clone(&progress));
+        let col = builder.build().map_err(|source| Error::Open {
+            path: paths.collection.clone(),
+            message: source.message(&tr),
+            source: Box::new(source),
+        })?;
+        // Never enters the actor (docs/decisoes.md: setWantsAbort outside the actor).
+        let abort: AbortFn = Box::new(move |set| {
+            let mut state = progress.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(value) = set {
+                state.want_abort = value;
+            }
+            state.want_abort
+        });
 
+        let actor = Actor {
+            col: Some(col),
+            builder,
+            paths: paths.clone(),
+            tr,
+        };
         let (tx, rx) = mpsc::channel::<Job>();
         let thread = thread::Builder::new()
             .name("anki-actor".into())
-            .spawn(move || run_actor(col, rx))
+            .spawn(move || run_actor(actor, rx))
             .map_err(Error::Spawn)?;
         Ok(Self {
             inner: Arc::new(Inner {
@@ -75,12 +150,24 @@ impl AnkiService {
                 thread_id: thread.thread().id(),
                 thread: Mutex::new(Some(thread)),
                 paths,
+                abort,
             }),
         })
     }
 
     pub fn paths(&self) -> &CollectionPaths {
         &self.inner.paths
+    }
+
+    /// Asks the running rslib operation (import, export, check…) to stop at its next progress
+    /// update. Safe to call from any thread while a job runs: it never goes through the actor.
+    pub fn request_abort(&self) {
+        (self.inner.abort)(Some(true));
+    }
+
+    /// Whether an abort was requested and not yet consumed by an rslib operation.
+    pub fn abort_requested(&self) -> bool {
+        (self.inner.abort)(None)
     }
 
     /// Runs `f` on the actor thread and awaits its result. Calls are executed one at a time,
@@ -90,11 +177,8 @@ impl AnkiService {
         R: Send + 'static,
         F: FnOnce(&mut Collection) -> Result<R> + Send + 'static,
     {
-        let (reply, rx) = tokio::sync::oneshot::channel();
-        self.submit(f, move |res| {
-            let _ = reply.send(res);
-        })?;
-        rx.await.unwrap_or(Err(Error::Closed))
+        self.run_async(move |actor| run_on_collection(actor, f))
+            .await
     }
 
     /// Blocking variant of [`AnkiService::call`]. Must not be called from inside an actor job.
@@ -107,27 +191,90 @@ impl AnkiService {
             return Err(Error::Reentrant);
         }
         let (reply, rx) = mpsc::sync_channel(1);
-        self.submit(f, move |res| {
-            let _ = reply.send(res);
-        })?;
+        self.submit(Box::new(move |actor| {
+            let _ = reply.send(run_on_collection(actor, f));
+        }))?;
         rx.recv().unwrap_or(Err(Error::Closed))
     }
 
-    fn submit<R, F>(&self, f: F, reply: impl FnOnce(Result<R>) + Send + 'static) -> Result<()>
+    /// Closes the collection, runs `f` with its paths (it may replace the collection file and
+    /// media), then ALWAYS reopens the collection and returns `f`'s result. If the reopen fails
+    /// the service stays usable: the next call tries again.
+    pub async fn replace_collection<R, F>(&self, f: F) -> Result<R>
     where
         R: Send + 'static,
-        F: FnOnce(&mut Collection) -> Result<R> + Send + 'static,
+        F: FnOnce(&CollectionPaths) -> Result<R> + Send + 'static,
     {
-        let job: Job = Box::new(move |col| {
-            let res = match catch_unwind(AssertUnwindSafe(|| f(col))) {
-                Ok(res) => res.map_err(|e| e.localized(col.tr())),
-                Err(panic) => {
-                    tracing::error!(panic = panic_message(&panic), "panic in Anki actor job");
-                    Err(Error::Panicked)
-                }
+        self.run_async(move |actor| {
+            let paths = actor.paths.clone();
+            let tr = actor.tr.clone();
+            actor.with_owned(move |col| {
+                col.close(None).map_err(|e| Error::from_anki(e, &tr))?;
+                f(&paths)
+            })
+        })
+        .await
+    }
+
+    /// Writes a consistent copy of the collection database to `dest` with SQLite's
+    /// `VACUUM INTO`, without closing the collection (the undo queue survives). Jobs run between
+    /// rslib operations, so no transaction is open. Only this copy runs on the actor.
+    pub(crate) async fn snapshot_collection(&self, dest: PathBuf) -> Result<()> {
+        let Some(target) = dest.to_str().map(str::to_owned) else {
+            return Err(Error::io(
+                &dest,
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "caminho não é UTF-8"),
+            ));
+        };
+        self.call(move |col| {
+            col.storage
+                .db()
+                .execute("VACUUM INTO ?1", [target])
+                .map_err(anki::prelude::AnkiError::from)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Replaces the whole collection with a `.colpkg` (spec 8.5). A pre-import backup of the
+    /// current collection is written first and returned. On failure the previous collection is
+    /// kept (rslib writes through a temporary file).
+    pub async fn import_colpkg(&self, src: &Path) -> Result<BackupInfo> {
+        crate::import_export::validate_package(src, "colpkg")?;
+        let backup = crate::backup::backup_now(self, crate::types::BackupKind::PreImport).await?;
+        let src = src.to_path_buf();
+        self.replace_collection(move |p| {
+            let (Some(src), Some(col)) = (src.to_str(), p.collection.to_str()) else {
+                return Err(Error::InvalidPackage(
+                    "o caminho do arquivo não é UTF-8 válido.".into(),
+                ));
             };
-            reply(res);
-        });
+            anki::import_export::package::import_colpkg(
+                src,
+                col,
+                &p.media_folder,
+                &p.media_db,
+                Default::default(),
+            )
+            .map_err(crate::import_export::package_error)
+        })
+        .await?;
+        Ok(backup)
+    }
+
+    async fn run_async<R, F>(&self, f: F) -> Result<R>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut Actor) -> Result<R> + Send + 'static,
+    {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.submit(Box::new(move |actor| {
+            let _ = reply.send(f(actor));
+        }))?;
+        rx.await.unwrap_or(Err(Error::Closed))
+    }
+
+    fn submit(&self, job: Job) -> Result<()> {
         let tx = self.inner.tx.lock().unwrap_or_else(PoisonError::into_inner);
         tx.as_ref()
             .ok_or(Error::Closed)?
@@ -149,6 +296,22 @@ impl AnkiService {
     /// on any handle fail with [`Error::Closed`]. Idempotent.
     pub fn shutdown(&self) -> Result<()> {
         self.inner.shutdown()
+    }
+}
+
+/// Runs a normal job: reopens the collection if a previous replace left it closed, catches
+/// panics and localizes errors.
+fn run_on_collection<R>(
+    actor: &mut Actor,
+    f: impl FnOnce(&mut Collection) -> Result<R>,
+) -> Result<R> {
+    let col = actor.ensure_open()?;
+    match catch_unwind(AssertUnwindSafe(|| f(col))) {
+        Ok(res) => res.map_err(|e| e.localized(col.tr())),
+        Err(panic) => {
+            tracing::error!(panic = panic_message(&panic), "panic in Anki actor job");
+            Err(Error::Panicked)
+        }
     }
 }
 
@@ -183,12 +346,14 @@ impl Drop for Inner {
     }
 }
 
-fn run_actor(mut col: Collection, rx: mpsc::Receiver<Job>) -> Result<()> {
+fn run_actor(mut actor: Actor, rx: mpsc::Receiver<Job>) -> Result<()> {
     while let Ok(job) = rx.recv() {
-        job(&mut col);
+        job(&mut actor);
     }
-    let tr = col.tr().clone();
-    col.close(None).map_err(|e| Error::from_anki(e, &tr))
+    match actor.col.take() {
+        Some(col) => col.close(None).map_err(|e| Error::from_anki(e, &actor.tr)),
+        None => Ok(()),
+    }
 }
 
 fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {

@@ -1026,12 +1026,18 @@ dependencies = [
  "anki",
  "anki_proto",
  "anyhow",
+ "chrono",
+ "percent-encoding",
+ "png",
+ "prost",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3148,6 +3154,7 @@ name = "leitor-estudos"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "core-ai",
  "core-anki",
  "core-epub",
@@ -3157,6 +3164,7 @@ dependencies = [
  "pdfcraft-cos",
  "pdfcraft-testkit",
  "percent-encoding",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

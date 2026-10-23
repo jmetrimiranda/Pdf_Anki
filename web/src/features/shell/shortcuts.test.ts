@@ -8,7 +8,11 @@ function key(init: KeyboardEventInit, target?: HTMLElement): KeyboardEvent {
 }
 
 const body = () => document.body;
-const iframe = () => document.createElement('iframe');
+const iframe = (title = 'PdfCraft') => {
+  const el = document.createElement('iframe');
+  el.title = title;
+  return el;
+};
 
 describe('shellActionFor', () => {
   it('maps Ctrl+1/2/3 to the app tabs when focus is outside the iframe', () => {
@@ -68,5 +72,15 @@ describe('shellActionFor', () => {
     expect(shellActionFor(key({ key: 'Tab', code: 'Tab', ctrlKey: true }), body())).toBeNull();
     expect(shellActionFor(key({ key: 'A', code: 'KeyA', ctrlKey: true, shiftKey: true }), body())).toBeNull();
     expect(shellActionFor(key({ key: 'N', code: 'KeyN', ctrlKey: true, shiftKey: true }), body())).toBeNull();
+  });
+
+  it('only the PdfCraft frame keeps Ctrl+1/2/3: the card and Anki page frames let them through', () => {
+    const card = iframe('Card');
+    expect(shellActionFor(key({ key: '2', code: 'Digit2', ctrlKey: true }), card)).toEqual({
+      kind: 'tab',
+      to: '/leitor',
+    });
+    expect(shellActionFor(key({ key: '2', code: 'Digit2', ctrlKey: true }), iframe())).toBeNull();
+    expect(shellActionFor(key({ key: '?' }), iframe('Opções do deck'))).toEqual({ kind: 'help' });
   });
 });

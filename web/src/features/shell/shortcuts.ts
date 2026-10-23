@@ -36,6 +36,23 @@ export const SHORTCUTS: { combos: string[][]; label: MessageKey; ready: boolean 
   { combos: [['?']], label: 'shortcuts.help', ready: true },
 ];
 
+/** Study screen keys (spec 8.2, like Anki desktop), shown under "Anki · Estudar" in the "?" dialog. */
+export const STUDY_SHORTCUTS: { combos: string[][]; label: MessageKey }[] = [
+  { combos: [['Espaço'], ['Enter']], label: 'anki.shortcuts.showAnswer' },
+  { combos: [['1–4']], label: 'anki.shortcuts.answer' },
+  { combos: [['E']], label: 'anki.shortcuts.edit' },
+  { combos: [['Ctrl', 'Z']], label: 'anki.shortcuts.undo' },
+  { combos: [['*']], label: 'anki.shortcuts.mark' },
+  { combos: [['-']], label: 'anki.shortcuts.bury' },
+  { combos: [['@']], label: 'anki.shortcuts.suspend' },
+  { combos: [['R']], label: 'anki.shortcuts.replay' },
+];
+
+/** The embedded PdfCraft (LeitorHost's iframe): while it has focus its own shortcuts win. */
+export function isPdfcraftFrame(el: Element | null): boolean {
+  return el?.tagName === 'IFRAME' && el.getAttribute('title') === 'PdfCraft';
+}
+
 export const TAB_PATHS = ['/biblioteca', '/leitor', '/anki'] as const;
 export type TabPath = (typeof TAB_PATHS)[number];
 
@@ -56,7 +73,7 @@ export type ShellAction =
 
 /**
  * Maps a keydown on the app document to a shell action. Never claims a key PdfCraft uses while it
- * has focus: when the iframe is the active element, only Alt+1/2/3 and Ctrl+Shift+P apply (those
+ * has focus: when the PdfCraft iframe is the active element, only Alt+1/2/3 and Ctrl+Shift+P apply (those
  * also arrive re-dispatched by the reader from inside the iframe).
  */
 export function shellActionFor(
@@ -64,7 +81,8 @@ export function shellActionFor(
   activeElement: Element | null = document.activeElement,
 ): ShellAction | null {
   const ctrl = e.ctrlKey || e.metaKey;
-  const iframeFocused = activeElement?.tagName === 'IFRAME';
+  // Only the PdfCraft frame owns keys; other frames (the card, Anki pages) forward theirs or keep them inside.
+  const iframeFocused = isPdfcraftFrame(activeElement);
   const digit = tabDigit(e);
   if (digit && e.altKey && !ctrl && !e.shiftKey) return { kind: 'tab', to: TAB_PATHS[digit - 1]! };
   if (digit && ctrl && !e.altKey && !e.shiftKey) {

@@ -1,5 +1,10 @@
 // Every user-facing string of the app (spec 0, item 6). Placeholders use {name}.
-export const ptBR = {
+// Feature sections live in ./pt-BR/*.ts and are composed below (no key may appear in two sections).
+import { ankiNotesMessages } from './pt-BR/ankiNotes';
+import { ankiShellMessages } from './pt-BR/ankiShell';
+import { ankiStudyMessages } from './pt-BR/ankiStudy';
+
+export const baseMessages = {
   'app.name': 'Leitor de Estudos',
 
   'common.cancel': 'Cancelar',
@@ -266,6 +271,21 @@ export const ptBR = {
   'dev.smoke.words': 'Palavras na p. 1',
   'dev.smoke.page1': 'Página 1 (capa)',
   'dev.smoke.page1Alt': 'Primeira página do PDF de teste',
+} as const;
+
+/** Each section, by name (the i18n test checks that no key is defined twice). */
+export const messageSections = {
+  base: baseMessages,
+  ankiShell: ankiShellMessages,
+  ankiStudy: ankiStudyMessages,
+  ankiNotes: ankiNotesMessages,
+} as const;
+
+export const ptBR = {
+  ...baseMessages,
+  ...ankiShellMessages,
+  ...ankiStudyMessages,
+  ...ankiNotesMessages,
 } as const;
 
 export type Messages = typeof ptBR;

@@ -40,6 +40,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r lint
       - run: pnpm -r test
+      - name: Anki web assets
+        # The mocked card frame then uses the real reviewer.js and MathJax (vite-plugin-anki-card), not the stub.
+        run: scripts/fetch-anki-web.sh
       - name: Playwright (mocked core)
         run: |
           pnpm --dir web exec playwright install --with-deps chromium webkit
@@ -119,6 +122,10 @@ jobs:
               # Bridge tests against the real PdfCraft web build (browsers are in the image; software WebGL via Mesa)
               pnpm --dir web exec playwright install chromium webkit
               timeout 20m xvfb-run -a pnpm --dir web e2e:bridge
+              # Real app (WebKitGTK under Xvfb) with the fixture collection: card iframe isolation (spec 8.4)
+              # and Anki's own pages over the anki protocol (deck options, statistics, card info…).
+              CARGO_BUILD_JOBS=2 timeout 30m scripts/anki-real-app.sh isolation
+              timeout 20m scripts/anki-real-app.sh pages
               pnpm --dir web tauri build --bundles deb,appimage
             '
       - name: Save cargo cache

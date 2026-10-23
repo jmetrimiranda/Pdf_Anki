@@ -100,6 +100,58 @@ describe('LeitorController.openBook', () => {
     expect(core.setPages).not.toHaveBeenCalled();
   });
 
+  it('opens at the requested page (Abrir no livro) and clamps it to the book', async () => {
+    const { c, ready, send, lastPosted } = setup();
+    ready();
+    const opening = c.openBook(UID_A, { page: 6 });
+    await flush();
+    expect(lastPosted()).toMatchObject({ type: 'pdfcraft:open', id: UID_A, page: 6 });
+    send({ type: 'pdfcraft:active', id: UID_A, page: 6, pageCount: 12 });
+    await expect(opening).resolves.toBe(true);
+
+    const b = setup();
+    b.ready();
+    void b.c.openBook(UID_A, { page: 500 });
+    await flush();
+    expect(b.lastPosted()).toMatchObject({ type: 'pdfcraft:open', page: 11 });
+
+    const d = setup();
+    d.ready();
+    void d.c.openBook(UID_A, { page: -3 });
+    await flush();
+    // Page 0 is the bridge's default (not sent).
+    expect(d.lastPosted()).toMatchObject({ type: 'pdfcraft:open', id: UID_A });
+    expect((d.lastPosted() as { page?: number }).page ?? 0).toBe(0);
+  });
+
+  it('moves a book PdfCraft already has to the requested page (Abrir no livro)', async () => {
+    const { c, ready, send, lastPosted, frame } = setup();
+    ready();
+    const first = c.openBook(UID_A);
+    await flush();
+    send({ type: 'pdfcraft:active', id: UID_A, page: 2, pageCount: 12 });
+    await expect(first).resolves.toBe(true);
+
+    // In front, no page asked for: nothing is sent.
+    const sent = frame.posted.length;
+    await expect(c.openBook(UID_A)).resolves.toBe(true);
+    expect(frame.posted.length).toBe(sent);
+
+    // In front, page asked for: the fork goes to it and answers with pdfcraft:active.
+    const going = c.openBook(UID_A, { page: 7 });
+    await flush();
+    expect(lastPosted()).toMatchObject({ type: 'pdfcraft:open', id: UID_A, page: 7 });
+    send({ type: 'pdfcraft:active', id: UID_A, page: 7, pageCount: 12 });
+    await expect(going).resolves.toBe(true);
+
+    // Page 0 of an open book is sent explicitly too (otherwise the tab would stay where it is).
+    const top = c.openBook(UID_A, { page: 0 });
+    await flush();
+    expect(lastPosted()).toMatchObject({ type: 'pdfcraft:open', id: UID_A, page: 0 });
+    send({ type: 'pdfcraft:active', id: UID_A, page: 0, pageCount: 12 });
+    await expect(top).resolves.toBe(true);
+  });
+
   it('updates the page count when PdfCraft disagrees with the library', async () => {
     const { c, core, ready, send } = setup();
     ready();

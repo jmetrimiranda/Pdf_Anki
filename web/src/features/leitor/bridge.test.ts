@@ -142,6 +142,12 @@ describe('BridgeClient', () => {
     expect(frame.posted[0]!.msg).not.toHaveProperty('page');
   });
 
+  it('sends page 0 when asked to go to it (a tab already open)', () => {
+    const { client, frame } = setup();
+    client.open({ id: UID_A, name: 'a.pdf', bytes: new Uint8Array(1), page: 0, goto: true });
+    expect(frame.posted[0]!.msg).toMatchObject({ type: 'pdfcraft:open', id: UID_A, page: 0 });
+  });
+
   it('copies a view instead of transferring a shared buffer', () => {
     const { client, frame } = setup();
     const backing = new Uint8Array([9, 9, 1, 2, 9]);

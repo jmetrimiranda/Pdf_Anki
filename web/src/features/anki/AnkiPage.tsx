@@ -1,81 +1,80 @@
-import { useQuery } from '@tanstack/react-query';
-import { Blocks, Import } from 'lucide-react';
-import { useState } from 'react';
-import { Button, Card, EmptyState, Notice, Skeleton, Tabs } from '../../components/ui';
+import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
+import { ArrowLeft } from 'lucide-react';
+import { Tabs } from '../../components/ui';
 import { t } from '../../i18n';
-import { CoreError } from '../../lib/core/client';
-import { q } from '../../lib/core/queries';
-import { DeckTable, studiedTodayText } from './DeckList';
 
-type Section = 'decks' | 'add' | 'browse' | 'stats';
+export type AnkiSection = 'decks' | 'add' | 'browse' | 'stats';
 
-function DeckSkeleton() {
-  return (
-    <div role="status" aria-busy="true" aria-label={t('common.loading')} className="flex flex-col gap-3 pt-2">
-      <Skeleton className="h-4 w-full" />
-      {Array.from({ length: 7 }, (_, i) => (
-        <div key={i} className="flex items-center gap-4">
-          <Skeleton className={i % 3 ? 'h-3.5 w-2/5' : 'h-3.5 w-1/2'} />
-          <span className="flex-1" />
-          <Skeleton className="h-3.5 w-8" />
-          <Skeleton className="h-3.5 w-8" />
-          <Skeleton className="h-3.5 w-8" />
-        </div>
-      ))}
-    </div>
-  );
+const SECTION_PATHS: Record<AnkiSection, '/anki' | '/anki/adicionar' | '/anki/navegar' | '/anki/estatisticas'> = {
+  decks: '/anki',
+  add: '/anki/adicionar',
+  browse: '/anki/navegar',
+  stats: '/anki/estatisticas',
+};
+
+/** Which sub-tab a path belongs to; null for screens without a tab (study, Anki pages). */
+export function ankiSectionOf(pathname: string): AnkiSection | null {
+  const p = pathname.replace(/\/+$/, '') || '/';
+  if (p === '/anki') return 'decks';
+  if (p === '/anki/adicionar') return 'add';
+  if (p === '/anki/navegar') return 'browse';
+  if (p === '/anki/estatisticas') return 'stats';
+  return null;
 }
 
+/**
+ * The Anki tab (spec 8.2): sub-tabs Decks | Adicionar | Navegar | Estatísticas over the routed screen. Studying
+ * and Anki's own pages (options, card info…) have no tab: study shows a way back to the decks, the pages a
+ * "Fechar" button.
+ */
 export function AnkiPage() {
-  const [section, setSection] = useState<Section>('decks');
-  const tree = useQuery(q.deckTree());
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const navigate = useNavigate();
+  const section = ankiSectionOf(pathname);
+  const studying = pathname.startsWith('/anki/estudar');
 
   return (
-    <div className="h-full overflow-auto">
-      <div className="mx-auto flex max-w-[760px] flex-col gap-5 px-4 pt-4 pb-10 sm:px-6">
-        <Tabs
-          idBase="anki"
-          label={t('anki.sections')}
-          value={section}
-          onValueChange={setSection}
-          className="justify-center"
-          items={[
-            { value: 'decks', label: t('anki.section.decks') },
-            { value: 'add', label: t('anki.section.add'), disabled: true },
-            { value: 'browse', label: t('anki.section.browse'), disabled: true },
-            { value: 'stats', label: t('anki.section.stats'), disabled: true },
-          ]}
-        />
-        <div role="tabpanel" id="anki-panel-decks" aria-labelledby="anki-tab-decks" className="flex flex-col gap-5">
-          {tree.isError && (
-            <Notice tone="error" onRetry={() => void tree.refetch()}>
-              {tree.error instanceof CoreError ? tree.error.message : t('anki.loadError')}
-            </Notice>
-          )}
-          <Card padded={false} className="px-3 pt-2 pb-3 sm:px-4">
-            {tree.isPending ? (
-              <DeckSkeleton />
-            ) : tree.data && tree.data.decks.length > 0 ? (
-              <DeckTable decks={tree.data.decks} />
-            ) : (
-              <EmptyState
-                icon={Blocks}
-                title={t('anki.empty')}
-                description={t('anki.emptyHint')}
-                action={
-                  <Button variant="primary" icon={Import} disabled>
-                    {t('anki.import')}
-                  </Button>
-                }
-              />
-            )}
-          </Card>
-          {tree.data && (
-            <p className="text-center text-base text-muted" data-testid="studied-today">
-              {studiedTodayText(tree.data.studiedToday)}
-            </p>
-          )}
+    <div className="flex h-full flex-col">
+      {section && (
+        <div className="mx-auto w-full max-w-[760px] shrink-0 px-4 pt-3 sm:px-6">
+          <Tabs
+            idBase="anki"
+            label={t('anki.sections')}
+            value={section}
+            onValueChange={(v) => {
+              if (v === 'decks') void navigate({ to: '/anki' });
+              else if (v === 'add') void navigate({ to: SECTION_PATHS.add, search: {} });
+              else if (v === 'browse') void navigate({ to: SECTION_PATHS.browse, search: {} });
+              else void navigate({ to: SECTION_PATHS.stats });
+            }}
+            className="justify-center"
+            items={[
+              { value: 'decks', label: t('anki.section.decks') },
+              { value: 'add', label: t('anki.section.add') },
+              { value: 'browse', label: t('anki.section.browse') },
+              { value: 'stats', label: t('anki.section.stats') },
+            ]}
+          />
         </div>
+      )}
+      {studying && (
+        <div className="shrink-0 px-3 pt-2 sm:px-4">
+          <Link
+            to="/anki"
+            className="inline-flex h-8 items-center gap-1.5 rounded-ctl px-2 text-base text-muted hover:bg-hover hover:text-fg coarse:min-h-11"
+          >
+            <ArrowLeft size={15} aria-hidden />
+            {t('anki.backToDecks')}
+          </Link>
+        </div>
+      )}
+      <div
+        className="min-h-0 flex-1"
+        {...(section
+          ? { role: 'tabpanel', id: `anki-panel-${section}`, 'aria-labelledby': `anki-tab-${section}` }
+          : {})}
+      >
+        <Outlet />
       </div>
     </div>
   );

@@ -55,7 +55,7 @@ describe('AppShell', () => {
     expect(screen.getByRole('link', { name: 'Anki' }).getAttribute('aria-current')).toBe('page');
   });
 
-  it('routes Ctrl+1/2/3 and Alt+1/2/3, and leaves Ctrl+digits to a focused iframe', async () => {
+  it('routes Ctrl+1/2/3 and Alt+1/2/3, and leaves Ctrl+digits to a focused PdfCraft iframe', async () => {
     await renderApp();
     fireEvent.keyDown(window, { key: '2', code: 'Digit2', ctrlKey: true });
     await waitFor(() => expect(path()).toBe('/leitor'));
@@ -65,6 +65,7 @@ describe('AppShell', () => {
     await waitFor(() => expect(path()).toBe('/biblioteca'));
 
     const frame = document.createElement('iframe');
+    frame.title = 'PdfCraft';
     frame.tabIndex = 0;
     document.body.appendChild(frame);
     frame.focus();
@@ -152,5 +153,76 @@ describe('AppShell', () => {
     ).toBeTruthy();
     await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(4));
     expect(leitorMock.openBook).not.toHaveBeenCalled();
+  });
+
+  it('lists the study keys under "Anki · Estudar" in the shortcuts dialog', async () => {
+    await renderApp();
+    fireEvent.keyDown(document.body, { key: '?' });
+    const dialog = await screen.findByRole('dialog', { name: 'Atalhos do teclado' });
+    const study = within(dialog).getByRole('list', { name: 'Anki · Estudar' });
+    expect(study.textContent).toContain('Mostrar resposta');
+    expect(study.textContent).toContain('Desfazer a última resposta');
+    expect(study.textContent).toContain('Suspender o card');
+  });
+
+  it('a .apkg opened with the app asks, imports directly and shows the summary', async () => {
+    await renderApp();
+    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(3));
+    act(() => mockHandle.openPaths(['/home/jorge/Downloads/Fazenda.apkg']));
+    const dialog = await screen.findByRole('dialog', { name: 'Importar “Fazenda.apkg” para a coleção?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Importar' }));
+    expect(await screen.findByText('Pacote importado: 3 notas adicionadas, 0 atualizadas.')).toBeTruthy();
+    await waitFor(() => expect(path()).toBe('/anki'));
+    expect(
+      mockHandle.anki.logs.some((l) => l.kind === 'import' && l.path === '/home/jorge/Downloads/Fazenda.apkg'),
+    ).toBe(true);
+    expect(leitorMock.openBook).not.toHaveBeenCalled();
+  });
+
+  it('cancelling the .apkg confirmation imports nothing', async () => {
+    await renderApp();
+    act(() => mockHandle.openPaths(['/tmp/Outro.apkg']));
+    const dialog = await screen.findByRole('dialog', { name: /Importar “Outro.apkg”/ });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancelar' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(mockHandle.anki.logs.some((l) => l.kind === 'import')).toBe(false);
+  });
+
+  it('a .colpkg opened with the app needs both confirmations and the checkbox', async () => {
+    await renderApp();
+    act(() => mockHandle.openPaths(['/home/jorge/colecao.colpkg']));
+    const first = await screen.findByRole('dialog', { name: 'Substituir a coleção inteira?' });
+    fireEvent.click(within(first).getByRole('button', { name: 'Continuar' }));
+    const sure = await screen.findByRole('dialog', { name: 'Tem certeza?' });
+    const replace = within(sure).getByRole('button', { name: 'Substituir coleção' }) as HTMLButtonElement;
+    expect(replace.disabled).toBe(true);
+    fireEvent.click(replace);
+    expect(mockHandle.anki.dataset).toBe('seed');
+    fireEvent.click(within(sure).getByRole('checkbox', { name: 'Entendo que a coleção atual será substituída' }));
+    expect(replace.disabled).toBe(false);
+    fireEvent.click(replace);
+    expect(
+      await screen.findByText(/^Coleção substituída\. Backup da anterior: backup-antes-de-importar-/),
+    ).toBeTruthy();
+    expect(mockHandle.anki.dataset).toBe('colpkg');
+    await waitFor(() => expect(path()).toBe('/anki'));
+  });
+
+  it('handles mixed lists in order: books, then a package', async () => {
+    await renderApp();
+    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(3));
+    act(() => mockHandle.openPaths(['/tmp/Livro misto.pdf', '/tmp/Misto.apkg']));
+    await screen.findByRole('dialog', { name: /Importar “Misto.apkg”/ });
+    // The PDF was imported before the package dialog appeared.
+    expect(mockHandle.books.some((b) => b.title === 'Livro misto')).toBe(true);
+  });
+
+  it('refreshes the Anki tab when the core reports a change', async () => {
+    await renderApp('/anki');
+    await screen.findByRole('tree', { name: 'Decks' });
+    const spy = vi.spyOn(mockClient, 'ankiDeckTree');
+    act(() => mockHandle.anki.fireChanged('page'));
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    spy.mockRestore();
   });
 });

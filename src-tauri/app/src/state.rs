@@ -1,14 +1,16 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 use core_anki::AnkiService;
 use core_pdf::{DocHandle, PdfCore};
 use core_store::{Clock, ReadingTracker, Store, SystemClock};
 
+use crate::anki::{AnkiHandles, UiSink};
 use crate::error::AppError;
 use crate::files::BookFiles;
+use crate::grants::{ExportGrants, ReadGrants};
 
 /// Documents `doc_words` keeps open, keyed by book and file version.
 const DOC_CACHE_SIZE: usize = 3;
@@ -19,11 +21,18 @@ const DOC_CACHE_SIZE: usize = 3;
 /// The collection and the store open lazily (and are retried after a failure, e.g. when another
 /// instance holds the collection), so a broken data dir never keeps the window from showing.
 ///
-/// Lock order: `library_lock` → `tracker` → `store`; `docs` is never held across another lock.
+/// Lock order: `library_lock` → `tracker` → `store`; `anki_handles` → `anki`; `docs` is never
+/// held across another lock.
 pub struct AppState {
     data_dir: PathBuf,
     files: BookFiles,
     anki: Mutex<Option<AnkiService>>,
+    /// The study session and the `/_anki/` bridge, created with the collection service.
+    pub(crate) anki_handles: Mutex<Option<AnkiHandles>>,
+    /// Where events for the UI go (`anki://page`, `anki://changed`, links to open).
+    pub(crate) ui_sink: Arc<RwLock<Option<UiSink>>>,
+    export_grants: ExportGrants,
+    read_grants: ReadGrants,
     /// A throwaway collection for the smoke check, which seeds demo decks: they must never
     /// reach the user's collection (and, from Phase 3, AnkiWeb).
     smoke_anki: Mutex<Option<AnkiService>>,
@@ -51,6 +60,10 @@ impl AppState {
             files: BookFiles::new(&data_dir),
             data_dir,
             anki: Mutex::new(None),
+            anki_handles: Mutex::new(None),
+            ui_sink: Arc::new(RwLock::new(None)),
+            export_grants: ExportGrants::default(),
+            read_grants: ReadGrants::default(),
             smoke_anki: Mutex::new(None),
             store: Mutex::new(None),
             pdf: Arc::new(PdfCore::new()),
@@ -72,6 +85,16 @@ impl AppState {
 
     pub fn anki_dir(&self) -> PathBuf {
         self.data_dir.join("anki")
+    }
+
+    /// One-shot write grants (`export_pick_path`).
+    pub fn export_grants(&self) -> &ExportGrants {
+        &self.export_grants
+    }
+
+    /// One-shot read grants of Anki packages (`anki_pick_package`, "Abrir com", drag and drop).
+    pub fn read_grants(&self) -> &ReadGrants {
+        &self.read_grants
     }
 
     pub fn smoke_anki_dir(&self) -> PathBuf {
@@ -193,9 +216,10 @@ impl AppState {
         lock(&self.docs).len()
     }
 
-    /// Queues "Abrir com" paths for the UI.
+    /// Queues "Abrir com" paths for the UI (Anki packages among them get a read grant).
     pub fn push_open_paths(&self, paths: Vec<String>) {
         if !paths.is_empty() {
+            self.grant_packages(&paths);
             lock(&self.open_paths).extend(paths);
         }
     }
@@ -231,6 +255,9 @@ impl AppState {
     /// every document.
     pub fn shutdown(&self) {
         self.shutting_down.store(true, Ordering::Relaxed);
+        if let Some(h) = lock(&self.anki_handles).take() {
+            h.study.close();
+        }
         for slot in [&self.anki, &self.smoke_anki] {
             if let Some(svc) = lock(slot).take()
                 && let Err(e) = svc.shutdown()

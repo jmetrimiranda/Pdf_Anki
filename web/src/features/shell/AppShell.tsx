@@ -1,6 +1,8 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { core } from '../../lib/core/client';
+import { AnkiImportProvider, useAnkiImport } from '../anki/import/AnkiImportProvider';
 import { useNarrow } from '../../lib/useMediaQuery';
 import { leitor, LeitorHost } from '../leitor';
 import { ReplaceVersionDialog } from '../library/BookDialogs';
@@ -13,12 +15,32 @@ import { TopBar } from './TopBar';
 const isLeitorPath = (p: string) => p === '/leitor' || p.startsWith('/leitor/');
 
 export function AppShell() {
+  return (
+    <AnkiImportProvider>
+      <Shell />
+    </AnkiImportProvider>
+  );
+}
+
+function Shell() {
   const narrow = useNarrow();
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [shortcuts, setShortcuts] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const { importPaths, addBooks, replacePrompt } = useBookImport();
+  const { importPaths: importBooks, addBooks, replacePrompt } = useBookImport();
+  const ankiImport = useAnkiImport();
+  const queryClient = useQueryClient();
+
+  // Opened or dropped files (spec 8.5): PDFs go to the library, .apkg/.colpkg to the Anki import flows, in order.
+  const importPaths = useCallback(
+    (paths: string[], opts?: { openLast?: boolean }) =>
+      ankiImport.openPaths(paths, (books) => importBooks(books, opts)),
+    [ankiImport, importBooks],
+  );
+
+  // The collection changed outside the UI's own calls (import, Anki page, backup): refresh the Anki tab.
+  useEffect(() => core.onAnkiChanged(() => void queryClient.invalidateQueries({ queryKey: ['anki'] })), [queryClient]);
 
   const api = useMemo<ShellApi>(
     () => ({

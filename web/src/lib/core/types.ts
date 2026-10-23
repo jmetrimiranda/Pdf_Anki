@@ -12,6 +12,10 @@ export interface DeckNode {
   learnCount: number;
   reviewCount: number;
   collapsed: boolean;
+  /** Filtered (dynamic) deck: no options page, cannot hold subdecks of normal decks. */
+  filtered: boolean;
+  /** Cards in this deck and its subdecks (used by the delete confirmation). */
+  total: number;
   children: DeckNode[];
 }
 
@@ -23,6 +27,15 @@ export interface StudiedToday {
 export interface DeckTree {
   decks: DeckNode[];
   studiedToday: StudiedToday;
+  /** The collection's current deck (Anki's `curDeck`). */
+  currentDeckId: number;
+}
+
+export interface DeckName {
+  id: number;
+  /** Full name with `::` separators. */
+  name: string;
+  filtered: boolean;
 }
 
 export interface PageWord {
@@ -142,6 +155,202 @@ export interface SavedVersion {
 /** Why a reading session ended (spec 6.4). */
 export type StopReason = 'tab' | 'doc' | 'idle' | 'background' | 'close' | 'review';
 
+// ---------------------------------------------------------------- Anki (spec 8, 15)
+
+/** `anki_prepare_collection`: app notetypes created now / already there (names). */
+export interface PrepareReport {
+  created: string[];
+  existing: string[];
+}
+
+export interface ImportSummary {
+  added: number;
+  updated: number;
+  duplicates: number;
+  conflicts: number;
+  skipped: number;
+}
+
+export interface ExportOptions {
+  withScheduling: boolean;
+  withMedia: boolean;
+}
+
+export interface ExportResult {
+  notes: number;
+}
+
+export type BackupKind = 'daily' | 'preImport' | 'manual';
+
+export interface BackupInfo {
+  path: string;
+  fileName: string;
+  kind: BackupKind;
+  /** Epoch ms. */
+  createdAt: number;
+  /** Bytes. */
+  size: number;
+}
+
+export interface QueueCounts {
+  new: number;
+  learn: number;
+  review: number;
+}
+
+export type AvTag =
+  { kind: 'sound'; file: string } | { kind: 'tts'; text: string; lang: string; voices: string[]; speed: number };
+
+/** A `leitor://livro/<uid>?pagina=N&q=…` link found in the note's Fonte field. */
+export interface SourceLink {
+  bookUid: string;
+  /** 1-based, as in the link. */
+  page: number;
+  query: string | null;
+  label: string;
+}
+
+export type StudyQueue = 'new' | 'learn' | 'review';
+
+export interface StudyCard {
+  cardId: number;
+  noteId: number;
+  deckId: number;
+  deckName: string;
+  questionHtml: string;
+  answerPreloadHtml: string;
+  bodyClass: string;
+  questionAv: AvTag[];
+  answerAv: AvTag[];
+  autoplay: boolean;
+  replayQuestionOnAnswer: boolean;
+  queue: StudyQueue;
+  counts: QueueCounts;
+  showCounts: boolean;
+  /** Labels of Again/Hard/Good/Easy with the next intervals (as in Anki desktop). */
+  buttons: [string, string, string, string];
+  showIntervals: boolean;
+  flag: number;
+  marked: boolean;
+  typeAnswer: boolean;
+  stateMutation: { key: string; js: string } | null;
+  source: SourceLink | null;
+  canUndo: boolean;
+  showTimer: boolean;
+  timerMaxSecs: number;
+}
+
+export type StudyNext =
+  | { kind: 'card'; card: StudyCard }
+  | { kind: 'done'; deckId: number; deckName: string; counts: QueueCounts; canUndo: boolean };
+
+export interface AnswerSide {
+  html: string;
+  av: AvTag[];
+  /** Interval labels of the four answer buttons, from the card's current (possibly mutated) scheduling states. */
+  buttons: [string, string, string, string];
+}
+
+export type CardAction = 'bury' | 'buryNote' | 'suspend' | 'suspendNote' | 'flag' | 'mark';
+
+export interface CardActionResult {
+  flag: number;
+  marked: boolean;
+  next: StudyNext | null;
+}
+
+export interface FieldInfo {
+  name: string;
+  fontName: string;
+  fontSize: number;
+  rtl: boolean;
+  plainText: boolean;
+}
+
+export interface NotetypeInfo {
+  id: number;
+  name: string;
+  kind: 'normal' | 'cloze';
+  fields: FieldInfo[];
+  templates: string[];
+  /** The app's own type (`Básico (Leitor)`, `Código · Comando`…), or null for the user's/stock types. */
+  appType: string | null;
+  noteCount: number;
+}
+
+export interface AddDefaults {
+  notetypeId: number;
+  deckId: number;
+}
+
+export interface NoteData {
+  id: number;
+  notetypeId: number;
+  fields: string[];
+  tags: string[];
+  cardIds: number[];
+  deckId: number;
+  mtime: number;
+}
+
+export type NoteCheck = 'normal' | 'empty' | 'duplicate' | 'missingCloze' | 'notetypeNotCloze' | 'fieldNotCloze';
+
+export interface NewNote {
+  notetypeId: number;
+  deckId: number;
+  fields: string[];
+  tags: string[];
+}
+
+export interface NoteAdded {
+  noteId: number;
+  cardCount: number;
+}
+
+export type BrowseColumn =
+  'sortField' | 'template' | 'deck' | 'cardDue' | 'cardIvl' | 'cardEase' | 'noteCrt' | 'noteMod';
+
+export interface BrowseOrder {
+  column: BrowseColumn;
+  reverse: boolean;
+}
+
+export interface BrowseRow {
+  cardId: number;
+  noteId: number;
+  sortField: string;
+  template: string;
+  deck: string;
+  due: string;
+  flag: number;
+  marked: boolean;
+  suspended: boolean;
+  buried: boolean;
+}
+
+export interface ForgetOptions {
+  restorePosition: boolean;
+  resetCounts: boolean;
+}
+
+/** Payload of the `anki://changed` event: the collection changed outside the UI's own calls. */
+export interface AnkiChanged {
+  reason: 'import' | 'colpkg' | 'page' | 'backup';
+}
+
+/** Payload of the `anki://page` event (core `BridgeEvent`, serde tag `kind`). */
+export type AnkiPageEvent =
+  | { kind: 'close' }
+  | { kind: 'ready' }
+  | { kind: 'importDone' }
+  | { kind: 'searchInBrowser'; search: string }
+  | { kind: 'changed' }
+  | { kind: 'openLink'; url: string }
+  | { kind: 'error'; message: string };
+
+/** File type of the "save as" dialog opened by `pickExportPath`. */
+export type ExportKind = 'pdf' | 'apkg';
+
 // ---------------------------------------------------------------- dev
 
 export interface SmokeReport {
@@ -160,8 +369,75 @@ export type Unlisten = () => void;
 export interface CoreClient {
   readonly kind: 'tauri' | 'mock';
 
-  // Anki
+  // Anki · decks and collection
   ankiDeckTree(): Promise<DeckTree>;
+  ankiDeckNames(): Promise<DeckName[]>;
+  /** Creates a deck (full name with `::`) and returns its id. */
+  ankiDeckCreate(name: string): Promise<number>;
+  ankiDeckRename(deckId: number, name: string): Promise<void>;
+  /** Moves decks under `parentId` (`null` = top level). */
+  ankiDeckMove(deckIds: number[], parentId: number | null): Promise<void>;
+  ankiDeckDelete(deckId: number): Promise<{ cardsDeleted: number }>;
+  ankiDeckSetCollapsed(deckId: number, collapsed: boolean): Promise<void>;
+  ankiSetCurrentDeck(deckId: number): Promise<void>;
+  /** "Preparar coleção": creates the app notetypes that are missing (idempotent). */
+  ankiPrepareCollection(): Promise<PrepareReport>;
+
+  // Anki · study
+  ankiStudyNext(deckId: number): Promise<StudyNext>;
+  ankiShowAnswer(cardId: number, typed: string | null): Promise<AnswerSide>;
+  /** `rating`: 1 Again, 2 Hard, 3 Good, 4 Easy; `ms`: time on the card. */
+  ankiAnswer(cardId: number, rating: number, ms: number): Promise<StudyNext>;
+  ankiUndo(): Promise<StudyNext>;
+  ankiCardAction(cardId: number, action: CardAction, flag?: number): Promise<CardActionResult>;
+  ankiStudyClose(): Promise<void>;
+
+  // Anki · notes
+  ankiNotetypes(): Promise<NotetypeInfo[]>;
+  ankiAddDefaults(deckId: number | null): Promise<AddDefaults>;
+  ankiNoteGet(noteId: number): Promise<NoteData>;
+  ankiNoteCheck(notetypeId: number, fields: string[]): Promise<NoteCheck>;
+  ankiNoteAdd(note: NewNote): Promise<NoteAdded>;
+  ankiNoteUpdate(noteId: number, fields: string[], tags: string[]): Promise<void>;
+  /** Adds a file to the collection's media folder (raw IPC body); returns the stored file name. */
+  ankiMediaAdd(name: string, bytes: ArrayBuffer | Uint8Array): Promise<string>;
+  ankiTagsAll(): Promise<string[]>;
+
+  // Anki · browse
+  /** Card ids matching an Anki search. */
+  ankiSearch(query: string, order: BrowseOrder | null): Promise<number[]>;
+  /** Table rows (at most 500 ids per call). */
+  ankiBrowseRows(cardIds: number[]): Promise<BrowseRow[]>;
+  ankiCardsSetDeck(cardIds: number[], deckId: number): Promise<number>;
+  ankiNotesTags(noteIds: number[], add: string, remove: string): Promise<void>;
+  ankiCardsSuspend(cardIds: number[], suspended: boolean): Promise<void>;
+  ankiCardsForget(cardIds: number[], opts: ForgetOptions): Promise<void>;
+  ankiNotesDelete(noteIds: number[]): Promise<number>;
+  /** Prepares the Anki "change notetype" page for these notes. */
+  ankiChangeNotetypePrepare(noteIds: number[]): Promise<{ notetypeId: number }>;
+
+  // Anki · import/export/backups
+  /** Native open dialog (.apkg/.colpkg), opened by the core; grants reading that path for 10 min. */
+  ankiPickPackage(): Promise<string | null>;
+  ankiImport(path: string): Promise<ImportSummary>;
+  /** Replaces the whole collection (a backup is made first). */
+  ankiImportColpkg(path: string): Promise<BackupInfo>;
+  /** `path` must come from `pickExportPath(…, 'apkg')`. */
+  ankiExport(deckId: number, path: string, opts: ExportOptions): Promise<ExportResult>;
+  ankiBackupNow(): Promise<BackupInfo>;
+  ankiBackups(): Promise<BackupInfo[]>;
+
+  // Anki · web pages and card frame (spec 8.3, 8.4)
+  /** URL of a reused Anki page (`deck-options/1`, `graphs`…); `night` adds `#night`. */
+  ankiPageUrl(route: string, night: boolean): string;
+  /** The sandboxed card frame (reviewer.html on the `card` protocol). */
+  cardFrameUrl(): string;
+  /** A media file of the collection, on the `card` protocol. */
+  cardMediaUrl(name: string): string;
+  /** `anki://changed`: the collection changed (import, page, backup…). */
+  onAnkiChanged(cb: (e: AnkiChanged) => void): Unlisten;
+  /** `anki://page`: events of the Anki pages (close, ready, import done…). */
+  onAnkiPageEvent(cb: (e: AnkiPageEvent) => void): Unlisten;
 
   // Library
   libraryList(): Promise<LibraryEntry[]>;
@@ -204,7 +480,9 @@ export interface CoreClient {
   pickBookFiles(): Promise<string[]>;
   /** Native "save as" dialog, opened by the core; the chosen path is the only one `bookExport`/`exportBytes`
    *  will write to, once. `null` when cancelled. */
-  pickExportPath(defaultName: string): Promise<string | null>;
+  pickExportPath(defaultName: string, kind?: ExportKind): Promise<string | null>;
+  /** Native "open" dialog for one image (png/jpg/jpeg/gif/webp); the path, or `null` when cancelled. */
+  pickImageFile(): Promise<string | null>;
   /** Files opened with the app while it is running ("Abrir com", second instance). */
   onOpenPaths(cb: (paths: string[]) => void): Unlisten;
   /** Files dropped on the window; `onHover` reports when a drag enters/leaves it. */

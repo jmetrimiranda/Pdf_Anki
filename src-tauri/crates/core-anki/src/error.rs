@@ -40,6 +40,24 @@ pub enum Error {
     Panicked,
     #[error("Erro interno: chamada bloqueante ao serviço do Anki feita de dentro dele.")]
     Reentrant,
+    #[error("Não há resposta para desfazer.")]
+    UndoUnavailable,
+    #[error("Este card não é mais o card atual do estudo.")]
+    NotCurrentCard,
+    #[error("Nenhuma sessão de estudo aberta.")]
+    NoStudySession,
+    #[error("Nota inválida: {0}")]
+    NoteInvalid(String),
+    #[error("Pacote inválido: {0}")]
+    InvalidPackage(String),
+    #[error("O arquivo é grande demais.")]
+    TooLarge,
+    #[error("Erro de arquivo ({}): {source}", path.display())]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl Error {
@@ -55,6 +73,20 @@ impl Error {
             Error::Closed => "anki.closed",
             Error::Panicked => "anki.panicked",
             Error::Reentrant => "anki.reentrant",
+            Error::UndoUnavailable => "anki.undoUnavailable",
+            Error::NotCurrentCard => "anki.notCurrentCard",
+            Error::NoStudySession => "anki.noStudySession",
+            Error::NoteInvalid(_) => "anki.noteInvalid",
+            Error::InvalidPackage(_) => "anki.invalidPackage",
+            Error::TooLarge => "anki.tooLarge",
+            Error::Io { .. } => "anki.io",
+        }
+    }
+
+    pub(crate) fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+        Error::Io {
+            path: path.into(),
+            source,
         }
     }
 

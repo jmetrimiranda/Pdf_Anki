@@ -1,15 +1,19 @@
-//! The Tauri shell: app state, the commands of spec 15, the `pdf` cover protocol and the smoke
-//! check. The reader is PdfCraft's own web UI (`/pdfcraft/`, an iframe of the UI); all the real
-//! work lives in the `core-*` crates and in plain [`AppState`] methods, so the integration tests
-//! need no webview.
+//! The Tauri shell: app state, the commands of spec 15, the `pdf` cover protocol, the `anki`
+//! (Anki's own pages) and `card` (sandboxed cards and media) protocols, and the smoke check. The
+//! reader is PdfCraft's own web UI (`/pdfcraft/`, an iframe of the UI); all the real work lives in
+//! the `core-*` crates and in plain [`AppState`] methods, so the integration tests need no webview.
 
+pub mod anki;
+pub mod anki_web;
 mod commands;
 mod error;
-mod export_grant;
 mod files;
+pub mod grants;
 pub mod library;
-mod open_paths;
+pub mod open_paths;
 mod protocol;
+pub mod protocol_anki;
+pub mod protocol_card;
 mod reading;
 mod smoke;
 mod state;
@@ -17,13 +21,14 @@ mod state;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tauri::{App, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::{App, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
+pub use anki::{AnkiChanged, AnkiHandles, ChangeReason, UiEvent, UiSink};
 pub use error::AppError;
 pub use files::BookFiles;
 pub use library::{AddedBook, BookOpen, SavedVersion};
-pub use open_paths::pdf_paths_from_args;
-pub use protocol::{cover_url, protocol_url};
+pub use open_paths::open_paths_from_args;
+pub use protocol::{cover_url, protocol_url, ui_origins_with};
 pub use reading::SessionStarted;
 pub use smoke::SmokeReport;
 pub use state::AppState;
@@ -84,15 +89,37 @@ fn build(launch_paths: Vec<String>) -> Result<App, Box<dyn std::error::Error>> {
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
         open_paths::second_instance(app, argv, &cwd);
     }));
+    // Desktop only: packages dropped on the window may be imported (after the UI confirms), so
+    // they get a read grant.
+    #[cfg(desktop)]
+    let builder = builder.on_window_event(|window, event| {
+        if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event
+            && let Some(state) = window.try_state::<Arc<AppState>>()
+        {
+            let paths: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+            state.grant_packages(&paths);
+        }
+    });
     let app = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .register_asynchronous_uri_scheme_protocol(protocol::PDF_SCHEME, protocol::handle)
+        .register_asynchronous_uri_scheme_protocol(
+            protocol_anki::ANKI_SCHEME,
+            protocol_anki::handle,
+        )
+        .register_asynchronous_uri_scheme_protocol(
+            protocol_card::CARD_SCHEME,
+            protocol_card::handle,
+        )
         .invoke_handler(invoke_handler())
         .setup(|app| {
             let state = Arc::clone(app.state::<Arc<AppState>>().inner());
+            let handle = app.handle().clone();
+            state.set_ui_sink(Arc::new(move |event| emit_ui_event(&handle, event)));
             state.warm_up();
             reading::spawn_ticker(&state);
+            anki::spawn_backup_ticker(&state);
             // Without a window there is nothing to show; exit cleanly instead of panicking.
             if let Err(e) = create_main_window(app) {
                 tracing::error!(%e, "could not create the main window");
@@ -109,9 +136,50 @@ fn build(launch_paths: Vec<String>) -> Result<App, Box<dyn std::error::Error>> {
     tracing::info!(data_dir = %data_dir.display(), "starting");
     let state = AppState::new(data_dir);
     state.push_open_paths(launch_paths);
+    let web = anki_web::AnkiWeb::resolve(
+        std::env::var_os(anki_web::ANKI_WEB_DIR_ENV).map(PathBuf::from),
+        app.path().resource_dir().ok(),
+    );
+    let origins = protocol::ui_origins(app.handle());
+    let media_dir = core_anki::CollectionPaths::in_dir(&state.anki_dir()).media_folder;
+    app.manage(Arc::new(protocol_card::CardFrames::new(
+        web.clone(),
+        media_dir,
+        &origins,
+    )));
+    app.manage(Arc::new(protocol_anki::AnkiPages::new(web, origins)));
     app.manage(Arc::new(state));
-    app.manage(export_grant::ExportGrants::default());
     Ok(app)
+}
+
+/// Delivers a core event to the main window (or the system browser for links).
+fn emit_ui_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: UiEvent) {
+    let sent = match event {
+        UiEvent::AnkiPage(e) => app.emit_to("main", anki::ANKI_PAGE_EVENT, &e),
+        UiEvent::AnkiChanged(reason) => {
+            app.emit_to("main", anki::ANKI_CHANGED_EVENT, AnkiChanged { reason })
+        }
+        UiEvent::OpenUrl(url) => {
+            open_url(app, &url);
+            Ok(())
+        }
+    };
+    if let Err(e) = sent {
+        tracing::warn!(%e, "could not send an event to the UI");
+    }
+}
+
+#[cfg(desktop)]
+fn open_url<R: tauri::Runtime>(app: &tauri::AppHandle<R>, url: &str) {
+    use tauri_plugin_opener::OpenerExt;
+    if let Err(e) = app.opener().open_url(url, None::<&str>) {
+        tracing::warn!(%e, "could not open a link from an Anki page");
+    }
+}
+
+#[cfg(not(desktop))]
+fn open_url<R: tauri::Runtime>(_app: &tauri::AppHandle<R>, _url: &str) {
+    tracing::warn!("opening links is not available on this platform yet");
 }
 
 /// Commands callable from the UI. `dev_smoke` and `dev_log` are development aids, so they only
@@ -120,6 +188,42 @@ macro_rules! app_commands {
     ($($extra:path),*) => {
         tauri::generate_handler![
             commands::anki_deck_tree,
+            commands::anki_deck_names,
+            commands::anki_deck_create,
+            commands::anki_deck_rename,
+            commands::anki_deck_move,
+            commands::anki_deck_delete,
+            commands::anki_deck_set_collapsed,
+            commands::anki_set_current_deck,
+            commands::anki_prepare_collection,
+            commands::anki_study_next,
+            commands::anki_show_answer,
+            commands::anki_answer,
+            commands::anki_undo,
+            commands::anki_card_action,
+            commands::anki_study_close,
+            commands::anki_notetypes,
+            commands::anki_add_defaults,
+            commands::anki_note_get,
+            commands::anki_note_check,
+            commands::anki_note_add,
+            commands::anki_note_update,
+            commands::anki_media_add,
+            commands::anki_tags_all,
+            commands::anki_search,
+            commands::anki_browse_rows,
+            commands::anki_cards_set_deck,
+            commands::anki_notes_tags,
+            commands::anki_cards_suspend,
+            commands::anki_cards_forget,
+            commands::anki_notes_delete,
+            commands::anki_change_notetype_prepare,
+            commands::anki_pick_package,
+            commands::anki_import,
+            commands::anki_import_colpkg,
+            commands::anki_export,
+            commands::anki_backup_now,
+            commands::anki_backups,
             commands::library_list,
             commands::library_add,
             commands::library_remove,
@@ -362,11 +466,19 @@ const BRIDGE_PROBE_JS: &str = r#"
 mod webkit {
     use webkit2gtk::{SettingsExt, WebViewExt};
 
+    /// Debug builds: `LEITOR_WEBKIT_CONSOLE=1` writes the webview console to stdout.
+    const WEBKIT_CONSOLE_ENV: &str = "LEITOR_WEBKIT_CONSOLE";
+
     pub fn configure(window: &tauri::WebviewWindow) {
         let result = window.with_webview(|webview| {
             let webview = webview.inner();
             if let Some(settings) = WebViewExt::settings(&webview) {
                 settings.set_enable_webgl(true);
+                // Debug aid for scripts/anki-real-app.sh: every frame's console (CSP violations
+                // of the anki/card iframes included) goes to stdout.
+                if cfg!(debug_assertions) && std::env::var_os(WEBKIT_CONSOLE_ENV).is_some() {
+                    settings.set_enable_write_console_messages_to_stdout(true);
+                }
                 tracing::debug!(
                     webgl = settings.enables_webgl(),
                     policy = ?settings.hardware_acceleration_policy(),
@@ -408,13 +520,13 @@ mod cli {
         pub smoke: bool,
         /// Also write the sample's cover (page 1) as PNG here.
         pub smoke_png: Option<PathBuf>,
-        /// PDF files to add and open ("Abrir com"), as given (made absolute later).
+        /// PDF files and Anki packages to open ("Abrir com"), made absolute.
         pub paths: Vec<String>,
     }
 
     impl Cli {
         /// Unknown flags are left alone (the OS or a launcher may add its own); other arguments
-        /// that look like PDF files are kept for "Abrir com".
+        /// that are existing PDFs or Anki packages are kept for "Abrir com".
         pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
             let mut cli = Self::default();
             let mut args = args.into_iter();
@@ -439,7 +551,7 @@ mod cli {
                 return Err("--smoke-png só vale junto com --smoke".into());
             }
             let cwd = std::env::current_dir().unwrap_or_default();
-            cli.paths = crate::open_paths::pdf_paths_from_args(rest, &cwd);
+            cli.paths = crate::open_paths::open_paths_from_args(rest, &cwd);
             Ok(cli)
         }
     }

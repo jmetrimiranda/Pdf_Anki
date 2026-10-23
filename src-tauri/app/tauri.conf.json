@@ -7,7 +7,7 @@
     "frontendDist": "../../web/dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "pnpm --filter @leitor/web dev",
-    "beforeBuildCommand": "pnpm --filter @leitor/web exec bash ../scripts/build-pdfcraft-web.sh && pnpm --filter @leitor/web build"
+    "beforeBuildCommand": "pnpm --filter @leitor/web exec bash ../scripts/build-pdfcraft-web.sh && pnpm --filter @leitor/web exec bash ../scripts/fetch-anki-web.sh && pnpm --filter @leitor/web build"
   },
   "app": {
     "windows": [
@@ -26,29 +26,31 @@
         "default-src": "'self'",
         "script-src": "'self' 'wasm-unsafe-eval'",
         "style-src": "'self' 'unsafe-inline'",
-        "img-src": "'self' data: blob: pdf: http://pdf.localhost",
+        "img-src": "'self' data: blob: pdf: http://pdf.localhost card: http://card.localhost",
         "font-src": "'self' data:",
         "connect-src": "'self' ipc: http://ipc.localhost pdf: http://pdf.localhost data: blob:",
         "worker-src": "'self' blob:",
-        "frame-src": "'self'",
+        "frame-src": "'self' anki: http://anki.localhost card: http://card.localhost",
         "object-src": "'none'",
         "base-uri": "'self'",
         "form-action": "'none'",
-        "frame-ancestors": "'self'"
+        "frame-ancestors": "'self'",
+        "media-src": "'self' card: http://card.localhost blob:"
       },
       "devCsp": {
         "default-src": "'self'",
         "script-src": "'self' 'wasm-unsafe-eval' 'unsafe-inline'",
         "style-src": "'self' 'unsafe-inline'",
-        "img-src": "'self' data: blob: pdf: http://pdf.localhost",
+        "img-src": "'self' data: blob: pdf: http://pdf.localhost card: http://card.localhost",
         "font-src": "'self' data:",
         "connect-src": "'self' ipc: http://ipc.localhost pdf: http://pdf.localhost data: blob: ws://localhost:5173 http://localhost:5173",
         "worker-src": "'self' blob:",
-        "frame-src": "'self'",
+        "frame-src": "'self' anki: http://anki.localhost card: http://card.localhost",
         "object-src": "'none'",
         "base-uri": "'self'",
         "form-action": "'none'",
-        "frame-ancestors": "'self'"
+        "frame-ancestors": "'self'",
+        "media-src": "'self' card: http://card.localhost blob:"
       },
       "dangerousDisableAssetCspModification": [
         "style-src"
@@ -74,7 +76,28 @@
         "name": "PDF",
         "description": "Documento PDF",
         "role": "Viewer"
+      },
+      {
+        "ext": [
+          "apkg"
+        ],
+        "mimeType": "application/zip",
+        "name": "Pacote do Anki",
+        "description": "Pacote de deck do Anki",
+        "role": "Viewer"
+      },
+      {
+        "ext": [
+          "colpkg"
+        ],
+        "mimeType": "application/zip",
+        "name": "Coleção do Anki",
+        "description": "Coleção completa do Anki",
+        "role": "Viewer"
       }
-    ]
+    ],
+    "resources": {
+      "../resources/anki-web/": "anki-web/"
+    }
   }
 }

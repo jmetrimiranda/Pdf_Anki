@@ -5,7 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { t } from '../../i18n';
 import { protocolUrl } from '../protocol';
-import { CoreError, type CoreClient, type Unlisten } from './types';
+import { CoreError, type AnkiChanged, type AnkiPageEvent, type CoreClient, type Unlisten } from './types';
 
 function toCoreError(err: unknown): CoreError {
   if (err instanceof CoreError) return err;
@@ -42,10 +42,75 @@ function subscription(start: () => Promise<() => void>): Unlisten {
 }
 
 const PDF_FILTER = [{ name: 'PDF', extensions: ['pdf'] }];
+const IMAGE_FILTER = [{ name: 'Imagens', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }];
+
+function toBytes(bytes: ArrayBuffer | Uint8Array): Uint8Array {
+  return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+}
 
 export const tauriClient: CoreClient = {
   kind: 'tauri',
   ankiDeckTree: () => call('anki_deck_tree'),
+  ankiDeckNames: () => call('anki_deck_names'),
+  ankiDeckCreate: (name) => call('anki_deck_create', { name }),
+  ankiDeckRename: (deckId, name) => call('anki_deck_rename', { deckId, name }),
+  ankiDeckMove: (deckIds, parentId) => call('anki_deck_move', { deckIds, parentId }),
+  ankiDeckDelete: (deckId) => call('anki_deck_delete', { deckId }),
+  ankiDeckSetCollapsed: (deckId, collapsed) => call('anki_deck_set_collapsed', { deckId, collapsed }),
+  ankiSetCurrentDeck: (deckId) => call('anki_set_current_deck', { deckId }),
+  ankiPrepareCollection: () => call('anki_prepare_collection'),
+
+  ankiStudyNext: (deckId) => call('anki_study_next', { deckId }),
+  ankiShowAnswer: (cardId, typed) => call('anki_show_answer', { cardId, typed }),
+  ankiAnswer: (cardId, rating, ms) => call('anki_answer', { cardId, rating, ms: Math.max(0, Math.round(ms)) }),
+  ankiUndo: () => call('anki_undo'),
+  ankiCardAction: (cardId, action, flag) =>
+    call('anki_card_action', { cardId, action, ...(flag !== undefined ? { flag } : {}) }),
+  ankiStudyClose: () => call('anki_study_close'),
+
+  ankiNotetypes: () => call('anki_notetypes'),
+  ankiAddDefaults: (deckId) => call('anki_add_defaults', { deckId }),
+  ankiNoteGet: (noteId) => call('anki_note_get', { noteId }),
+  ankiNoteCheck: (notetypeId, fields) => call('anki_note_check', { notetypeId, fields }),
+  ankiNoteAdd: (note) => call('anki_note_add', { note }),
+  ankiNoteUpdate: (noteId, fields, tags) => call('anki_note_update', { noteId, fields, tags }),
+  // Raw request body (no JSON array of numbers); the file name travels percent-encoded in a header.
+  ankiMediaAdd: (name, bytes) =>
+    call('anki_media_add', toBytes(bytes), { headers: { 'x-file-name': encodeURIComponent(name) } }),
+  ankiTagsAll: () => call('anki_tags_all'),
+
+  ankiSearch: (query, order) => call('anki_search', { query, order }),
+  ankiBrowseRows: (cardIds) => call('anki_browse_rows', { cardIds }),
+  ankiCardsSetDeck: (cardIds, deckId) => call('anki_cards_set_deck', { cardIds, deckId }),
+  ankiNotesTags: (noteIds, add, remove) => call('anki_notes_tags', { noteIds, add, remove }),
+  ankiCardsSuspend: (cardIds, suspended) => call('anki_cards_suspend', { cardIds, suspended }),
+  ankiCardsForget: (cardIds, opts) => call('anki_cards_forget', { cardIds, opts }),
+  ankiNotesDelete: (noteIds) => call('anki_notes_delete', { noteIds }),
+  ankiChangeNotetypePrepare: (noteIds) => call('anki_change_notetype_prepare', { noteIds }),
+
+  // The core opens the dialog and grants reading the chosen package for a while (spec 18).
+  ankiPickPackage: () => call('anki_pick_package'),
+  ankiImport: (path) => call('anki_import', { path }),
+  ankiImportColpkg: (path) => call('anki_import_colpkg', { path }),
+  ankiExport: (deckId, path, opts) => call('anki_export', { deckId, path, opts }),
+  ankiBackupNow: () => call('anki_backup_now'),
+  ankiBackups: () => call('anki_backups'),
+
+  ankiPageUrl: (route, night) => protocolUrl('anki', route) + (night ? '#night' : ''),
+  cardFrameUrl: () => protocolUrl('card', '_leitor/reviewer.html'),
+  cardMediaUrl: (name) => protocolUrl('card', encodeURIComponent(name)),
+  onAnkiChanged: (cb) =>
+    subscription(() =>
+      listen<AnkiChanged>('anki://changed', (e) => {
+        if (e.payload && typeof e.payload === 'object') cb(e.payload);
+      }),
+    ),
+  onAnkiPageEvent: (cb) =>
+    subscription(() =>
+      listen<AnkiPageEvent>('anki://page', (e) => {
+        if (e.payload && typeof e.payload === 'object' && typeof e.payload.kind === 'string') cb(e.payload);
+      }),
+    ),
 
   libraryList: () => call('library_list'),
   libraryAdd: (path, opts) => call('library_add', { path, replace: !!opts?.replace }),
@@ -83,8 +148,17 @@ export const tauriClient: CoreClient = {
     return Array.isArray(picked) ? picked : [picked];
   },
   // The core opens the dialog and grants the chosen path to one export (spec 18).
-  pickExportPath: (defaultName) =>
-    call<string | null>('export_pick_path', { defaultName, title: t('reader.exportTitle') }),
+  pickExportPath: (defaultName, kind) =>
+    call<string | null>('export_pick_path', {
+      defaultName,
+      title: kind === 'apkg' ? t('anki.exportTitle') : t('reader.exportTitle'),
+      kind: kind ?? 'pdf',
+    }),
+  pickImageFile: async () => {
+    const picked = await openDialog({ multiple: false, directory: false, filters: IMAGE_FILTER });
+    if (!picked) return null;
+    return Array.isArray(picked) ? (picked[0] ?? null) : picked;
+  },
 
   onOpenPaths: (cb) =>
     subscription(() =>

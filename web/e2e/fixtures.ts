@@ -65,6 +65,27 @@ export interface LeitorMockHandle {
   setPendingOpen(paths: string[]): void;
   openPaths(paths: string[]): void;
   dropPaths(paths: string[]): void;
+  readonly anki: MockAnkiHandle;
+}
+
+/** `window.__leitorMock.anki` (src/lib/core/mock.ts): the mock Anki collection. */
+export interface MockAnkiHandle {
+  readonly logs: ({ kind: string; at: number } & Record<string, unknown>)[];
+  readonly deckNames: string[];
+  readonly notetypeNames: string[];
+  readonly backups: {
+    path: string;
+    fileName: string;
+    kind: 'daily' | 'preImport' | 'manual';
+    createdAt: number;
+    size: number;
+  }[];
+  readonly dataset: 'seed' | 'colpkg';
+  setNextPackagePick(path: string | null): void;
+  setNextImageFile(path: string | null): void;
+  fireChanged(reason?: 'import' | 'colpkg' | 'page' | 'backup'): void;
+  firePageEvent(e: { kind: string } & Record<string, unknown>): void;
+  dailyBackup(): unknown;
 }
 
 type MockWindow = { __leitorMock: LeitorMockHandle };
@@ -84,6 +105,8 @@ export async function dropPaths(page: Page, paths: string[]) {
 export interface MockInit {
   pendingOpen?: string[];
   nextPick?: string[];
+  /** Path the first "Importar" (Anki package) dialog returns; `null` = cancelled. */
+  nextPackagePick?: string | null;
 }
 
 export async function mockInit(page: Page, init: MockInit) {
@@ -100,4 +123,32 @@ export async function stubPdfcraft(page: Page) {
   await page.route('**/pdfcraft/**', (route) =>
     route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>PdfCraft (stub)</title>' }),
   );
+}
+
+async function mockReady(page: Page) {
+  await page.waitForFunction(() => !!(window as unknown as Partial<MockWindow>).__leitorMock);
+}
+
+/** Path the next Anki package dialog returns (mock core). */
+export async function setNextPackagePick(page: Page, path: string | null) {
+  await mockReady(page);
+  await page.evaluate((p) => (window as unknown as MockWindow).__leitorMock.anki.setNextPackagePick(p), path);
+}
+
+/** The mock Anki collection's log (answers, imports, exports, deletes…). */
+export async function ankiLogs(page: Page): Promise<MockAnkiHandle['logs']> {
+  await mockReady(page);
+  return page.evaluate(() => (window as unknown as MockWindow).__leitorMock.anki.logs);
+}
+
+/** Fires an `anki://page` event as the core would (mock core). */
+export async function firePageEvent(page: Page, e: { kind: string } & Record<string, unknown>) {
+  await mockReady(page);
+  await page.evaluate((ev) => (window as unknown as MockWindow).__leitorMock.anki.firePageEvent(ev), e);
+}
+
+/** Path the next save dialog returns (mock core; `null` = cancelled). */
+export async function setNextExportPath(page: Page, path: string | null) {
+  await mockReady(page);
+  await page.evaluate((p) => (window as unknown as MockWindow).__leitorMock.setNextExportPath(p), path);
 }

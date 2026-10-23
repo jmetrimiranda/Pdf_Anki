@@ -41,6 +41,12 @@ Mesa for software WebGL). Without VS Code: `scripts/dev.sh <cmd…>` runs a comm
 | Build | `pnpm --dir web tauri build` (AppImage/.deb on Linux, .msi on Windows CI; runs `build-pdfcraft-web.sh` first) |
 | Release | push a tag `v*` → `.github/workflows/release.yml` |
 | Anki web assets | `scripts/fetch-anki-web.sh` (extracts `aqt==26.9.3` web assets to `src-tauri/resources/anki-web/`) |
+| Anki web assets location | bundled as Tauri resources (`<resource_dir>/anki-web`); `LEITOR_ANKI_WEB_DIR=<dir>` overrides; debug builds fall back to `src-tauri/resources/anki-web` |
+| Anki fixture collection | `cargo run -p core-anki --example seed_fixture -- <LEITOR_DATA_DIR>/anki [--isolation-probe] [--force]` (prints the deck/card ids as JSON) |
+| Real app Anki probes (WebKitGTK, Xvfb, fixture) | `scripts/anki-real-app.sh isolation` (card iframe isolation) · `scripts/anki-real-app.sh pages` (Anki's pages over the `anki` protocol) → `web/test-results/anki-realapp/summary.txt` |
+| Record Anki page requests for the bridge tests | `scripts/record-anki-posts.sh` → `src-tauri/crates/core-anki/tests/fixtures/bridge/` (commit them) |
+| Real app captures with the fixture | `bash -c 'LEITOR_CAPTURE_SEED=1 scripts/capture.sh docs/capturas/fase-N /anki "/anki/opcoes/{deck:5000 palavras}"'` (env vars must be set inside `scripts/dev.sh`, which doesn't forward them) |
+| Rust ↔ TS contract snapshot | `LEITOR_UPDATE_CONTRACT=1 cargo test -p leitor-estudos --test contract` rewrites `web/src/lib/core/__fixtures__/contract.json` (Vitest `contract.test.ts` checks the mock against it) |
 
 ## PdfCraft fork workflow
 

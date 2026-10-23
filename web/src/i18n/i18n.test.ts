@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ptBR, t } from './index';
+import { messageSections } from './pt-BR';
 
 const files = import.meta.glob<string>(['../**/*.{ts,tsx}', '!../**/*.test.{ts,tsx}'], {
   query: '?raw',
@@ -17,6 +18,20 @@ describe('i18n', () => {
     expect(used.size).toBeGreaterThan(50);
     const missing = [...used].filter((k) => !(k in ptBR));
     expect(missing).toEqual([]);
+  });
+
+  it('defines every key in exactly one section file', () => {
+    const owner = new Map<string, string>();
+    const duplicates: string[] = [];
+    for (const [section, messages] of Object.entries(messageSections)) {
+      for (const key of Object.keys(messages)) {
+        const prev = owner.get(key);
+        if (prev) duplicates.push(`${key} (${prev}, ${section})`);
+        else owner.set(key, section);
+      }
+    }
+    expect(duplicates).toEqual([]);
+    expect(Object.keys(ptBR).length).toBe(owner.size);
   });
 
   it('has no empty strings', () => {

@@ -58,7 +58,7 @@ export function leitorController(): LeitorController {
 }
 
 export const leitor = {
-  openBook: (uid: string): Promise<boolean> => controller.openBook(uid),
+  openBook: (uid: string, opts?: { page?: number }): Promise<boolean> => controller.openBook(uid, opts),
   togglePanel: (open?: boolean): void => controller.togglePanel(open),
   flushSaves: (reason: FlushReason = 'manual'): Promise<boolean> => controller.flushSaves(reason),
 };

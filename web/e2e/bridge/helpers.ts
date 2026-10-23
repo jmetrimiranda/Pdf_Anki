@@ -172,6 +172,20 @@ export function pdfcraftFrame(page: Page): Frame {
   return frame;
 }
 
+/**
+ * Waits until PdfCraft has drawn `n` more frames. eframe (web) always keeps one requestAnimationFrame pending and
+ * runs the app once per frame with ALL the input queued since the previous one (pointer down/up run it right away).
+ * On a slow machine (4 vCPUs, software WebGL, another test in parallel) one frame takes hundreds of milliseconds, so
+ * fixed sleeps let inputs that need the UI changed by an earlier input land in the same egui pass: Ctrl+K opens the
+ * palette, but the text typed in that pass reaches no field and the Enter picks nothing. Each requestAnimationFrame
+ * callback queued here runs after eframe's, so `n` of them are `n` real PdfCraft frames.
+ */
+export async function pdfcraftFrames(page: Page, n = 3): Promise<void> {
+  await pdfcraftFrame(page).evaluate(async (count) => {
+    for (let i = 0; i < count; i++) await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  }, n);
+}
+
 export async function mockBooks(
   page: Page,
 ): Promise<{ bookUid: string; title: string; pages: number; fileVersion: number }[]> {

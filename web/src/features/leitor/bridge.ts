@@ -302,16 +302,20 @@ export class BridgeClient {
     }
   }
 
-  /** Opens (or, if already open, brings to front) a book. The bytes are transferred. */
-  open(args: { id: string; name: string; bytes: ArrayBuffer | Uint8Array; page: number }): boolean {
+  /**
+   * Opens (or, if already open, brings to front) a book. The bytes are transferred. With `goto` the page is always
+   * sent, so a tab PdfCraft already has goes to it too (the fork shows `page` for an id already open).
+   */
+  open(args: { id: string; name: string; bytes: ArrayBuffer | Uint8Array; page: number; goto?: boolean }): boolean {
     const buffer = ownBuffer(args.bytes);
     const name = args.name.slice(0, MAX_NAME) || 'documento.pdf';
     this.openIds.add(args.id);
-    // Page 0 is left out: PdfCraft then opens the file exactly as it opens any file (going to page 0 explicitly
-    // scrolls to the page edge, a few pixels off its usual first view).
+    // Page 0 is left out unless asked for: PdfCraft then opens the file exactly as it opens any file (going to page 0
+    // explicitly scrolls to the page edge, a few pixels off its usual first view).
     const page = Math.max(0, Math.floor(args.page));
+    const withPage = page > 0 || args.goto === true;
     return this.post(
-      { type: 'pdfcraft:open', name, bytes: buffer, id: args.id, ...(page > 0 ? { page } : {}), infoKey: INFO_KEY },
+      { type: 'pdfcraft:open', name, bytes: buffer, id: args.id, ...(withPage ? { page } : {}), infoKey: INFO_KEY },
       [buffer],
     );
   }

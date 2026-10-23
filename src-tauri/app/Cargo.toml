@@ -38,6 +38,9 @@ tauri-plugin-dialog = "2.8"
 tauri-plugin-opener = "2.7"
 base64 = "0.22"
 percent-encoding = "2.3"
+chrono.workspace = true
+# Already in the graph through Anki; `_SVELTEKIT_CSP_META_RE` of mediasrv.py, verbatim.
+regex = "1.11"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", windows))'.dependencies]
 tauri-plugin-single-instance = "2.5"
