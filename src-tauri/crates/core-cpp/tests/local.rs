@@ -1,4 +1,8 @@
 //! The local runner with the compiler of the devcontainer (g++, clang-format, util-linux prlimit).
+//!
+//! As root (CI runs the container with `--user 0`) the runner refuses to compile or run anything (RLIMIT_NPROC is not
+//! enforced for root, so a fork bomb would not be contained): every test that runs a program then asserts the refusal
+//! instead ([`run_unless_root`]) and never starts the attack. As a normal user they test the containment itself.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -20,8 +24,23 @@ fn request(files: &[(&str, &str)], stdin: &str) -> CppRequest {
     }
 }
 
-fn run(source: &str, stdin: &str) -> CppRunResult {
-    run_local(&request(&[("main.cpp", source)], stdin)).expect("run_local")
+/// `run_local(req)`; as root, checks that it is refused (before anything runs) and returns `None`.
+fn run_unless_root(req: &CppRequest) -> Option<CppRunResult> {
+    if core_cpp::local_run_refusal().is_some() {
+        let start = Instant::now();
+        assert_eq!(run_local(req).unwrap_err(), RunError::RunningAsRoot);
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            start.elapsed()
+        );
+        return None;
+    }
+    Some(run_local(req).expect("run_local"))
+}
+
+fn run(source: &str, stdin: &str) -> Option<CppRunResult> {
+    run_unless_root(&request(&[("main.cpp", source)], stdin))
 }
 
 fn ran(result: &CppRunResult) -> &core_cpp::RunResult {
@@ -61,7 +80,9 @@ fn testes_mode_all_pass() {
     let source = format!(
         "#include \"check.hpp\"\n{SOMA}int main() {{\n  CHECK(soma(1, 2) == 3);\n  CHECK(soma(-1, 1) == 0);\n}}\n"
     );
-    let result = run(&source, "");
+    let Some(result) = run(&source, "") else {
+        return;
+    };
     assert_eq!(result.backend, Backend::Local);
     assert!(result.compiler.is_some());
     let run = ran(&result);
@@ -75,7 +96,9 @@ fn testes_mode_failure_line_and_exit_code() {
     let source = format!(
         "#include \"check.hpp\"\n{SOMA}int main() {{\n  CHECK(soma(1, 2) == 3);\n  CHECK(soma(2, 2) == 5);\n}}\n"
     );
-    let run = run(&source, "");
+    let Some(run) = run(&source, "") else {
+        return;
+    };
     let run = ran(&run);
     assert_eq!(
         run.stdout,
@@ -87,15 +110,25 @@ fn testes_mode_failure_line_and_exit_code() {
 
 #[test]
 fn testes_mode_with_separate_solution_and_header() {
-    let result = run_local(&request(
+    let Some(result) = run_unless_root(&request(
         &[
-            ("solucao.cpp", "#include \"solucao.hpp\"\n#include <vector>\nint total(const std::vector<int>& v) { int s = 0; for (int x : v) s += x; return s; }\n"),
-            ("solucao.hpp", "#pragma once\n#include <vector>\nint total(const std::vector<int>& v);\n"),
-            ("testes.cpp", "#include \"check.hpp\"\n#include \"solucao.hpp\"\nint main() { CHECK(total(std::vector<int>{1, 2, 3}) == 6); }\n"),
+            (
+                "solucao.cpp",
+                "#include \"solucao.hpp\"\n#include <vector>\nint total(const std::vector<int>& v) { int s = 0; for (int x : v) s += x; return s; }\n",
+            ),
+            (
+                "solucao.hpp",
+                "#pragma once\n#include <vector>\nint total(const std::vector<int>& v);\n",
+            ),
+            (
+                "testes.cpp",
+                "#include \"check.hpp\"\n#include \"solucao.hpp\"\nint main() { CHECK(total(std::vector<int>{1, 2, 3}) == 6); }\n",
+            ),
         ],
         "",
-    ))
-    .unwrap();
+    )) else {
+        return;
+    };
     let run = ran(&result);
     assert_eq!(run.stdout, "PASS total(std::vector<int>{1, 2, 3}) == 6\n");
     assert_eq!(run.exit_code, Some(0));
@@ -103,10 +136,12 @@ fn testes_mode_with_separate_solution_and_header() {
 
 #[test]
 fn saida_mode_stdout() {
-    let result = run(
+    let Some(result) = run(
         "#include <iostream>\nint main() { std::cout << \"Olá, mundo!\" << std::endl; }\n",
         "",
-    );
+    ) else {
+        return;
+    };
     let run = ran(&result);
     assert_eq!(run.stdout, "Olá, mundo!\n");
     assert_eq!(run.stderr, "");
@@ -117,13 +152,17 @@ fn saida_mode_stdout() {
 #[test]
 fn stdin_is_echoed() {
     let source = "#include <iostream>\n#include <string>\nint main() { std::string line; while (std::getline(std::cin, line)) std::cout << \"> \" << line << '\\n'; }\n";
-    let result = run(source, "um\ndois\n");
+    let Some(result) = run(source, "um\ndois\n") else {
+        return;
+    };
     assert_eq!(ran(&result).stdout, "> um\n> dois\n");
 }
 
 #[test]
 fn compile_error_has_stderr_and_no_run() {
-    let result = run("int main() { return 0 }\n", "");
+    let Some(result) = run("int main() { return 0 }\n", "") else {
+        return;
+    };
     assert!(!result.compile.ok);
     assert!(
         result.compile.stderr.contains("error"),
@@ -144,7 +183,9 @@ fn infinite_loop_times_out_and_leaves_no_process() {
     // A forked child spins too: the whole process group must go.
     let source = "#include <cstdio>\n#include <unistd.h>\nint main() {\n  if (fork() == 0) { for (;;) {} }\n  std::printf(\"%d %d\\n\", (int)getpid(), (int)getpgrp());\n  std::fflush(stdout);\n  for (;;) {}\n}\n";
     let start = Instant::now();
-    let result = run(source, "");
+    let Some(result) = run(source, "") else {
+        return;
+    };
     let run = ran(&result);
     assert!(
         start.elapsed() <= Duration::from_secs(11 + 10),
@@ -177,7 +218,9 @@ fn infinite_loop_times_out_and_leaves_no_process() {
 fn lower_timeout_is_honoured() {
     let mut req = request(&[("main.cpp", "int main() { for (;;) {} }\n")], "");
     req.timeout_ms = Some(1_000);
-    let result = run_local(&req).unwrap();
+    let Some(result) = run_unless_root(&req) else {
+        return;
+    };
     let run = ran(&result);
     assert!(run.timed_out);
     assert!(run.time_ms < 2_000, "{}", run.time_ms);
@@ -190,7 +233,9 @@ fn lower_timeout_is_honoured() {
 #[test]
 fn allocating_two_gib_fails_fast() {
     let source = "#include <cstring>\n#include <cstdio>\nint main() {\n  const unsigned long n = 2UL << 30;\n  char* p = new char[n];\n  std::memset(p, 1, n);\n  std::printf(\"%d\\n\", p[n - 1]);\n}\n";
-    let result = run(source, "");
+    let Some(result) = run(source, "") else {
+        return;
+    };
     let run = ran(&result);
     assert!(!run.timed_out, "{run:?}");
     assert!(run.exit_code != Some(0), "{run:?}");
@@ -208,7 +253,9 @@ fn file_size_is_limited() {
     let out = tempfile::tempdir().unwrap();
     let target: PathBuf = out.path().join("big.bin");
     let source = "#include <cstdio>\n#include <iostream>\n#include <string>\n#include <vector>\nint main() {\n  std::string path; std::getline(std::cin, path);\n  FILE* f = std::fopen(path.c_str(), \"wb\");\n  if (!f) return 2;\n  std::vector<char> chunk(1 << 20, 'x');\n  for (int i = 0; i < 20; ++i) {\n    if (std::fwrite(chunk.data(), 1, chunk.size(), f) != chunk.size()) { std::puts(\"short write\"); return 3; }\n  }\n  std::fclose(f);\n  std::puts(\"wrote 20 MB\");\n}\n";
-    let result = run(source, &format!("{}\n", target.display()));
+    let Some(result) = run(source, &format!("{}\n", target.display())) else {
+        return;
+    };
     let run = ran(&result);
     assert!(
         run.signal.as_deref() == Some("SIGXFSZ") || run.exit_code.is_some_and(|c| c != 0),
@@ -232,7 +279,9 @@ fn fork_bomb_is_contained() {
     let mut req = request(&[("main.cpp", source)], "");
     req.timeout_ms = Some(3_000);
     let start = Instant::now();
-    let result = run_local(&req).unwrap();
+    let Some(result) = run_unless_root(&req) else {
+        return;
+    };
     let run = ran(&result);
     assert!(
         start.elapsed() < Duration::from_secs(20),
@@ -254,7 +303,9 @@ fn fork_bomb_is_contained() {
 #[test]
 fn output_is_capped() {
     let source = "#include <cstdio>\nint main() { for (int i = 0; i < 1024 * 1024; ++i) std::putchar('a'); std::fputs(\"erro\", stderr); }\n";
-    let result = run(source, "");
+    let Some(result) = run(source, "") else {
+        return;
+    };
     let run = ran(&result);
     assert!(run.truncated);
     assert_eq!(run.stdout.len(), OUTPUT_CAP_BYTES);
@@ -302,7 +353,9 @@ fn invalid_requests_are_refused() {
 #[test]
 fn temp_dir_is_removed() {
     let source = "#include <cstdio>\n#include <unistd.h>\nint main() { char buf[4096]; if (getcwd(buf, sizeof buf)) std::puts(buf); }\n";
-    let result = run(source, "");
+    let Some(result) = run(source, "") else {
+        return;
+    };
     let dir = PathBuf::from(ran(&result).stdout.trim());
     assert!(dir.starts_with(std::env::temp_dir()), "{}", dir.display());
     assert!(
@@ -317,7 +370,9 @@ fn temp_dir_is_removed() {
     let source = "#include <cstdio>\n#include <unistd.h>\nint main() { char buf[4096]; if (getcwd(buf, sizeof buf)) std::puts(buf); std::fflush(stdout); for (;;) {} }\n";
     let mut req = request(&[("main.cpp", source)], "");
     req.timeout_ms = Some(500);
-    let result = run_local(&req).unwrap();
+    let Some(result) = run_unless_root(&req) else {
+        return;
+    };
     let run = ran(&result);
     assert!(run.timed_out);
     let dir = PathBuf::from(run.stdout.trim());

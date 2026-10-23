@@ -51,6 +51,16 @@ Só cabeçalho, C++20, sem exceções. A macro é variádica, então `CHECK(f(st
     `SIGKILL`, que parece um crash.
   - Sem `prlimit`: um aviso no log (uma vez) e só tempo limite + `killpg`.
 - Windows: só `Child::kill` (fora do escopo; não quebrar de propósito).
+- **Nunca como root.** Com o app rodando com uid efetivo 0 (Unix, `nix::unistd::geteuid`), `run_local` recusa
+  compilar ou rodar qualquer coisa: valida o pedido e devolve `RunError::RunningAsRoot` (`running_as_root`) antes de
+  tocar no compilador ou no disco (`local_run_refusal`). Motivo: o Linux não aplica `RLIMIT_NPROC` a root, então o
+  `--nproc` não segura uma fork bomb (ela esgota a criação de processos da máquina — no CI, que roda o contêiner com
+  `--user 0`, derrubava outros testes), e o código do card rodaria com todos os privilégios. No app, o compilador
+  local conta como ausente (`auto` vai para o runner, `local` fica sem backend; o status ainda mostra o compilador
+  encontrado) e o erro sai como `code_cpp_unavailable` com a mensagem "Por segurança, o C++ local não roda com o app
+  aberto como administrador (root). Abra o Leitor como usuário comum." — a revisão cai no modo `estrutura` ("Não
+  verificável"), igual a sem compilador. O `clang-format` (`format_cpp`) continua permitido como root: não roda código
+  do usuário, só lê texto pelo stdin com 5 s de limite. Fora do Unix não há recusa.
 
 ## API do runner
 
@@ -143,7 +153,7 @@ No app (Configurações → Código), o runner local é `http://127.0.0.1:28090/
 
 | O quê | Comando |
 |---|---|
-| `core-cpp` local (g++, clang-format e prlimit do devcontainer) | `scripts/dev.sh bash -c 'cd src-tauri && CARGO_INCREMENTAL=0 cargo test -j 8 -p core-cpp'` |
+| `core-cpp` local (g++, clang-format e prlimit do devcontainer) | `scripts/dev.sh bash -c 'cd src-tauri && CARGO_INCREMENTAL=0 cargo test -j 8 -p core-cpp'` · como root (o CI usa `--user 0`) os testes que rodam programas só verificam a recusa (`run_unless_root` em `tests/local.rs`), sem disparar a fork bomb |
 | Runner, testes de unidade (auth, validação, fila, formato da resposta, execuções reais) | `scripts/dev.sh bash -c 'cd server/runner && CARGO_TARGET_DIR=$PWD/../../src-tauri/target/runner CARGO_INCREMENTAL=0 cargo test'` |
 | Isolamento (host, raiz do repo) | `scripts/runner-test.sh [all\|core-cpp\|app]` → `RESULT: PASS` |
 

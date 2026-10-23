@@ -202,7 +202,15 @@ fn invalid(message: impl Into<String>) -> AppError {
     AppError::new("invalid_input", message)
 }
 
+/// No backend for C++. When the local compiler is there but refused (the app runs as root), says so: the review then
+/// falls back to `estrutura` like without a compiler.
 fn cpp_unavailable() -> AppError {
+    if let Some(refusal) = local_refusal() {
+        return AppError::new(
+            "code_cpp_unavailable",
+            format!("{} Ou configure o runner.", refusal.message_pt()),
+        );
+    }
     AppError::new(
         "code_cpp_unavailable",
         "Nenhum compilador de C++ encontrado (g++ ou clang++) e nenhum runner configurado.",
@@ -214,6 +222,8 @@ pub fn run_error(e: RunError) -> AppError {
     tracing::debug!(error = %e, "C++ run error");
     let code = match &e {
         RunError::Unavailable => return cpp_unavailable(),
+        // Same code as "no compiler" so the review falls back the same way; the message says why.
+        RunError::RunningAsRoot => "code_cpp_unavailable",
         RunError::InvalidRequest(_) => "code_invalid_input",
         RunError::TooLarge => "code_too_large",
         RunError::Io(_) => "code_cpp_io",
@@ -949,9 +959,25 @@ fn dedup(mut v: Vec<u32>) -> Vec<u32> {
 
 // --- Local C++ (desktop only) ---------------------------------------------------------------------
 
+/// The local compiler C++ may use: none when the app runs as root ([`local_refusal`]), so `auto`
+/// goes to the runner and `local` to "none".
 #[cfg(desktop)]
 fn local_compiler() -> Option<&'static core_cpp::CompilerInfo> {
+    if local_refusal().is_some() {
+        return None;
+    }
     core_cpp::detect_local().compiler.as_ref()
+}
+
+/// Why local C++ runs are refused (the app runs as root), if they are.
+#[cfg(desktop)]
+fn local_refusal() -> Option<RunError> {
+    core_cpp::local_run_refusal()
+}
+
+#[cfg(not(desktop))]
+fn local_refusal() -> Option<RunError> {
+    None
 }
 
 #[cfg(not(desktop))]
@@ -1071,6 +1097,9 @@ mod tests {
             run_error(RunError::Unavailable).code,
             "code_cpp_unavailable"
         );
+        let root = run_error(RunError::RunningAsRoot);
+        assert_eq!(root.code, "code_cpp_unavailable");
+        assert!(root.message.contains("root"), "{}", root.message);
         assert_eq!(run_error(RunError::TooLarge).code, "code_too_large");
         assert_eq!(
             run_error(RunError::InvalidRequest("x".into())).code,

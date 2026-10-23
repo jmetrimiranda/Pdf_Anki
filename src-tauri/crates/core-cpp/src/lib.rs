@@ -2,7 +2,8 @@
 //!
 //! - **Local** (desktop): [`run_local`] compiles with the `g++`/`clang++` found on the PATH ([`detect_local`]) in a
 //!   fresh temporary directory, with wall-clock timeouts, process-group kill and (Linux, via util-linux `prlimit`)
-//!   CPU/memory/file-size/process limits.
+//!   CPU/memory/file-size/process limits. Refused when the app runs as root ([`local_run_refusal`]): the process
+//!   limit does not hold for root and the card's code would run with every privilege.
 //! - **Remote**: [`RemoteRunner`] talks to `server/runner` (`POST /run`, Bearer token).
 //!
 //! Both validate requests the same way ([`validate`]) and always provide [`CHECK_HPP`] next to the sources.
@@ -18,7 +19,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-pub use local::run_local;
+pub use local::{local_run_refusal, run_local};
 pub use remote::RemoteRunner;
 pub use toolchain::{detect_local, format_cpp};
 pub use validate::ValidationError;
@@ -114,6 +115,9 @@ pub enum RunError {
     /// No local compiler (desktop) / no runner configured.
     #[error("no C++ compiler available")]
     Unavailable,
+    /// Local runs are refused because the app runs with effective uid 0 ([`local_run_refusal`]).
+    #[error("local C++ runs are refused as root")]
+    RunningAsRoot,
     #[error("invalid request: {0}")]
     InvalidRequest(String),
     #[error("request too large")]
@@ -135,6 +139,7 @@ impl RunError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Unavailable => "unavailable",
+            Self::RunningAsRoot => "running_as_root",
             Self::InvalidRequest(_) => "invalid_request",
             Self::TooLarge => "too_large",
             Self::Io(_) => "io",
@@ -151,6 +156,9 @@ impl RunError {
             Self::Unavailable => {
                 "Nenhum compilador C++ encontrado. Instale o g++ ou o clang++ (ou configure o runner).".to_owned()
             }
+            Self::RunningAsRoot => "Por segurança, o C++ local não roda com o app aberto como administrador (root). \
+                                     Abra o Leitor como usuário comum."
+                .to_owned(),
             Self::InvalidRequest(detail) => format!("Pedido inválido: {detail}"),
             Self::TooLarge => format!(
                 "O código ou a entrada passam do limite ({} KiB de código, {} KiB de entrada).",
@@ -238,6 +246,7 @@ mod tests {
         assert_eq!(err.code(), "invalid_request");
         for e in [
             RunError::Unavailable,
+            RunError::RunningAsRoot,
             RunError::Io("x".into()),
             RunError::RemoteUnreachable("x".into()),
             RunError::RemoteAuth,

@@ -28,8 +28,14 @@ const PROGRAM: &str = if cfg!(windows) { "prog.exe" } else { "prog" };
 
 /// Compiles and runs `req` with the local compiler in a fresh temporary directory (removed afterwards, also on
 /// errors and timeouts). Blocking: call it from a blocking thread.
+///
+/// [`RunError::RunningAsRoot`] (after validating the request, before touching the compiler or the disk) when
+/// [`local_run_refusal`] says so.
 pub fn run_local(req: &CppRequest) -> Result<CppRunResult, RunError> {
     let sources = validate_request(&req.files, &req.stdin)?;
+    if let Some(refusal) = local_run_refusal() {
+        return Err(refusal);
+    }
     let compiler = detect_local()
         .compiler
         .as_ref()
@@ -99,6 +105,30 @@ pub fn run_local(req: &CppRequest) -> Result<CppRunResult, RunError> {
     })
 }
 
+/// Why [`run_local`] refuses to compile or run anything right now; `None` when it may.
+///
+/// Refused when this process runs with effective uid 0 (Unix): Linux does not enforce `RLIMIT_NPROC` for root, so the
+/// process limit (`prlimit --nproc`) would not contain a fork bomb, and the card's code would run with every privilege
+/// of root. Never refused on other platforms. [`format_cpp`](crate::format_cpp) is not affected (it runs no user
+/// code).
+pub fn local_run_refusal() -> Option<RunError> {
+    refusal_for_euid(effective_uid())
+}
+
+fn refusal_for_euid(euid: Option<u32>) -> Option<RunError> {
+    (euid == Some(0)).then_some(RunError::RunningAsRoot)
+}
+
+#[cfg(unix)]
+fn effective_uid() -> Option<u32> {
+    Some(nix::unistd::geteuid().as_raw())
+}
+
+#[cfg(not(unix))]
+fn effective_uid() -> Option<u32> {
+    None
+}
+
 /// `program args…`, wrapped as `prlimit <limits> -- program args…` when prlimit is available.
 fn limited(program: &Path, args: &[OsString], limits: &[String], cwd: &Path) -> Command {
     let mut cmd = match prlimit() {
@@ -149,4 +179,28 @@ fn run_result(out: Outcome) -> RunResult {
 
 fn millis(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_is_refused() {
+        assert_eq!(refusal_for_euid(Some(0)), Some(RunError::RunningAsRoot));
+        assert_eq!(refusal_for_euid(Some(1000)), None);
+        assert_eq!(refusal_for_euid(Some(1)), None);
+        // No uid (not Unix): allowed.
+        assert_eq!(refusal_for_euid(None), None);
+        let err = RunError::RunningAsRoot;
+        assert_eq!(err.code(), "running_as_root");
+        assert!(err.message_pt().contains("root"), "{}", err.message_pt());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refusal_follows_the_effective_uid() {
+        let root = nix::unistd::geteuid().is_root();
+        assert_eq!(local_run_refusal().is_some(), root);
+    }
 }

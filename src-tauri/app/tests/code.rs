@@ -535,6 +535,15 @@ fn cpp_local_testes_saida_and_errors() {
         eprintln!("skipped: no g++/clang++ on the PATH");
         return;
     }
+    if core_cpp::local_run_refusal().is_some() {
+        // As root (CI's container) the local compiler is refused: no backend, and the error says why.
+        assert_eq!(status.cpp_backend, CppBackendEffective::None);
+        let files = BTreeMap::from([("main.cpp".to_string(), "int main(){}".to_string())]);
+        let e = block_on(env.state.code_run_cpp(files, String::new())).unwrap_err();
+        assert_eq!(e.code, "code_cpp_unavailable");
+        assert!(e.message.contains("root"), "{}", e.message);
+        return;
+    }
     assert_eq!(status.cpp_backend, CppBackendEffective::Local);
 
     // testes: the solution plus the Testes main() with CHECK.

@@ -163,6 +163,12 @@ jobs:
               cargo test -j 2 -p core-cpp --test remote -- --test-threads=1
               cargo test -j 2 -p leitor-estudos --test code remote -- --test-threads=1
               unset LEITOR_RUNNER_TEST_URL LEITOR_RUNNER_TEST_TOKEN
+              # The local C++ runner refuses to run as root (by design), so the tests above only check that refusal.
+              # Run its suite again as the image user dev (uid 1000): real g++ compile/run, timeouts and the fork-bomb
+              # containment. Separate target dir (core-cpp has no Anki/PdfCraft deps: a small build).
+              chown -R dev:dev /usr/local/cargo/registry /usr/local/cargo/git
+              setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/dev CARGO_HOME=/usr/local/cargo \
+                CARGO_TARGET_DIR=/tmp/target-dev timeout 20m cargo test -j 2 --locked -p core-cpp --test local
               cd ..
               # Bridge tests against the real PdfCraft web build (browsers are in the image; software WebGL via Mesa)
               pnpm --dir web exec playwright install chromium webkit
