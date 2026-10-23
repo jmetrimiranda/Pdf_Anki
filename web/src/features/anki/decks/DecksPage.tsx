@@ -1,6 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
-import { Archive, Blocks, ChevronDown, DatabaseBackup, Ellipsis, Import, Package, Plus, Wand2 } from 'lucide-react';
+import {
+  Archive,
+  Blocks,
+  ChevronDown,
+  DatabaseBackup,
+  Ellipsis,
+  Import,
+  Package,
+  Plus,
+  RefreshCw,
+  Wand2,
+} from 'lucide-react';
 import { useState } from 'react';
 import { Button, Card, EmptyState, IconButton, Menu, Notice, Skeleton, useToast } from '../../../components/ui';
 import { t } from '../../../i18n';
@@ -10,6 +21,8 @@ import type { DeckNode } from '../../../lib/core/types';
 import { formatNumber } from '../../../lib/format';
 import { DeckTable, studiedTodayText, type DeckAction } from '../DeckList';
 import { useAnkiImport } from '../import/AnkiImportProvider';
+import { useSyncUi } from '../../sync/SyncProvider';
+import { useSyncNow, useSyncStatus } from '../../sync/useSyncStatus';
 import {
   BackupsDialog,
   DeckNameDialog,
@@ -50,6 +63,26 @@ type Dialogs =
 /** File name for the save dialog: the deck's own name without characters file systems refuse. */
 export function apkgFileName(deck: DeckNode): string {
   return `${deck.name.replace(/[\\/:*?"<>|]/g, '_').trim() || 'deck'}.apkg`;
+}
+
+/** "Sincronizar" in the Anki tab (spec 9), only once logged in; a pending full sync reopens its dialog. */
+function SyncButton() {
+  const status = useSyncStatus();
+  const syncNow = useSyncNow();
+  const ui = useSyncUi();
+  if (!status?.loggedIn) return null;
+  const full = status.state === 'fullSyncRequired';
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      icon={RefreshCw}
+      loading={status.state === 'syncing' || syncNow.isPending}
+      onClick={() => (full ? ui.openFullSync() : syncNow.mutate())}
+    >
+      {t('sync.button')}
+    </Button>
+  );
 }
 
 /** The deck list screen (spec 8.2): decks with counts and actions, import/export, backups, "Preparar coleção". */
@@ -127,7 +160,8 @@ export function DecksPage() {
   return (
     <div className="h-full overflow-auto">
       <div className="mx-auto flex max-w-[760px] flex-col gap-4 px-4 pt-4 pb-10 sm:px-6">
-        <div className="flex items-center justify-end gap-1.5">
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          <SyncButton />
           <Button variant="ghost" size="sm" icon={Plus} onClick={() => setDialog({ kind: 'create' })}>
             {t('anki.deck.create')}
           </Button>

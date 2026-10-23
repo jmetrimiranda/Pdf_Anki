@@ -66,6 +66,12 @@ export interface LeitorMockHandle {
   openPaths(paths: string[]): void;
   dropPaths(paths: string[]): void;
   readonly anki: MockAnkiHandle;
+  /** Sync mock (src/lib/core/mock/ankiSync.ts): network down/up, server asking for a full sync, last sync time. */
+  syncSetOffline(offline: boolean): void;
+  syncRequireFull(choice: { uploadOk: boolean; downloadOk: boolean } | null): void;
+  syncSetLastSyncAt(ms: number | null): void;
+  syncStatus(): { state: string; loggedIn: boolean; lastSyncAt: number | null } & Record<string, unknown>;
+  readonly syncNotifications: string[];
 }
 
 /** `window.__leitorMock.anki` (src/lib/core/mock.ts): the mock Anki collection. */
@@ -76,14 +82,14 @@ export interface MockAnkiHandle {
   readonly backups: {
     path: string;
     fileName: string;
-    kind: 'daily' | 'preImport' | 'manual';
+    kind: 'daily' | 'preImport' | 'manual' | 'preSync';
     createdAt: number;
     size: number;
   }[];
   readonly dataset: 'seed' | 'colpkg';
   setNextPackagePick(path: string | null): void;
   setNextImageFile(path: string | null): void;
-  fireChanged(reason?: 'import' | 'colpkg' | 'page' | 'backup'): void;
+  fireChanged(reason?: 'import' | 'colpkg' | 'page' | 'backup' | 'sync' | 'syncFull'): void;
   firePageEvent(e: { kind: string } & Record<string, unknown>): void;
   dailyBackup(): unknown;
 }
@@ -152,3 +158,23 @@ export async function setNextExportPath(page: Page, path: string | null) {
   await mockReady(page);
   await page.evaluate((p) => (window as unknown as MockWindow).__leitorMock.setNextExportPath(p), path);
 }
+
+/** Drives the sync mock (network, server answers, last sync time). */
+export const syncMock = {
+  async setOffline(page: Page, offline: boolean) {
+    await mockReady(page);
+    await page.evaluate((o) => (window as unknown as MockWindow).__leitorMock.syncSetOffline(o), offline);
+  },
+  async requireFull(page: Page, choice: { uploadOk: boolean; downloadOk: boolean } | null) {
+    await mockReady(page);
+    await page.evaluate((c) => (window as unknown as MockWindow).__leitorMock.syncRequireFull(c), choice);
+  },
+  async setLastSyncAt(page: Page, ms: number | null) {
+    await mockReady(page);
+    await page.evaluate((m) => (window as unknown as MockWindow).__leitorMock.syncSetLastSyncAt(m), ms);
+  },
+  async status(page: Page) {
+    await mockReady(page);
+    return page.evaluate(() => (window as unknown as MockWindow).__leitorMock.syncStatus());
+  },
+};

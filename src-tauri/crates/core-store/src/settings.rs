@@ -17,6 +17,12 @@ pub mod keys {
     pub const VOCAB_FUNCTION_WORDS_KNOWN: &str = "vocab_function_words_known";
     pub const ANKI_SYNC_URL: &str = "anki_sync_url";
     pub const ANKI_SYNC_USER: &str = "anki_sync_user";
+    /// Extra root certificate (PEM, public data) trusted for the sync server, e.g. a dev CA.
+    pub const ANKI_SYNC_CA_CERT: &str = "anki_sync_ca_cert";
+    /// Epoch ms of the last successful sync.
+    pub const ANKI_SYNC_LAST_AT: &str = "anki_sync_last_at";
+    /// The account (`user@endpoint`) whose first sync (always a download) completed.
+    pub const ANKI_SYNC_FIRST_DONE: &str = "anki_sync_first_done";
     pub const RUNNER_URL: &str = "runner_url";
     pub const AI_PROVIDER: &str = "ai_provider";
     pub const AI_BASE_URL: &str = "ai_base_url";
@@ -75,6 +81,9 @@ const SPECS: &[Spec] = &[
     }),
     spec(ANKI_SYNC_URL, Kind::Text, true, null),
     spec(ANKI_SYNC_USER, Kind::Text, true, null),
+    spec(ANKI_SYNC_CA_CERT, Kind::Text, true, null),
+    spec(ANKI_SYNC_LAST_AT, Kind::Int { min: 0 }, true, null),
+    spec(ANKI_SYNC_FIRST_DONE, Kind::Text, true, null),
     spec(RUNNER_URL, Kind::Text, true, null),
     spec(
         AI_PROVIDER,

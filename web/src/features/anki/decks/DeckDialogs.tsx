@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
 import { Button, Checkbox, Dialog, Field, Input, Notice, Skeleton } from '../../../components/ui';
-import { t } from '../../../i18n';
+import { t, type MessageKey } from '../../../i18n';
 import { CoreError } from '../../../lib/core/client';
 import { q } from '../../../lib/core/queries';
 import type { BackupInfo, DeckNode, ExportOptions } from '../../../lib/core/types';
@@ -273,7 +273,8 @@ const BACKUP_KIND = {
   daily: 'anki.backups.kind.daily',
   preImport: 'anki.backups.kind.preImport',
   manual: 'anki.backups.kind.manual',
-} as const;
+  preSync: 'anki.backups.kind.preSync',
+} as const satisfies Record<BackupInfo['kind'], MessageKey>;
 
 /** "2,4 MB" (decimal units, like file managers). */
 export function formatBytes(n: number): string {

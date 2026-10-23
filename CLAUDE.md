@@ -46,6 +46,9 @@ Mesa for software WebGL). Without VS Code: `scripts/dev.sh <cmd…>` runs a comm
 | Real app Anki probes (WebKitGTK, Xvfb, fixture) | `scripts/anki-real-app.sh isolation` (card iframe isolation) · `scripts/anki-real-app.sh pages` (Anki's pages over the `anki` protocol) → `web/test-results/anki-realapp/summary.txt` |
 | Record Anki page requests for the bridge tests | `scripts/record-anki-posts.sh` → `src-tauri/crates/core-anki/tests/fixtures/bridge/` (commit them) |
 | Real app captures with the fixture | `bash -c 'LEITOR_CAPTURE_SEED=1 scripts/capture.sh docs/capturas/fase-N /anki "/anki/opcoes/{deck:5000 palavras}"'` (env vars must be set inside `scripts/dev.sh`, which doesn't forward them) |
+| Local Anki sync server (official `anki==26.9.3` + TLS dev CA, network `leitor-dev`) | `scripts/ankisync-dev-certs.sh` (dev CA + server cert into `server/ankisync-dev/certs/`, gitignored), then `docker compose -f compose.dev.yml up -d --build --wait`; `docker compose -f compose.dev.yml down -v` after. Never sync with any other server. Docs: `docs/tecnico/anki-sync-dev.md` |
+| Sync integration tests (host, repo root) | `scripts/sync-test.sh [all\|core-anki\|app\|crosscheck]` (recreates the server empty, checks 26.9.3, runs the gated Rust suites on `leitor-dev` under the keyring, the official Python client cross-check, then `down -v`) |
+| Keychain in the container (Secret Service) | `scripts/with-keyring.sh <cmd…>` (private D-Bus + unlocked gnome-keyring, sets `LEITOR_TEST_KEYRING=1`); debug builds also accept `LEITOR_SECRET_STORE=memory` |
 | Rust ↔ TS contract snapshot | `LEITOR_UPDATE_CONTRACT=1 cargo test -p leitor-estudos --test contract` rewrites `web/src/lib/core/__fixtures__/contract.json` (Vitest `contract.test.ts` checks the mock against it) |
 
 ## PdfCraft fork workflow

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::{Local, NaiveDate, TimeZone};
-use core_anki::backup::{self, KEEP_DAILY, KEEP_PRE_IMPORT};
+use core_anki::backup::{self, KEEP_DAILY, KEEP_PRE_IMPORT, KEEP_PRE_SYNC};
 use core_anki::study::Study;
 use core_anki::{AnkiService, BackupKind};
 
@@ -113,13 +113,92 @@ fn rotation_keeps_seven_daily_and_five_pre_import() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+fn pre_sync_names_and_own_rotation_bucket() -> anyhow::Result<()> {
+    let (kind, at, seq) =
+        backup::parse_name("antes-da-sincronizacao-20261023-071502.colpkg").expect("pre-sync");
+    assert_eq!((kind, seq), (BackupKind::PreSync, 1));
+    assert_eq!(
+        at.format("%Y-%m-%d %H:%M:%S").to_string(),
+        "2026-10-23 07:15:02"
+    );
+    let (kind, _, seq) =
+        backup::parse_name("antes-da-sincronizacao-20261023-071502-2.colpkg").expect("suffix");
+    assert_eq!((kind, seq), (BackupKind::PreSync, 2));
+    for bad in [
+        "antes-da-sincronizacao-20261023.colpkg",
+        "antes-da-sincronizacao-20261023-071502.colpkg.partial",
+        "antes-da-sincronizacao-20261023-071502-1.colpkg",
+        "antes-da-sincronizacao-x.colpkg",
+        "antes-da-sincronizacao-20261023-071502.apkg",
+    ] {
+        assert!(backup::parse_name(bad).is_none(), "{bad}");
+    }
+    assert_eq!(serde_json::to_value(BackupKind::PreSync)?, "preSync");
+
+    let tmp = tempfile::tempdir()?;
+    for day in 1..=9 {
+        touch(
+            tmp.path(),
+            &format!("antes-da-sincronizacao-202610{day:02}-120000.colpkg"),
+        )?;
+    }
+    for day in 1..=3 {
+        touch(
+            tmp.path(),
+            &format!("antes-de-importar-202610{day:02}-120000.colpkg"),
+        )?;
+    }
+    touch(tmp.path(), "antes-da-sincronizacao-leia-me.txt")?;
+    let deleted = backup::rotate(tmp.path())?;
+    assert_eq!(
+        deleted.len(),
+        9 - KEEP_PRE_SYNC,
+        "pre-import ones are another bucket"
+    );
+    let list = backup::list(tmp.path())?;
+    let pre_sync: Vec<_> = list
+        .iter()
+        .filter(|b| b.kind == BackupKind::PreSync)
+        .map(|b| b.file_name.as_str())
+        .collect();
+    assert_eq!(pre_sync.len(), KEEP_PRE_SYNC);
+    assert_eq!(pre_sync[0], "antes-da-sincronizacao-20261009-120000.colpkg");
+    assert_eq!(pre_sync[4], "antes-da-sincronizacao-20261005-120000.colpkg");
+    assert_eq!(
+        list.iter()
+            .filter(|b| b.kind == BackupKind::PreImport)
+            .count(),
+        3
+    );
+    assert!(
+        tmp.path()
+            .join("antes-da-sincronizacao-leia-me.txt")
+            .is_file()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn pre_sync_backup_is_written_with_its_prefix() -> anyhow::Result<()> {
+    let f = fixture()?;
+    let info = backup::backup_now(&f.svc, BackupKind::PreSync).await?;
+    assert_eq!(info.kind, BackupKind::PreSync);
+    assert!(info.file_name.starts_with("antes-da-sincronizacao-"));
+    assert!(info.file_name.ends_with(".colpkg") && info.size > 1000);
+    let second = backup::backup_now(&f.svc, BackupKind::PreSync).await?;
+    assert_ne!(second.file_name, info.file_name, "never overwrites");
+    Ok(())
+}
+
 #[tokio::test]
 async fn backup_now_writes_a_complete_colpkg_quickly() -> anyhow::Result<()> {
     let f = fixture()?;
     let started = Instant::now();
     let info = backup::backup_now(&f.svc, BackupKind::Manual).await?;
     let took = started.elapsed();
-    assert!(took < Duration::from_secs(1), "backup took {took:?}");
+    // Generous bound: only catches a pathological slowdown (a CI runner took 1.25 s for the fixture).
+    assert!(took < Duration::from_secs(10), "backup took {took:?}");
     assert_eq!(info.kind, BackupKind::Manual);
     assert!(info.file_name.starts_with("manual-") && info.file_name.ends_with(".colpkg"));
     assert!(info.size > 1000);

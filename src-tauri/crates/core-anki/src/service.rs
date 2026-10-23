@@ -12,7 +12,7 @@ use crate::types::{BackupInfo, DeckTree};
 type Job = Box<dyn FnOnce(&mut Actor) + Send>;
 /// Type-erased access to rslib's (unnameable) `ProgressState.want_abort`: `Some(v)` sets it,
 /// `None` only reads it.
-type AbortFn = Box<dyn Fn(Option<bool>) -> bool + Send + Sync>;
+pub(crate) type AbortFn = Arc<dyn Fn(Option<bool>) -> bool + Send + Sync>;
 
 /// Files of a collection folder, using the desktop layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +50,7 @@ struct Inner {
     thread_id: ThreadId,
     paths: CollectionPaths,
     abort: AbortFn,
+    sync: crate::sync::SyncControl,
 }
 
 /// State of the actor thread. The collection is `None` only between a close and a successful
@@ -125,7 +126,7 @@ impl AnkiService {
             source: Box::new(source),
         })?;
         // Never enters the actor (docs/decisoes.md: setWantsAbort outside the actor).
-        let abort: AbortFn = Box::new(move |set| {
+        let abort: AbortFn = Arc::new(move |set| {
             let mut state = progress.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(value) = set {
                 state.want_abort = value;
@@ -151,6 +152,7 @@ impl AnkiService {
                 thread: Mutex::new(Some(thread)),
                 paths,
                 abort,
+                sync: Default::default(),
             }),
         })
     }
@@ -163,6 +165,12 @@ impl AnkiService {
     /// update. Safe to call from any thread while a job runs: it never goes through the actor.
     pub fn request_abort(&self) {
         (self.inner.abort)(Some(true));
+    }
+
+    /// The `want_abort` setter itself, for a job that must raise it from inside the actor (an
+    /// rslib operation resets the flag when it starts, see `normal_sync_on_actor`).
+    pub(crate) fn abort_handle(&self) -> AbortFn {
+        Arc::clone(&self.inner.abort)
     }
 
     /// Whether an abort was requested and not yet consumed by an rslib operation.
@@ -200,7 +208,26 @@ impl AnkiService {
     /// Closes the collection, runs `f` with its paths (it may replace the collection file and
     /// media), then ALWAYS reopens the collection and returns `f`'s result. If the reopen fails
     /// the service stays usable: the next call tries again.
+    ///
+    /// Never while a sync runs (a sync/media sync error `Busy`); no sync starts until it is done.
     pub async fn replace_collection<R, F>(&self, f: F) -> Result<R>
+    where
+        R: Send + 'static,
+        F: FnOnce(&CollectionPaths) -> Result<R> + Send + 'static,
+    {
+        let _no_sync = self.exclude_sync().await?;
+        self.replace_collection_unguarded(f).await
+    }
+
+    /// Holds off every sync for the life of the guard: fails with `Busy` if one is running and
+    /// waits for a leftover media sync thread (its own handle on the media DB) to let go.
+    async fn exclude_sync(&self) -> Result<crate::sync::RunningGuard<'_>> {
+        let guard = self.sync_control().try_start()?;
+        self.abort_media_and_wait().await;
+        Ok(guard)
+    }
+
+    async fn replace_collection_unguarded<R, F>(&self, f: F) -> Result<R>
     where
         R: Send + 'static,
         F: FnOnce(&CollectionPaths) -> Result<R> + Send + 'static,
@@ -214,6 +241,20 @@ impl AnkiService {
             })
         })
         .await
+    }
+
+    /// Hands the collection to `f`, which consumes it (rslib's full sync), and always reopens it
+    /// afterwards, even when `f` fails or panics.
+    pub(crate) async fn with_owned_collection<R, F>(&self, f: F) -> Result<R>
+    where
+        R: Send + 'static,
+        F: FnOnce(Collection) -> Result<R> + Send + 'static,
+    {
+        self.run_async(move |actor| actor.with_owned(f)).await
+    }
+
+    pub(crate) fn sync_control(&self) -> &crate::sync::SyncControl {
+        &self.inner.sync
     }
 
     /// Writes a consistent copy of the collection database to `dest` with SQLite's
@@ -238,12 +279,14 @@ impl AnkiService {
 
     /// Replaces the whole collection with a `.colpkg` (spec 8.5). A pre-import backup of the
     /// current collection is written first and returned. On failure the previous collection is
-    /// kept (rslib writes through a temporary file).
+    /// kept (rslib writes through a temporary file). Fails with `Busy` while a sync runs (it
+    /// would merge into or upload the half-replaced collection and media).
     pub async fn import_colpkg(&self, src: &Path) -> Result<BackupInfo> {
         crate::import_export::validate_package(src, "colpkg")?;
+        let _no_sync = self.exclude_sync().await?;
         let backup = crate::backup::backup_now(self, crate::types::BackupKind::PreImport).await?;
         let src = src.to_path_buf();
-        self.replace_collection(move |p| {
+        self.replace_collection_unguarded(move |p| {
             let (Some(src), Some(col)) = (src.to_str(), p.collection.to_str()) else {
                 return Err(Error::InvalidPackage(
                     "o caminho do arquivo não é UTF-8 válido.".into(),

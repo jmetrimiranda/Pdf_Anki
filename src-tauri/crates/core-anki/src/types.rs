@@ -115,6 +115,8 @@ pub enum BackupKind {
     Daily,
     PreImport,
     Manual,
+    /// Before a full sync (download or upload), docs/PROJETO.md 8.1.
+    PreSync,
 }
 
 /// One backup file in `<collection dir>/backups/`.

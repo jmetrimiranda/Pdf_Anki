@@ -17,6 +17,7 @@ import {
 import { createAnkiDecksMock, mockDailyBackup } from './mock/ankiDecks';
 import { ankiNotesMock } from './mock/ankiNotes';
 import { ankiStudyMock } from './mock/ankiStudy';
+import { ankiSyncMock, mockSyncHandle, resetSync, syncCollectionReplaced, type MockSyncHandle } from './mock/ankiSync';
 import {
   CoreError,
   type AddedBook,
@@ -24,6 +25,7 @@ import {
   type Book,
   type BookPatch,
   type CoreClient,
+  type AnkiChanged,
   type AnkiPageEvent,
   type BackupInfo,
   type DeckTree,
@@ -662,15 +664,17 @@ export const mockClient: CoreClient = {
       state.files[path] = btoa(unescape(encodeURIComponent(content)));
       persist();
     },
+    collectionReplaced: syncCollectionReplaced,
   }),
   ...ankiStudyMock,
   ...ankiNotesMock,
+  ...ankiSyncMock,
 };
 
 // ---------------------------------------------------------------- e2e handle
 
-/** `window.__leitorMock`: lets Playwright inspect and drive the mock core. */
-export interface LeitorMockHandle {
+/** `window.__leitorMock`: lets Playwright inspect and drive the mock core (the `sync*` members drive the sync mock). */
+export interface LeitorMockHandle extends MockSyncHandle {
   readonly books: LibraryEntry[];
   readonly savedVersions: MockSavedVersion[];
   readonly sessions: MockSessionEvent[];
@@ -706,7 +710,7 @@ export interface MockAnkiHandle {
   /** Path the next image dialog of the editor returns (`null` = cancelled). */
   setNextImageFile(path: string | null): void;
   /** Fires `anki://changed`. */
-  fireChanged(reason?: 'import' | 'colpkg' | 'page' | 'backup'): void;
+  fireChanged(reason?: AnkiChanged['reason']): void;
   /** Fires `anki://page` (what the core sends for the Anki pages: ready, close, importDone…). */
   firePageEvent(e: AnkiPageEvent): void;
   /** Runs the daily backup like the core's ticker (null when today's already exists). */
@@ -774,6 +778,7 @@ export const mockHandle: LeitorMockHandle = {
     state = seedState();
     persist();
     resetAnki();
+    resetSync();
   },
   setNextPick(paths) {
     state.nextPick = paths;
@@ -792,6 +797,14 @@ export const mockHandle: LeitorMockHandle = {
   },
   dropPaths(paths) {
     for (const cb of dropListeners) cb(paths);
+  },
+  syncSetOffline: (offline) => mockSyncHandle.syncSetOffline(offline),
+  syncRequireFull: (choice) => mockSyncHandle.syncRequireFull(choice),
+  syncSetLastSyncAt: (ms) => mockSyncHandle.syncSetLastSyncAt(ms),
+  syncRefuseKey: () => mockSyncHandle.syncRefuseKey(),
+  syncStatus: () => mockSyncHandle.syncStatus(),
+  get syncNotifications() {
+    return mockSyncHandle.syncNotifications;
   },
 };
 

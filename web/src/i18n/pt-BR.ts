@@ -3,6 +3,7 @@
 import { ankiNotesMessages } from './pt-BR/ankiNotes';
 import { ankiShellMessages } from './pt-BR/ankiShell';
 import { ankiStudyMessages } from './pt-BR/ankiStudy';
+import { ankiSyncMessages } from './pt-BR/ankiSync';
 
 export const baseMessages = {
   'app.name': 'Leitor de Estudos',
@@ -20,9 +21,6 @@ export const baseMessages = {
   'tabs.label': 'Abas',
   'tabs.library': 'Biblioteca',
   'tabs.anki': 'Anki',
-
-  'sync.off': 'Sync desligado',
-  'sync.offHint': 'A sincronização com o servidor do Anki chega numa próxima versão.',
 
   'settings.label': 'Configurações',
 
@@ -279,6 +277,7 @@ export const messageSections = {
   ankiShell: ankiShellMessages,
   ankiStudy: ankiStudyMessages,
   ankiNotes: ankiNotesMessages,
+  ankiSync: ankiSyncMessages,
 } as const;
 
 export const ptBR = {
@@ -286,6 +285,7 @@ export const ptBR = {
   ...ankiShellMessages,
   ...ankiStudyMessages,
   ...ankiNotesMessages,
+  ...ankiSyncMessages,
 } as const;
 
 export type Messages = typeof ptBR;

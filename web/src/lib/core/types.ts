@@ -180,7 +180,8 @@ export interface ExportResult {
   notes: number;
 }
 
-export type BackupKind = 'daily' | 'preImport' | 'manual';
+/** `preSync`: made before a full sync (either direction, spec 8.1/9). */
+export type BackupKind = 'daily' | 'preImport' | 'manual' | 'preSync';
 
 export interface BackupInfo {
   path: string;
@@ -335,7 +336,8 @@ export interface ForgetOptions {
 
 /** Payload of the `anki://changed` event: the collection changed outside the UI's own calls. */
 export interface AnkiChanged {
-  reason: 'import' | 'colpkg' | 'page' | 'backup';
+  /** `sync`: a normal sync merged changes; `syncFull`: a full sync replaced the collection (study sessions reset). */
+  reason: 'import' | 'colpkg' | 'page' | 'backup' | 'sync' | 'syncFull';
 }
 
 /** Payload of the `anki://page` event (core `BridgeEvent`, serde tag `kind`). */
@@ -350,6 +352,62 @@ export type AnkiPageEvent =
 
 /** File type of the "save as" dialog opened by `pickExportPath`. */
 export type ExportKind = 'pdf' | 'apkg';
+
+// ---------------------------------------------------------------- Anki sync (spec 9)
+
+/**
+ * `off`: not logged in; `idle`: logged in, nothing running; `offline`: the last attempt found no network (the core
+ * retries at `nextRetryAt` and when the network returns); `error`: the last attempt failed (`lastError`);
+ * `fullSyncRequired`: waits for the user's choice in the full sync dialog (`fullSync`), no automatic attempts.
+ */
+export type SyncState = 'off' | 'idle' | 'syncing' | 'offline' | 'error' | 'fullSyncRequired';
+
+export interface SyncErrorInfo {
+  code: string;
+  /** pt-BR. */
+  message: string;
+}
+
+/** Which directions a required full sync allows (`uploadOk` false: this device's collection is empty). */
+export interface FullSyncChoice {
+  uploadOk: boolean;
+  downloadOk: boolean;
+}
+
+/** `anki_sync_status` and the `anki://sync` event. The password and the key never leave the core. */
+export interface AnkiSyncStatus {
+  state: SyncState;
+  /** Server address (settings), kept after logout. */
+  url: string | null;
+  user: string | null;
+  loggedIn: boolean;
+  /** SHA-256 of the extra root certificate trusted for the server, when one is set. */
+  certificateFingerprint: string | null;
+  /** The first sync of this account has not happened yet (it always downloads). */
+  firstSyncPending: boolean;
+  /** Epoch ms of the last successful sync. */
+  lastSyncAt: number | null;
+  lastError: SyncErrorInfo | null;
+  fullSync: FullSyncChoice | null;
+  /** Epoch ms of the next automatic attempt after a failure. */
+  nextRetryAt: number | null;
+  mediaSyncing: boolean;
+  /** pt-BR; media errors never fail the collection sync. */
+  mediaError: string | null;
+  /** Message from the server (shown as is). */
+  serverMessage: string | null;
+}
+
+export type FullSyncDirection = 'download' | 'upload';
+
+export interface FullSyncResult {
+  status: AnkiSyncStatus;
+  /** The backup made before the full sync. */
+  backup: BackupInfo;
+}
+
+/** What the UI tells the core's sync scheduler (the timers live in the core). */
+export type SyncNotifyEvent = 'tabEntered' | 'online' | 'offline' | 'visible';
 
 // ---------------------------------------------------------------- dev
 
@@ -438,6 +496,25 @@ export interface CoreClient {
   onAnkiChanged(cb: (e: AnkiChanged) => void): Unlisten;
   /** `anki://page`: events of the Anki pages (close, ready, import done…). */
   onAnkiPageEvent(cb: (e: AnkiPageEvent) => void): Unlisten;
+
+  // Anki · sync (spec 9)
+  ankiSyncStatus(): Promise<AnkiSyncStatus>;
+  /**
+   * Logs in (the password goes to the server once and is never stored; the key goes to the system keychain), then
+   * starts the first sync (always a download). `certificatePem`: a root certificate to trust for this server
+   * (`null` keeps the one already set).
+   */
+  ankiSyncLogin(url: string, user: string, password: string, certificatePem: string | null): Promise<AnkiSyncStatus>;
+  ankiSyncLogout(): Promise<AnkiSyncStatus>;
+  /** Sets (PEM) or removes (`null`) the extra root certificate trusted for the server. */
+  ankiSyncSetCertificate(pem: string | null): Promise<AnkiSyncStatus>;
+  /** "Sincronizar agora": a normal sync (+ media). Failures come back in the status, not as errors. */
+  ankiSync(): Promise<AnkiSyncStatus>;
+  /** The user's choice in the full sync dialog; a backup is made first in both directions. */
+  ankiSyncFull(direction: FullSyncDirection): Promise<FullSyncResult>;
+  ankiSyncNotify(event: SyncNotifyEvent): Promise<void>;
+  /** `anki://sync`: the sync status changed. */
+  onAnkiSync(cb: (s: AnkiSyncStatus) => void): Unlisten;
 
   // Library
   libraryList(): Promise<LibraryEntry[]>;

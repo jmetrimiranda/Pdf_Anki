@@ -1,0 +1,69 @@
+# Local Anki sync server for development and tests ONLY (docs/tecnico/anki-sync-dev.md).
+# Official server (python -m anki.syncserver) at the pinned Anki version (spec A.1: 26.9.3) + a TLS terminator with a
+# dev certificate (scripts/ankisync-dev-certs.sh). Never point the app at any other server in tests.
+#   scripts/ankisync-dev-certs.sh
+#   docker compose -f compose.dev.yml up -d --build --wait
+#   LEITOR_DEV_NETWORK=leitor-dev scripts/dev.sh …   (reach it as ankisync-dev:8080 / ankisync-dev-tls:8443)
+#   docker compose -f compose.dev.yml down -v          (removes the data volume)
+name: leitor-dev
+
+x-test-password: &pw test
+
+services:
+  ankisync-dev:
+    build:
+      context: server/ankisync-dev
+      args:
+        ANKI_VERSION: "26.9.3"
+    image: leitor-ankisync-dev:26.9.3
+    environment:
+      # Throwaway local test accounts (spec A.2). test:test is the manual account; t1..t12 are one per test.
+      SYNC_USER1: "test:test"
+      SYNC_USER2: "t1:test"
+      SYNC_USER3: "t2:test"
+      SYNC_USER4: "t3:test"
+      SYNC_USER5: "t4:test"
+      SYNC_USER6: "t5:test"
+      SYNC_USER7: "t6:test"
+      SYNC_USER8: "t7:test"
+      SYNC_USER9: "t8:test"
+      SYNC_USER10: "t9:test"
+      SYNC_USER11: "t10:test"
+      SYNC_USER12: "t11:test"
+      SYNC_USER13: "t12:test"
+      RUST_LOG: "anki=info"
+    volumes:
+      - ankisync-dev-data:/data
+    networks:
+      leitor-dev:
+        aliases: [ankisync-dev]
+    ports:
+      - "127.0.0.1:${LEITOR_ANKISYNC_HTTP_PORT:-28080}:8080"
+
+  ankisync-dev-tls:
+    image: caddy:2
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    volumes:
+      - ./server/ankisync-dev/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./server/ankisync-dev/certs:/certs:ro
+    depends_on:
+      ankisync-dev:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "--no-check-certificate", "https://127.0.0.1:8443/health"]
+      interval: 2s
+      timeout: 3s
+      start_period: 10s
+      retries: 15
+    networks:
+      leitor-dev:
+        aliases: [ankisync-dev-tls]
+    ports:
+      - "127.0.0.1:${LEITOR_ANKISYNC_TLS_PORT:-28443}:8443"
+
+networks:
+  leitor-dev:
+    name: leitor-dev
+
+volumes:
+  ankisync-dev-data:

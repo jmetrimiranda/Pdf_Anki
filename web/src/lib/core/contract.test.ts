@@ -74,6 +74,23 @@ describe('mock core vs the Rust contract snapshot', () => {
     for (const row of await mockClient.ankiBrowseRows(ids.slice(0, 20))) collect(out, 'BrowseRow', row);
     collect(out, 'BackupInfo', await mockClient.ankiBackupNow());
 
+    // Sync (spec 9): off, after login, an error status, a required full sync and its result.
+    collect(out, 'AnkiSyncStatus', await mockClient.ankiSyncStatus());
+    collect(out, 'AnkiSyncStatus', await mockClient.ankiSyncLogin('http://ankisync:8080/', 'test', 'test', null));
+    await new Promise((r) => setTimeout(r, 5));
+    mockHandle.syncSetOffline(true);
+    const offline = await mockClient.ankiSync();
+    collect(out, 'AnkiSyncStatus', offline);
+    collect(out, 'SyncErrorInfo', offline.lastError);
+    mockHandle.syncSetOffline(false);
+    mockHandle.syncRequireFull({ uploadOk: true, downloadOk: true });
+    const required = await mockClient.ankiSync();
+    collect(out, 'FullSyncChoice', required.fullSync);
+    const full = await mockClient.ankiSyncFull('download');
+    collect(out, 'FullSyncResult', full);
+    collect(out, 'AnkiSyncStatus', full.status);
+    collect(out, 'BackupInfo', full.backup);
+
     const expected = contract as Shapes;
     for (const required of [
       'StudyNext.card',
@@ -86,6 +103,10 @@ describe('mock core vs the Rust contract snapshot', () => {
       'FieldInfo',
       'BackupInfo',
       'DeckNode',
+      'AnkiSyncStatus',
+      'SyncErrorInfo',
+      'FullSyncChoice',
+      'FullSyncResult',
     ]) {
       expect(out[required], `the mock produced no ${required}`).toBeDefined();
     }

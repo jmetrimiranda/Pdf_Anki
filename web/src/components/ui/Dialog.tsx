@@ -1,6 +1,6 @@
 import { X } from 'lucide-react';
 import { Dialog as D } from 'radix-ui';
-import type { ReactNode } from 'react';
+import type { ReactNode, RefObject } from 'react';
 import { cn } from '../../lib/cn';
 import { t } from '../../i18n';
 import { usePortalContainer } from './portal';
@@ -19,6 +19,7 @@ export function Dialog({
   footer,
   variant = 'center',
   className,
+  initialFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -28,6 +29,8 @@ export function Dialog({
   footer?: ReactNode;
   variant?: DialogVariant;
   className?: string;
+  /** Element focused when the dialog opens (default: the first focusable one). */
+  initialFocus?: RefObject<HTMLElement | null>;
 }) {
   const container = usePortalContainer();
   const sheet = variant === 'sheet';
@@ -36,6 +39,13 @@ export function Dialog({
       <D.Portal container={container}>
         <D.Overlay className="fixed inset-0 z-40 bg-overlay anim-fade" />
         <D.Content
+          onOpenAutoFocus={(e) => {
+            const el = initialFocus?.current;
+            if (el) {
+              e.preventDefault();
+              el.focus();
+            }
+          }}
           className={cn(
             'fixed z-50 flex max-h-[85vh] flex-col border border-line bg-card text-fg shadow-popover focus:outline-none',
             sheet

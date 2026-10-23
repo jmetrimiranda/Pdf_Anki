@@ -31,10 +31,13 @@ import {
 export interface AnkiDecksMockDeps {
   takeExportGrant(path: string): void;
   writeFile(path: string, content: string): void;
+  /** A `.colpkg` replaced the collection: the sync mock makes the next sync a first sync (a download). */
+  collectionReplaced(): void;
 }
 
 export const KEEP_DAILY = 7;
 export const KEEP_PRE_IMPORT = 5;
+export const KEEP_PRE_SYNC = 5;
 export const DEFAULT_PACKAGE_PICK = '/home/jorge/Downloads/Vocabulário do livro.apkg';
 
 /** Splits and validates a full deck name like the core (`::` separated, no empty component). */
@@ -227,11 +230,12 @@ function importApkg(path: string): ImportSummary {
   return summary;
 }
 
-function pushBackup(kind: BackupInfo['kind']): BackupInfo {
+/** Adds a backup of the mock collection (exported for the sync mock's pre-full-sync backups). */
+export function pushBackup(kind: BackupInfo['kind']): BackupInfo {
   const s = ankiState();
   const info = backupInfo(kind, Date.now(), 2_400_000 + s.cards.length * 512);
   s.backups.push(info);
-  // Retention like core-anki `backup`: the last 7 daily and the last 5 pre-import; manual ones stay.
+  // Retention like core-anki `backup`: the last 7 daily, 5 pre-import and 5 pre-sync; manual ones stay.
   const keep = (k: BackupInfo['kind'], n: number) => {
     const of = s.backups.filter((b) => b.kind === k).sort((a, b) => b.createdAt - a.createdAt);
     const drop = new Set(of.slice(n).map((b) => b.path));
@@ -239,6 +243,7 @@ function pushBackup(kind: BackupInfo['kind']): BackupInfo {
   };
   keep('daily', KEEP_DAILY);
   keep('preImport', KEEP_PRE_IMPORT);
+  keep('preSync', KEEP_PRE_SYNC);
   persistAnki();
   return info;
 }
@@ -315,6 +320,7 @@ export function createAnkiDecksMock(deps: AnkiDecksMockDeps): Pick<CoreClient, A
     ankiImportColpkg: (path) =>
       later(() => {
         const backup = importColpkg(path);
+        deps.collectionReplaced();
         emitAnkiChanged({ reason: 'colpkg' });
         return backup;
       }),

@@ -308,6 +308,66 @@ fn settings_defaults_and_validation() {
 }
 
 #[test]
+fn sync_settings_defaults_and_validation() {
+    let store = Store::open_in_memory().unwrap();
+    for key in [
+        keys::ANKI_SYNC_URL,
+        keys::ANKI_SYNC_USER,
+        keys::ANKI_SYNC_CA_CERT,
+        keys::ANKI_SYNC_LAST_AT,
+        keys::ANKI_SYNC_FIRST_DONE,
+    ] {
+        assert_eq!(store.setting(key).unwrap(), json!(null), "{key}");
+    }
+    let pem = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+    store
+        .set_setting(keys::ANKI_SYNC_CA_CERT, json!(pem))
+        .unwrap();
+    assert_eq!(store.setting(keys::ANKI_SYNC_CA_CERT).unwrap(), json!(pem));
+    store
+        .set_setting(keys::ANKI_SYNC_LAST_AT, json!(1_761_000_000_000_i64))
+        .unwrap();
+    assert_eq!(
+        store
+            .setting_as::<Option<i64>>(keys::ANKI_SYNC_LAST_AT)
+            .unwrap(),
+        Some(1_761_000_000_000)
+    );
+    store
+        .set_setting(
+            keys::ANKI_SYNC_FIRST_DONE,
+            json!("test@http://ankisync:8080/"),
+        )
+        .unwrap();
+    for (key, value) in [
+        (keys::ANKI_SYNC_LAST_AT, json!(-1)),
+        (keys::ANKI_SYNC_LAST_AT, json!("ontem")),
+        (keys::ANKI_SYNC_CA_CERT, json!(42)),
+        (keys::ANKI_SYNC_FIRST_DONE, json!(true)),
+    ] {
+        let err = store.set_setting(key, value).unwrap_err();
+        assert!(matches!(err, StoreError::InvalidSetting { .. }), "{err}");
+    }
+    store
+        .set_setting(keys::ANKI_SYNC_LAST_AT, json!(null))
+        .unwrap();
+    assert_eq!(store.setting(keys::ANKI_SYNC_LAST_AT).unwrap(), json!(null));
+    let all = store.all_settings().unwrap();
+    for key in [
+        "anki_sync_ca_cert",
+        "anki_sync_last_at",
+        "anki_sync_first_done",
+    ] {
+        assert!(all.contains_key(key), "{key}");
+    }
+    // Secrets never live in the settings.
+    assert!(
+        all.keys()
+            .all(|k| !k.contains("hkey") && !k.contains("password"))
+    );
+}
+
+#[test]
 fn schema_constraints_hold() {
     let mut store = Store::open_in_memory().unwrap();
     let uid = store.add_book(&new_book(b"pdf")).unwrap().book.book_uid;

@@ -11,6 +11,8 @@ use crate::anki::{AnkiHandles, UiSink};
 use crate::error::AppError;
 use crate::files::BookFiles;
 use crate::grants::{ExportGrants, ReadGrants};
+use crate::secrets::{self, SecretStore};
+use crate::sync::SyncHub;
 
 /// Documents `doc_words` keeps open, keyed by book and file version.
 const DOC_CACHE_SIZE: usize = 3;
@@ -47,6 +49,8 @@ pub struct AppState {
     /// PDF paths from the command line ("Abrir com"), handed to the UI once.
     open_paths: Mutex<Vec<String>>,
     shutting_down: AtomicBool,
+    /// Anki sync: account, key store, scheduler state (spec 9).
+    pub(crate) sync: SyncHub,
 }
 
 impl AppState {
@@ -56,6 +60,16 @@ impl AppState {
 
     /// Same as [`AppState::new`] with the clock of the reading sessions injected (tests).
     pub fn with_clock(data_dir: PathBuf, clock: Arc<dyn Clock>) -> Self {
+        Self::with_secret_store(data_dir, clock, secrets::default_store())
+    }
+
+    /// Same as [`AppState::with_clock`] with the store of the sync key injected (tests use a
+    /// [`crate::secrets::MemoryStore`]).
+    pub fn with_secret_store(
+        data_dir: PathBuf,
+        clock: Arc<dyn Clock>,
+        secrets: Arc<dyn SecretStore>,
+    ) -> Self {
         Self {
             files: BookFiles::new(&data_dir),
             data_dir,
@@ -72,6 +86,7 @@ impl AppState {
             tracker: Mutex::new(ReadingTracker::new(clock)),
             open_paths: Mutex::new(Vec::new()),
             shutting_down: AtomicBool::new(false),
+            sync: SyncHub::new(secrets),
         }
     }
 
@@ -255,6 +270,9 @@ impl AppState {
     /// every document.
     pub fn shutdown(&self) {
         self.shutting_down.store(true, Ordering::Relaxed);
+        // A running sync stops (a normal sync applying changes finishes or rolls back).
+        self.abort_sync();
+        self.sync.wake();
         if let Some(h) = lock(&self.anki_handles).take() {
             h.study.close();
         }

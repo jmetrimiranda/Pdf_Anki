@@ -3,21 +3,22 @@ import {
   BookOpen,
   Blocks,
   ChevronDown,
-  CloudOff,
   FlaskConical,
   Keyboard,
   Library,
   Moon,
   Plus,
   Settings,
+  SlidersHorizontal,
   Sun,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { IconButton, Menu, Tooltip, type MenuEntry } from '../../components/ui';
+import { IconButton, Menu, type MenuEntry } from '../../components/ui';
 import { t } from '../../i18n';
 import { cn } from '../../lib/cn';
 import { useTheme } from '../../lib/theme';
 import { useNarrow } from '../../lib/useMediaQuery';
+import { SyncPill } from '../sync/SyncPill';
 import { useShell } from './context';
 import { devRoutesEnabled } from './devRoutes';
 import type { TabPath } from './shortcuts';
@@ -93,25 +94,17 @@ function TabsMenu() {
   );
 }
 
-function SyncPill() {
-  return (
-    <Tooltip content={t('sync.offHint')}>
-      <span
-        tabIndex={0}
-        className="inline-flex h-6 items-center gap-1.5 rounded-full border border-line px-2.5 text-xs text-muted"
-      >
-        <CloudOff size={13} aria-hidden />
-        <span className="max-sm:sr-only">{t('sync.off')}</span>
-      </span>
-    </Tooltip>
-  );
-}
-
 function SettingsMenu() {
   const [theme, setTheme] = useTheme();
   const shell = useShell();
   const navigate = useNavigate();
   const items: MenuEntry[] = [
+    {
+      label: t('settings.open'),
+      icon: SlidersHorizontal,
+      onSelect: () => void navigate({ to: '/configuracoes/anki' }),
+    },
+    { kind: 'separator' },
     { kind: 'label', label: t('theme.label') },
     { label: t('theme.light'), icon: Sun, checked: theme === 'light', onSelect: () => setTheme('light') },
     { label: t('theme.dark'), icon: Moon, checked: theme === 'dark', onSelect: () => setTheme('dark') },

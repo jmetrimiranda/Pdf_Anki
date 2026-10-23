@@ -1,9 +1,10 @@
 //! `.colpkg` backups with media (docs/PROJETO.md 8.1): one per day (newest [`KEEP_DAILY`] kept),
-//! one before every `.colpkg` import / full sync (newest [`KEEP_PRE_IMPORT`] kept) and manual ones
-//! (never deleted automatically).
+//! one before every `.colpkg` import (newest [`KEEP_PRE_IMPORT`] kept), one before every full sync
+//! (newest [`KEEP_PRE_SYNC`] kept) and manual ones (never deleted automatically).
 //!
 //! Files live in `<collection dir>/backups/`:
 //! `diario-YYYY-MM-DD.colpkg`, `antes-de-importar-YYYYMMDD-HHMMSS.colpkg`,
+//! `antes-da-sincronizacao-YYYYMMDD-HHMMSS.colpkg`,
 //! `manual-YYYYMMDD-HHMMSS.colpkg` (a `-N` suffix is added if the name is taken). A backup is
 //! written to `<name>.partial` and renamed when complete, so a final name is never a half file.
 //!
@@ -25,11 +26,13 @@ use crate::types::{BackupInfo, BackupKind};
 
 pub const KEEP_DAILY: usize = 7;
 pub const KEEP_PRE_IMPORT: usize = 5;
+pub const KEEP_PRE_SYNC: usize = 5;
 
 const EXT: &str = ".colpkg";
 const PARTIAL: &str = ".partial";
 const DAILY_PREFIX: &str = "diario-";
 const PRE_IMPORT_PREFIX: &str = "antes-de-importar-";
+const PRE_SYNC_PREFIX: &str = "antes-da-sincronizacao-";
 const MANUAL_PREFIX: &str = "manual-";
 
 pub fn backups_dir(paths: &CollectionPaths) -> PathBuf {
@@ -143,14 +146,15 @@ async fn write_colpkg(snapshot: PathBuf, media_folder: PathBuf, out: PathBuf) ->
     rx.await.unwrap_or(Err(Error::Closed))
 }
 
-/// Deletes the oldest daily and pre-import backups beyond [`KEEP_DAILY`] / [`KEEP_PRE_IMPORT`].
-/// Manual backups are kept. Returns the deleted paths.
+/// Deletes the oldest daily, pre-import and pre-sync backups beyond [`KEEP_DAILY`] /
+/// [`KEEP_PRE_IMPORT`] / [`KEEP_PRE_SYNC`] (each kind is its own bucket). Manual backups are kept. Returns the deleted paths.
 pub fn rotate(dir: &Path) -> Result<Vec<PathBuf>> {
     let all = list(dir)?;
     let mut deleted = Vec::new();
     for (kind, keep) in [
         (BackupKind::Daily, KEEP_DAILY),
         (BackupKind::PreImport, KEEP_PRE_IMPORT),
+        (BackupKind::PreSync, KEEP_PRE_SYNC),
     ] {
         // `list` is newest first.
         for old in all.iter().filter(|b| b.kind == kind).skip(keep) {
@@ -192,6 +196,8 @@ pub fn parse_name(name: &str) -> Option<(BackupKind, NaiveDateTime, u32)> {
         (BackupKind::Daily, rest)
     } else if let Some(rest) = stem.strip_prefix(PRE_IMPORT_PREFIX) {
         (BackupKind::PreImport, rest)
+    } else if let Some(rest) = stem.strip_prefix(PRE_SYNC_PREFIX) {
+        (BackupKind::PreSync, rest)
     } else {
         (BackupKind::Manual, stem.strip_prefix(MANUAL_PREFIX)?)
     };
@@ -246,6 +252,7 @@ fn free_name(dir: &Path, kind: BackupKind, now: DateTime<Local>) -> PathBuf {
     let stem = match kind {
         BackupKind::Daily => return dir.join(daily_name(now.date_naive())),
         BackupKind::PreImport => format!("{PRE_IMPORT_PREFIX}{}", now.format("%Y%m%d-%H%M%S")),
+        BackupKind::PreSync => format!("{PRE_SYNC_PREFIX}{}", now.format("%Y%m%d-%H%M%S")),
         BackupKind::Manual => format!("{MANUAL_PREFIX}{}", now.format("%Y%m%d-%H%M%S")),
     };
     let taken = std::fs::read_dir(dir)

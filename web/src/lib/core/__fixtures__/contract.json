@@ -1,4 +1,19 @@
 {
+  "AnkiSyncStatus": [
+    "certificateFingerprint",
+    "firstSyncPending",
+    "fullSync",
+    "lastError",
+    "lastSyncAt",
+    "loggedIn",
+    "mediaError",
+    "mediaSyncing",
+    "nextRetryAt",
+    "serverMessage",
+    "state",
+    "url",
+    "user"
+  ],
   "AnswerSide": [
     "av",
     "buttons",
@@ -58,6 +73,14 @@
     "name",
     "plainText",
     "rtl"
+  ],
+  "FullSyncChoice": [
+    "downloadOk",
+    "uploadOk"
+  ],
+  "FullSyncResult": [
+    "backup",
+    "status"
   ],
   "NotetypeInfo": [
     "appType",
@@ -119,6 +142,10 @@
     "deckId",
     "deckName",
     "kind"
+  ],
+  "SyncErrorInfo": [
+    "code",
+    "message"
   ],
   "Values.browseDueFormats": [
     "(9-9-9)",

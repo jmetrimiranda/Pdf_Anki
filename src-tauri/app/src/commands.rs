@@ -9,7 +9,8 @@ use core_anki::browse::{BrowseOrder, BrowseRow, ForgetOptions};
 use core_anki::notes::{AddDefaults, NewNote, NoteAdded, NoteCheck, NoteData, NotetypeInfo};
 use core_anki::study::{AnswerSide, CardAction, CardActionResult, StudyNext};
 use core_anki::{
-    BackupInfo, DeckName, DeckTree, ExportOptions, ExportResult, ImportSummary, PrepareReport,
+    BackupInfo, DeckName, DeckTree, ExportOptions, ExportResult, FullSyncDirection, ImportSummary,
+    PrepareReport,
 };
 use core_pdf::PageWords;
 use core_store::{ClosedSession, LibraryEntry, ReadingPosition};
@@ -21,6 +22,7 @@ use crate::error::AppError;
 use crate::library::{AddedBook, BookOpen, LibraryPatch, SavedVersion};
 use crate::reading::{SessionStarted, StopReasonArg};
 use crate::state::AppState;
+use crate::sync::{AnkiSyncStatus, FullSyncResult, SyncNotice};
 
 type Shared<'a> = State<'a, Arc<AppState>>;
 
@@ -377,6 +379,57 @@ pub async fn anki_backup_now(state: Shared<'_>) -> Result<BackupInfo, AppError> 
 #[tauri::command]
 pub async fn anki_backups(state: Shared<'_>) -> Result<Vec<BackupInfo>, AppError> {
     blocking(&state, AppState::anki_backups).await
+}
+
+#[tauri::command]
+pub async fn anki_sync_status(state: Shared<'_>) -> Result<AnkiSyncStatus, AppError> {
+    blocking(&state, AppState::anki_sync_status).await
+}
+
+/// The password only goes to the server (through the core); it is never stored nor logged.
+#[tauri::command]
+pub async fn anki_sync_login(
+    state: Shared<'_>,
+    url: String,
+    user: String,
+    password: String,
+    certificate_pem: Option<String>,
+) -> Result<AnkiSyncStatus, AppError> {
+    state
+        .inner()
+        .anki_sync_login(url, user, password, certificate_pem)
+        .await
+}
+
+#[tauri::command]
+pub async fn anki_sync_logout(state: Shared<'_>) -> Result<AnkiSyncStatus, AppError> {
+    blocking(&state, AppState::anki_sync_logout).await
+}
+
+#[tauri::command]
+pub async fn anki_sync_set_certificate(
+    state: Shared<'_>,
+    pem: Option<String>,
+) -> Result<AnkiSyncStatus, AppError> {
+    blocking(&state, move |s| s.anki_sync_set_certificate(pem)).await
+}
+
+#[tauri::command]
+pub async fn anki_sync(state: Shared<'_>) -> Result<AnkiSyncStatus, AppError> {
+    state.inner().anki_sync().await
+}
+
+#[tauri::command]
+pub async fn anki_sync_full(
+    state: Shared<'_>,
+    direction: FullSyncDirection,
+) -> Result<FullSyncResult, AppError> {
+    state.inner().anki_sync_full(direction).await
+}
+
+#[tauri::command]
+pub async fn anki_sync_notify(state: Shared<'_>, event: SyncNotice) -> Result<(), AppError> {
+    blocking(&state, move |s| s.anki_sync_notify(event)).await
 }
 
 #[tauri::command]

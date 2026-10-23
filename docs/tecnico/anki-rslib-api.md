@@ -714,6 +714,26 @@ let auth = SyncAuth::try_from(anki_proto::sync::SyncAuth {
   shared `ProgressState.want_abort` (section 1) or by dropping the future (upstream wraps in
   `Abortable` and calls `storage.rollback_trx()` on abort, `backend/sync.rs:373`).
 
+**Verified in Phase 3 (2026-10-23, against the official `anki==26.9.3` sync server, `compose.dev.yml`):**
+
+- `col.sync_meta()` (on the actor, cheap) + `online_sync_status_check(meta, &mut HttpSyncClient)` run
+  **off the actor**: the network round trip (meta request) never holds the collection. Only an actual
+  normal sync or a full sync takes it (`core_anki::sync::flow`). The deck tree answers in < 1 s while a
+  sync against an unreachable server is failing (`sync_server.rs::offline_then_reconnect`).
+- `full_upload`/`full_download` consume the `Collection`; our `with_owned_collection` always reopens it
+  (also on error). After a full upload rslib leaves the file at schema 18; reopening upgrades it, so
+  the uploading side may see one extra `NormalSyncRequired` sync (`collection_changed: true`), then
+  `NoChanges` — harmless, desktop Anki behaves the same.
+- rslib reports a refused connection and an untrusted certificate both as "error sending request";
+  one plain GET to the server root tells offline / timeout / untrusted TLS apart.
+- TLS graph is rustls-only: one `reqwest` 0.12 (ours unifies with rslib's, `default-features = false`,
+  `rustls-tls`), one `hyper` 1, one `rustls` 0.23, no `native-tls`/`openssl-sys`. The extra root
+  certificate is added with `Client::builder().add_root_certificate(..)` as upstream does; verified
+  positive (dev CA) and negative (no CA / unrelated CA → `anki.sync.tlsUntrusted`).
+- `SyncAuth` is built in exactly one place, always with `endpoint: Some(..)` (`ankiweb.net` and its
+  subdomains are refused before any request); `new_endpoint` from the server is accepted only with the
+  same scheme and host.
+
 ---
 
 ## 12. `Collection::run_service_method` and the name → (service, method) table

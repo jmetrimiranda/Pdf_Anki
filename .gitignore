@@ -58,3 +58,6 @@ collection.media/
 .vscode/*
 !.vscode/extensions.json
 /dist-linux/
+# Dev TLS material for the local Anki sync server (scripts/ankisync-dev-certs.sh)
+/server/ankisync-dev/certs/*
+!/server/ankisync-dev/certs/.gitkeep

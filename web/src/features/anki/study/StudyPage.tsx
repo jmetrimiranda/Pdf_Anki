@@ -262,6 +262,16 @@ export function StudyPage({
     };
   }, [deckId, deckName, attempt, apply, setView]);
 
+  // A full sync replaced the collection (the core reset the study session): load the next card again. A normal sync
+  // keeps the card on screen (answering a card that changed is handled by the answer errors).
+  useEffect(
+    () =>
+      core.onAnkiChanged((e) => {
+        if (e.reason === 'syncFull') setAttempt((a) => a + 1);
+      }),
+    [],
+  );
+
   useEffect(
     () => () => {
       player.stop();

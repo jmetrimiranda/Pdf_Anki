@@ -48,9 +48,21 @@ tauri-plugin-single-instance = "2.5"
 [target.'cfg(target_os = "linux")'.dependencies]
 # WebKitGTK settings of the main webview (WebGL for the embedded PdfCraft, spec 22).
 webkit2gtk = "2.0"
+# The sync key (hkey) lives in the system keychain (spec 18): Secret Service on Linux, pure-Rust
+# crypto for the session (no OpenSSL). MIT OR Apache-2.0.
+keyring = { version = "3.6", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
+
+# macOS and iOS: the Keychain (keeps the iOS door open, docs/decisoes.md).
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+keyring = { version = "3.6", default-features = false, features = ["apple-native"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The offline test's TCP proxy (tests/sync.rs).
+tokio = { workspace = true, features = ["net"] }
 # Synthetic PDFs for the integration tests (spec 20); nothing large is committed.
 pdfcraft-testkit.workspace = true
 pdfcraft-cos.workspace = true

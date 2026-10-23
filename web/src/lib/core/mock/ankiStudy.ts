@@ -163,7 +163,17 @@ const SPAN_UNITS = ['s', 'min(s)', 'h', 'dia(s)', 'mês(es)', 'a'] as const;
 export function intervalLabel(seconds: number, learnAhead = false): string {
   const secs = Math.abs(seconds);
   const unit =
-    secs < SPAN_MINUTE ? 0 : secs < SPAN_HOUR ? 1 : secs < SPAN_DAY ? 2 : secs < SPAN_MONTH ? 3 : secs < SPAN_YEAR ? 4 : 5;
+    secs < SPAN_MINUTE
+      ? 0
+      : secs < SPAN_HOUR
+        ? 1
+        : secs < SPAN_DAY
+          ? 2
+          : secs < SPAN_MONTH
+            ? 3
+            : secs < SPAN_YEAR
+              ? 4
+              : 5;
   const size = [1, SPAN_MINUTE, SPAN_HOUR, SPAN_DAY, SPAN_MONTH, SPAN_YEAR][unit]!;
   const value = seconds / size;
   const amount = unit === 0 || unit === 1 || unit === 3 ? Math.round(value) : Math.round(value * 10) / 10;

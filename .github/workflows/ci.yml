@@ -97,13 +97,23 @@ jobs:
             src-tauri/target/debug
           key: linux-cargo-${{ hashFiles('src-tauri/Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: linux-cargo-
+      - name: Anki sync dev server
+        # Official sync server at the pinned Anki version + TLS terminator with a dev CA (compose.dev.yml, network
+        # leitor-dev); the gated sync tests below only ever talk to it (docs/tecnico/anki-sync-dev.md).
+        run: |
+          scripts/ankisync-dev-certs.sh
+          docker compose -f compose.dev.yml up -d --build --wait
+          test "$(docker compose -f compose.dev.yml exec -T ankisync-dev python -c 'import importlib.metadata as m; print(m.version("anki"))')" = 26.9.3
       - name: PdfCraft web, fmt, clippy, test, bridge e2e, bundle (in the dev image)
         # The image's user is dev (uid 1000) but the runner checks out as uid 1001, so run as root;
         # root-owned outputs stay readable for the cache and artifact steps.
         run: |
           mkdir -p ~/cargo-registry ~/cargo-git
-          docker run --rm --user 0 -e HOME=/root \
+          docker run --rm --user 0 -e HOME=/root --network leitor-dev \
             -e CARGO_INCREMENTAL -e CARGO_TERM_COLOR -e TAURI_APP_PATH -e APPIMAGE_EXTRACT_AND_RUN=1 \
+            -e LEITOR_SYNC_TEST_URL=http://ankisync-dev:8080/ -e LEITOR_SYNC_TEST_TLS_URL=https://ankisync-dev-tls:8443/ \
+            -e LEITOR_SYNC_TEST_CA=/workspaces/leitor-estudos/server/ankisync-dev/certs/ca.crt \
+            -e LEITOR_SYNC_TEST_UNTRUSTED_CA=/workspaces/leitor-estudos/server/ankisync-dev/certs/untrusted-ca.crt \
             -v "$PWD":/workspaces/leitor-estudos \
             -v ~/cargo-registry:/usr/local/cargo/registry -v ~/cargo-git:/usr/local/cargo/git \
             -w /workspaces/leitor-estudos leitor-dev:latest bash -c '
@@ -117,17 +127,34 @@ jobs:
               cd src-tauri
               cargo fmt --all --check
               cargo clippy -j 2 --workspace --all-targets -- -D warnings
-              timeout 75m cargo test -j 2 --workspace
+              # Private D-Bus + unlocked gnome-keyring: the keychain and sync tests run against the dev server.
+              timeout 75m ../scripts/with-keyring.sh cargo test -j 2 --workspace
               cd ..
               # Bridge tests against the real PdfCraft web build (browsers are in the image; software WebGL via Mesa)
               pnpm --dir web exec playwright install chromium webkit
               timeout 20m xvfb-run -a pnpm --dir web e2e:bridge
               # Real app (WebKitGTK under Xvfb) with the fixture collection: card iframe isolation (spec 8.4)
-              # and Anki's own pages over the anki protocol (deck options, statistics, card info…).
+              # and the Anki pages over the anki protocol (deck options, statistics, card info…).
               CARGO_BUILD_JOBS=2 timeout 30m scripts/anki-real-app.sh isolation
               timeout 20m scripts/anki-real-app.sh pages
               pnpm --dir web tauri build --bundles deb,appimage
             '
+      - name: Official Anki client cross-check (pyclient.py against the dev server)
+        run: |
+          docker compose -f compose.dev.yml exec -T ankisync-dev python /opt/ankisync/pyclient.py \
+            --url http://ankisync-dev:8080/ --user t11 --password test --dir /tmp/pyclient-a seed-upload
+          docker compose -f compose.dev.yml exec -T ankisync-dev python /opt/ankisync/pyclient.py \
+            --url http://ankisync-dev:8080/ --user t11 --password test --dir /tmp/pyclient-b review-first-due
+          docker compose -f compose.dev.yml exec -T ankisync-dev python /opt/ankisync/pyclient.py \
+            --url http://ankisync-dev:8080/ --user t11 --password test --dir /tmp/pyclient-c download-and-report \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d); assert d["revlogCount"] == 1 and "leitor-crosscheck.png" in d["mediaFiles"]'
+          docker compose -f compose.dev.yml exec -T ankisync-dev python /opt/ankisync/pyclient.py \
+            --url http://ankisync-dev:8080/ --user t12 --password test --dir /tmp/pyclient-d download-and-report
+      - name: Stop Anki sync dev server
+        if: always()
+        run: |
+          docker compose -f compose.dev.yml logs --tail 30 || true
+          docker compose -f compose.dev.yml down -v --remove-orphans || true
       - name: Save cargo cache
         if: github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4

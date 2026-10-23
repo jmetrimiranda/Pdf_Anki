@@ -80,7 +80,7 @@ export const ankiShellMessages = {
   'anki.backups.list': 'Backups…',
   'anki.backups.title': 'Backups da coleção',
   'anki.backups.description':
-    'Um backup por dia (os últimos 7) e um antes de cada substituição da coleção, com a mídia.',
+    'Um backup por dia (os últimos 7) e um antes de cada substituição da coleção (importação ou sincronização completa), com a mídia.',
   'anki.backups.empty': 'Nenhum backup ainda.',
   'anki.backups.running': 'Fazendo backup…',
   'anki.backups.done': 'Backup feito: {arquivo}',
@@ -88,6 +88,7 @@ export const ankiShellMessages = {
   'anki.backups.kind.daily': 'Diário',
   'anki.backups.kind.preImport': 'Antes de importar',
   'anki.backups.kind.manual': 'Manual',
+  'anki.backups.kind.preSync': 'Antes da sincronização',
 
   'anki.page.loading': 'Abrindo a página do Anki…',
   'anki.page.loadFailed': 'A página do Anki não carregou.',

@@ -11,12 +11,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use core_anki::anki::prelude::I18n;
 use core_anki::anki::scheduler::timespan::{answer_button_time, answer_button_time_collapsible};
 use core_anki::fixture::{self, FixtureOptions};
 use core_anki::study::{AvTag, StudyNext};
-use leitor_app::AppState;
+use leitor_app::secrets::MemoryStore;
+use leitor_app::{AnkiSyncStatus, AppState, FullSyncResult, SyncErrorInfo, SyncState};
 use serde_json::Value;
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
@@ -115,7 +117,11 @@ fn serde_shapes_match_the_ts_contract() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     let info = fixture::build(&data.join("anki"), FixtureOptions::default()).unwrap();
-    let state = AppState::new(data);
+    let state = AppState::with_secret_store(
+        data,
+        Arc::new(core_store::SystemClock),
+        Arc::new(MemoryStore::default()),
+    );
     let mut out = BTreeMap::new();
 
     // Deck tree.
@@ -227,8 +233,57 @@ fn serde_shapes_match_the_ts_contract() {
         "Values.newCardButtons",
         new_buttons.into_iter().collect(),
     );
-    let backup = serde_json::to_value(block_on(state.anki_backup_now()).unwrap()).unwrap();
+    let backup_info = block_on(state.anki_backup_now()).unwrap();
+    let backup = serde_json::to_value(&backup_info).unwrap();
     record(&mut out, "BackupInfo", &backup);
+
+    // Sync: the real logged-out status and a constructed one with every optional field set
+    // (all keys are always serialized, so both must agree).
+    let off = state.anki_sync_status().unwrap();
+    assert_eq!(off.state, SyncState::Off);
+    record(
+        &mut out,
+        "AnkiSyncStatus",
+        &serde_json::to_value(&off).unwrap(),
+    );
+    let error = SyncErrorInfo {
+        code: "anki_sync_offline".into(),
+        message: "Sem conexão com o servidor de sincronização.".into(),
+    };
+    let full = AnkiSyncStatus {
+        state: SyncState::FullSyncRequired,
+        url: Some("http://ankisync-dev:8080/".into()),
+        user: Some("test".into()),
+        logged_in: true,
+        certificate_fingerprint: Some("AA:BB".into()),
+        first_sync_pending: false,
+        last_sync_at: Some(1_761_000_000_000),
+        last_error: Some(error.clone()),
+        full_sync: Some(core_anki::FullSyncChoice {
+            upload_ok: true,
+            download_ok: true,
+        }),
+        next_retry_at: Some(1_761_000_015_000),
+        media_syncing: false,
+        media_error: Some("Falha ao sincronizar a mídia.".into()),
+        server_message: Some("Mensagem do servidor".into()),
+    };
+    let full_json = serde_json::to_value(&full).unwrap();
+    record(&mut out, "AnkiSyncStatus", &full_json);
+    record(&mut out, "SyncErrorInfo", &full_json["lastError"]);
+    record(&mut out, "FullSyncChoice", &full_json["fullSync"]);
+    let result = FullSyncResult {
+        status: off,
+        backup: backup_info,
+    };
+    let result = serde_json::to_value(&result).unwrap();
+    record(&mut out, "FullSyncResult", &result);
+    record(&mut out, "BackupInfo", &result["backup"]);
+    record(
+        &mut out,
+        "SyncErrorInfo",
+        &serde_json::to_value(&error).unwrap(),
+    );
     state.shutdown();
 
     for required in [
@@ -242,6 +297,10 @@ fn serde_shapes_match_the_ts_contract() {
         "BrowseRow",
         "NotetypeInfo",
         "BackupInfo",
+        "AnkiSyncStatus",
+        "SyncErrorInfo",
+        "FullSyncChoice",
+        "FullSyncResult",
     ] {
         assert!(
             out.contains_key(required),

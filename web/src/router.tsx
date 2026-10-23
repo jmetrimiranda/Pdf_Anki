@@ -187,6 +187,28 @@ function GenericPageRoute(): ReactNode {
   return route ? <WebPageRoute route={route} /> : <NotFound />;
 }
 
+// ---------------------------------------------------------------- Configurações (spec 5.2)
+
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/configuracoes',
+  component: lazyRouteComponent(() => import('./features/settings/SettingsPage'), 'SettingsPage'),
+});
+
+const settingsIndexRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/',
+  beforeLoad: () => {
+    throw redirect({ to: '/configuracoes/anki' });
+  },
+});
+
+const settingsAnkiRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: 'anki',
+  component: lazyRouteComponent(() => import('./features/settings/AnkiSyncSettings'), 'AnkiSyncSettings'),
+});
+
 const devUiRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/dev/ui',
@@ -212,6 +234,7 @@ const routeTree = rootRoute.addChildren([
     ankiInfoRoute,
     ankiGenericPageRoute,
   ]),
+  settingsRoute.addChildren([settingsIndexRoute, settingsAnkiRoute]),
   ...(devRoutesEnabled ? [devUiRoute, devSmokeRoute] : []),
 ]);
 

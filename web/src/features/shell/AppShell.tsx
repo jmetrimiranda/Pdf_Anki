@@ -7,6 +7,7 @@ import { useNarrow } from '../../lib/useMediaQuery';
 import { leitor, LeitorHost } from '../leitor';
 import { ReplaceVersionDialog } from '../library/BookDialogs';
 import { useBookImport } from '../library/useBookImport';
+import { SyncProvider } from '../sync/SyncProvider';
 import { ShellContext, type ShellApi } from './context';
 import { shellActionFor } from './shortcuts';
 import { ShortcutsDialog } from './ShortcutsDialog';
@@ -39,7 +40,7 @@ function Shell() {
     [ankiImport, importBooks],
   );
 
-  // The collection changed outside the UI's own calls (import, Anki page, backup): refresh the Anki tab.
+  // The collection changed outside the UI's own calls (import, Anki page, backup, sync): refresh the Anki tab.
   useEffect(() => core.onAnkiChanged(() => void queryClient.invalidateQueries({ queryKey: ['anki'] })), [queryClient]);
 
   const api = useMemo<ShellApi>(
@@ -109,14 +110,16 @@ function Shell() {
   // Saving on tab switch and on window close belongs to the reader (LeitorHost handles both).
   return (
     <ShellContext.Provider value={api}>
-      <div className="flex h-full flex-col bg-bg text-fg">
-        <TopBar />
-        <main className="relative min-h-0 flex-1 overflow-hidden">
-          {/* Mounted once for the whole app session, so PdfCraft keeps its tabs and state. */}
-          <LeitorHost />
-          <Outlet />
-        </main>
-      </div>
+      <SyncProvider>
+        <div className="flex h-full flex-col bg-bg text-fg">
+          <TopBar />
+          <main className="relative min-h-0 flex-1 overflow-hidden">
+            {/* Mounted once for the whole app session, so PdfCraft keeps its tabs and state. */}
+            <LeitorHost />
+            <Outlet />
+          </main>
+        </div>
+      </SyncProvider>
       <ShortcutsDialog open={shortcuts} onOpenChange={setShortcuts} sheet={narrow} />
       {replacePrompt && (
         <ReplaceVersionDialog book={replacePrompt.book} sheet={narrow} onAnswer={replacePrompt.answer} />

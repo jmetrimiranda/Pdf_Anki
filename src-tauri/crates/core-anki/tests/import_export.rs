@@ -349,3 +349,78 @@ async fn replace_collection_always_reopens() -> anyhow::Result<()> {
     assert_eq!(deck_set(&svc).await?, ["Mantido"], "retry reopens");
     Ok(())
 }
+
+/// A `.colpkg` import (or any collection replacement) never runs under a sync: the sync and its
+/// media thread hold their own handles on the collection and the media DB.
+#[tokio::test]
+async fn colpkg_import_waits_for_no_sync() -> anyhow::Result<()> {
+    use core_anki::sync::SyncEndpoint;
+    use core_anki::{SyncConfig, SyncCredentials};
+
+    let f = fixture()?;
+    let colpkg = backup::backup_now(&f.svc, BackupKind::Manual).await?;
+    let src = f.tmp.path().join("colecao.colpkg");
+    std::fs::copy(&colpkg.path, &src)?;
+
+    // A local server that accepts and never answers: the sync waits on the network.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let hold = tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((sock, _)) = listener.accept().await {
+            open.push(sock);
+        }
+    });
+    let mut config = SyncConfig::new(SyncEndpoint::parse(&format!("http://127.0.0.1:{port}/"))?);
+    config.io_timeout_secs = 30;
+    let creds = SyncCredentials {
+        config,
+        hkey: "hkey-de-teste".into(),
+    };
+    let svc = f.svc.clone();
+    let pending = tokio::spawn(async move { svc.sync(&creds, false).await });
+    let started = std::time::Instant::now();
+    while !f.svc.sync_running() {
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let backups = || -> std::io::Result<usize> {
+        Ok(std::fs::read_dir(backup::backups_dir(f.svc.paths()))?.count())
+    };
+    let before = backups()?;
+    let res = f.svc.import_colpkg(&src).await;
+    assert!(is_busy(&res), "{res:?}");
+    assert_eq!(
+        backups()?,
+        before,
+        "no pre-import backup for a refused import"
+    );
+    let res = f.svc.replace_collection(|_| Ok(())).await;
+    assert!(is_busy(&res), "{res:?}");
+    // The collection was not touched.
+    f.svc
+        .call(|col| core_anki::decks::create(col, "Durante"))
+        .await?;
+
+    f.svc.abort_sync();
+    let res = tokio::time::timeout(std::time::Duration::from_secs(10), pending).await??;
+    assert!(res.is_err(), "{res:?}");
+    hold.abort();
+    assert!(!f.svc.sync_running());
+    // No sync: the import goes through.
+    let pre = f.svc.import_colpkg(&src).await?;
+    assert_eq!(pre.kind, BackupKind::PreImport);
+    assert!(f.svc.deck_tree().await?.find("Durante").is_none());
+    Ok(())
+}
+
+fn is_busy<T>(res: &core_anki::Result<T>) -> bool {
+    matches!(
+        res,
+        Err(Error::Sync {
+            kind: core_anki::sync::SyncFailure::Busy,
+            ..
+        })
+    )
+}

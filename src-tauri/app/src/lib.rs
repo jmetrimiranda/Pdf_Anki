@@ -15,8 +15,10 @@ mod protocol;
 pub mod protocol_anki;
 pub mod protocol_card;
 mod reading;
+pub mod secrets;
 mod smoke;
 mod state;
+pub mod sync;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,6 +34,7 @@ pub use protocol::{cover_url, protocol_url, ui_origins_with};
 pub use reading::SessionStarted;
 pub use smoke::SmokeReport;
 pub use state::AppState;
+pub use sync::{AnkiSyncStatus, FullSyncResult, SyncErrorInfo, SyncNotice, SyncState};
 
 /// Overrides the app data dir (tests, CI and side-by-side dev profiles).
 const DATA_DIR_ENV: &str = "LEITOR_DATA_DIR";
@@ -120,6 +123,7 @@ fn build(launch_paths: Vec<String>) -> Result<App, Box<dyn std::error::Error>> {
             state.warm_up();
             reading::spawn_ticker(&state);
             anki::spawn_backup_ticker(&state);
+            sync::driver::ensure_started(&state);
             // Without a window there is nothing to show; exit cleanly instead of panicking.
             if let Err(e) = create_main_window(app) {
                 tracing::error!(%e, "could not create the main window");
@@ -159,6 +163,7 @@ fn emit_ui_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: UiEvent) {
         UiEvent::AnkiChanged(reason) => {
             app.emit_to("main", anki::ANKI_CHANGED_EVENT, AnkiChanged { reason })
         }
+        UiEvent::AnkiSync(status) => app.emit_to("main", sync::ANKI_SYNC_EVENT, &status),
         UiEvent::OpenUrl(url) => {
             open_url(app, &url);
             Ok(())
@@ -224,6 +229,13 @@ macro_rules! app_commands {
             commands::anki_export,
             commands::anki_backup_now,
             commands::anki_backups,
+            commands::anki_sync_status,
+            commands::anki_sync_login,
+            commands::anki_sync_logout,
+            commands::anki_sync_set_certificate,
+            commands::anki_sync,
+            commands::anki_sync_full,
+            commands::anki_sync_notify,
             commands::library_list,
             commands::library_add,
             commands::library_remove,

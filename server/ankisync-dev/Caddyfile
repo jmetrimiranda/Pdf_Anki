@@ -1,0 +1,25 @@
+# TLS terminator in front of the local Anki sync server (compose.dev.yml, service ankisync-dev-tls).
+# Dev certificate from scripts/ankisync-dev-certs.sh; local tests only.
+{
+	admin off
+	auto_https disable_redirects
+	persist_config off
+}
+
+https://:8443 {
+	tls /certs/server.crt /certs/server.key {
+		# Spec A.3: TLS 1.2 and 1.3
+		protocols tls1.2 tls1.3
+	}
+	# Collections and media batches can be large: no request body limit here (the sync server enforces its own).
+	reverse_proxy ankisync-dev:8080 {
+		transport http {
+			read_timeout 10m
+			write_timeout 10m
+		}
+	}
+	log {
+		output stderr
+		level WARN
+	}
+}

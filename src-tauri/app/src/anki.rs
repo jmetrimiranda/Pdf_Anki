@@ -42,6 +42,10 @@ pub enum ChangeReason {
     Colpkg,
     Page,
     Backup,
+    /// A normal sync applied changes from the server.
+    Sync,
+    /// A full sync replaced the collection (the study session was reset).
+    SyncFull,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -58,6 +62,8 @@ pub enum UiEvent {
     AnkiChanged(ChangeReason),
     /// Open an http(s) URL in the system browser.
     OpenUrl(String),
+    /// `anki://sync` with the new sync status.
+    AnkiSync(crate::sync::AnkiSyncStatus),
 }
 
 /// Receives [`UiEvent`]s: the app emits them to the main window; tests collect them.
@@ -249,11 +255,14 @@ impl AppState {
                 "Pedido inválido: a resposta vai de 1 a 4.",
             ));
         }
-        Ok(self
+        let next = self
             .anki_handles()?
             .study
             .answer(card_id, rating, ms)
-            .await?)
+            .await?;
+        // Spec 9: sync 60 s after the last answer of a session.
+        self.sync_answered();
+        Ok(next)
     }
 
     pub async fn anki_undo(&self) -> Result<StudyNext, AppError> {
@@ -423,6 +432,10 @@ impl AppState {
         h.bridge.reset();
         let backup = result?;
         tracing::info!(backup = %backup.file_name, "collection replaced by a .colpkg");
+        // Disposable now: the next sync downloads over it (never merges or uploads it).
+        if let Err(e) = self.sync_collection_replaced() {
+            tracing::warn!(code = %e.code, "could not reset the first-sync flag");
+        }
         self.emit(UiEvent::AnkiChanged(ChangeReason::Colpkg));
         Ok(backup)
     }
@@ -573,6 +586,11 @@ mod tests {
         })
         .unwrap();
         assert_eq!(json, serde_json::json!({ "reason": "colpkg" }));
+        assert_eq!(serde_json::to_value(ChangeReason::Sync).unwrap(), "sync");
+        assert_eq!(
+            serde_json::to_value(ChangeReason::SyncFull).unwrap(),
+            "syncFull"
+        );
     }
 
     #[test]

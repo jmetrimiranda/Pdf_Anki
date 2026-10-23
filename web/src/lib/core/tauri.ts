@@ -5,7 +5,14 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { t } from '../../i18n';
 import { protocolUrl } from '../protocol';
-import { CoreError, type AnkiChanged, type AnkiPageEvent, type CoreClient, type Unlisten } from './types';
+import {
+  CoreError,
+  type AnkiChanged,
+  type AnkiPageEvent,
+  type AnkiSyncStatus,
+  type CoreClient,
+  type Unlisten,
+} from './types';
 
 function toCoreError(err: unknown): CoreError {
   if (err instanceof CoreError) return err;
@@ -109,6 +116,21 @@ export const tauriClient: CoreClient = {
     subscription(() =>
       listen<AnkiPageEvent>('anki://page', (e) => {
         if (e.payload && typeof e.payload === 'object' && typeof e.payload.kind === 'string') cb(e.payload);
+      }),
+    ),
+
+  ankiSyncStatus: () => call('anki_sync_status'),
+  ankiSyncLogin: (url, user, password, certificatePem) =>
+    call('anki_sync_login', { url, user, password, certificatePem }),
+  ankiSyncLogout: () => call('anki_sync_logout'),
+  ankiSyncSetCertificate: (pem) => call('anki_sync_set_certificate', { pem }),
+  ankiSync: () => call('anki_sync'),
+  ankiSyncFull: (direction) => call('anki_sync_full', { direction }),
+  ankiSyncNotify: (event) => call<void>('anki_sync_notify', { event }),
+  onAnkiSync: (cb) =>
+    subscription(() =>
+      listen<AnkiSyncStatus>('anki://sync', (e) => {
+        if (e.payload && typeof e.payload === 'object' && typeof e.payload.state === 'string') cb(e.payload);
       }),
     ),
 

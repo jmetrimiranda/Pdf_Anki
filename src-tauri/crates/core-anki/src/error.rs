@@ -52,6 +52,13 @@ pub enum Error {
     InvalidPackage(String),
     #[error("O arquivo é grande demais.")]
     TooLarge,
+    /// A sync failure (docs/PROJETO.md 9). `message` is pt-BR and never contains the password or
+    /// the hkey.
+    #[error("{message}")]
+    Sync {
+        kind: crate::sync::SyncFailure,
+        message: String,
+    },
     #[error("Erro de arquivo ({}): {source}", path.display())]
     Io {
         path: PathBuf,
@@ -79,6 +86,7 @@ impl Error {
             Error::NoteInvalid(_) => "anki.noteInvalid",
             Error::InvalidPackage(_) => "anki.invalidPackage",
             Error::TooLarge => "anki.tooLarge",
+            Error::Sync { kind, .. } => kind.code(),
             Error::Io { .. } => "anki.io",
         }
     }

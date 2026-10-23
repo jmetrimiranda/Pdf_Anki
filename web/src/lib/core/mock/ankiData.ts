@@ -22,6 +22,10 @@ export function setMockLatency(ms: number): void {
   latencyMs = ms;
 }
 
+export function mockLatency(): number {
+  return latencyMs;
+}
+
 /** Runs `fn` after the simulated latency, as a promise (errors thrown by `fn` reject it). */
 export function later<T>(fn: () => T): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -81,9 +85,20 @@ export type AnkiNotesMockKeys =
   | 'ankiChangeNotetypePrepare'
   | 'pickImageFile';
 
+/** Implemented by mock/ankiSync.ts (sync package). */
+export type AnkiSyncMockKeys =
+  | 'ankiSyncStatus'
+  | 'ankiSyncLogin'
+  | 'ankiSyncLogout'
+  | 'ankiSyncSetCertificate'
+  | 'ankiSync'
+  | 'ankiSyncFull'
+  | 'ankiSyncNotify'
+  | 'onAnkiSync';
+
 /** Implemented by mock/ankiDecks.ts (this shell): every other `anki*` method, the page URL and the events. */
 export type AnkiDecksMockKeys =
-  Exclude<AnkiMethods, AnkiStudyMockKeys | AnkiNotesMockKeys> | 'onAnkiChanged' | 'onAnkiPageEvent';
+  Exclude<AnkiMethods, AnkiStudyMockKeys | AnkiNotesMockKeys | AnkiSyncMockKeys> | 'onAnkiChanged' | 'onAnkiPageEvent';
 
 // ---------------------------------------------------------------- model
 
@@ -538,11 +553,18 @@ export function colpkgAnki(): AnkiState {
   return b.state;
 }
 
+const BACKUP_PREFIX: Record<BackupInfo['kind'], string> = {
+  daily: 'diario',
+  preImport: 'antes-de-importar',
+  manual: 'manual',
+  preSync: 'antes-da-sincronizacao',
+};
+
 export function backupInfo(kind: BackupInfo['kind'], createdAt: number, size: number): BackupInfo {
   const d = new Date(createdAt);
   const pad = (n: number) => String(n).padStart(2, '0');
   const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}`;
-  const prefix = kind === 'daily' ? 'diario' : kind === 'preImport' ? 'antes-de-importar' : 'manual';
+  const prefix = BACKUP_PREFIX[kind];
   const fileName = `backup-${prefix}-${stamp}.colpkg`;
   return { path: `${MOCK_BACKUPS_DIR}/${fileName}`, fileName, kind, createdAt, size };
 }
