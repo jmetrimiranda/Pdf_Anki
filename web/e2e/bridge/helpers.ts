@@ -265,16 +265,22 @@ export async function importBytes(page: Page, filePath: string, bytes: Uint8Arra
     if (await page.evaluate((p) => window.__leitorMock!.files.includes(p), filePath)) break;
     if (attempt >= 3) throw new Error(`could not seed ${filePath} into the mock core`);
   }
-  const before = new Set((await mockBooks(page)).map((b) => b.bookUid));
+  // "Abrir com" reaches only a shell that already listens (an effect after the first render): wait for it rather than
+  // trusting the fixed pause above.
+  await page.waitForFunction(() => !!window.__leitorMock?.listeningToOpenPaths, undefined, { timeout: 60_000 });
+  const before = (await mockBooks(page)).map((b) => b.bookUid);
   await page.evaluate((p) => window.__leitorMock!.openPaths([p]), filePath);
-  let uid = '';
-  await expect
-    .poll(async () => {
-      const added = (await mockBooks(page)).find((b) => !before.has(b.bookUid));
-      uid = added?.bookUid ?? '';
-      return uid;
-    })
-    .not.toBe('');
+  // The import itself takes milliseconds, but it opens the book in the Leitor at once, and PdfCraft's start-up
+  // (WebAssembly compile + software WebGL) then keeps the page's main thread busy for seconds on a slow machine
+  // (4 vCPUs, another test in parallel). Polling from here would pay one blocked round trip per sample: wait in the
+  // page for the new entry instead, with room for the slowest machine.
+  const added = await page.waitForFunction(
+    (known) => window.__leitorMock!.books.find((b) => !known.includes(b.bookUid))?.bookUid ?? '',
+    before,
+    { polling: 100, timeout: 60_000 },
+  );
+  const uid = (await added.jsonValue()) as string;
+  await added.dispose();
   return uid;
 }
 

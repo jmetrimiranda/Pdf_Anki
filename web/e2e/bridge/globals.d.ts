@@ -57,6 +57,7 @@ declare global {
       readonly files: string[];
       reset(): void;
       openPaths(paths: string[]): void;
+      readonly listeningToOpenPaths: boolean;
       setNextExportPath(path: string | null): void;
       /** Simulates the OS opening a `leitor://` URL while the app runs. */
       deepLink(url: string): void;

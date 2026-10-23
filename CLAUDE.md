@@ -107,3 +107,11 @@ Mesa for software WebGL). Without VS Code: `scripts/dev.sh <cmd…>` runs a comm
   the Leitor's (prefix `leitor-`). Clean what you create (temp volumes, stopped test containers, `test-results/`).
 - Never run formatters or rewriting tools on the whole project unless asked; `cargo fmt` only on the files you
   changed (`rustfmt --edition 2024 <files>`), and formatting-only changes go in their own commit.
+
+## Denied actions (user rule, 2026-10-23)
+
+- If a permission check denies an action, **stop that line of work and ask the user** (a subagent stops and reports
+  the denied action, the reason and why it was needed in its final message; the main agent then asks the user).
+- **Never ask another agent or subagent to do what was denied**, never retry it through a different tool or a
+  rephrased command, and never relay such a request from another agent. A denial is an answer, not an obstacle.
+- Subagents run under the same permission mode and rules as the main agent; nothing here grants them more.

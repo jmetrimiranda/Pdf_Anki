@@ -792,8 +792,10 @@ export interface LeitorMockHandle extends MockSyncHandle {
   setNextExportPath(path: string | null): void;
   /** Paths returned by the next `pendingOpenPaths()` (launch with "Abrir com"). */
   setPendingOpen(paths: string[]): void;
-  /** Simulates "Abrir com" while running. */
+  /** Simulates "Abrir com" while running (dropped, like the real event, while the shell isn't listening yet). */
   openPaths(paths: string[]): void;
+  /** Whether the shell listens to "Abrir com" (`onOpenPaths`; registered in an effect after the first render). */
+  readonly listeningToOpenPaths: boolean;
   /** Simulates dropping files on the window. */
   dropPaths(paths: string[]): void;
   /** The mock Anki collection. */
@@ -974,6 +976,9 @@ export const mockHandle: LeitorMockHandle = {
   },
   openPaths(paths) {
     for (const cb of openPathListeners) cb(paths);
+  },
+  get listeningToOpenPaths() {
+    return openPathListeners.size > 0;
   },
   dropPaths(paths) {
     for (const cb of dropListeners) cb(paths);
