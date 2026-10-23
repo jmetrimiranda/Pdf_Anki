@@ -14,12 +14,15 @@ publish = false
 anki = { git = "https://github.com/ankitects/anki", tag = "26.09.3", features = ["rustls"] }
 anki_proto = { git = "https://github.com/ankitects/anki", tag = "26.09.3" }
 
-# --- PdfCraft engine crates (submodule at the commit pinned in docs/decisoes.md).
-pdfcraft-engine = { path = "../third_party/pdfcraft/crates/engine" }
+# --- PdfCraft crates (submodule at the commit pinned in docs/decisoes.md). Not the engine: the
+# reader is PdfCraft's own web UI, so core-pdf only needs the layers below it (spec 2.6, 6.3).
 pdfcraft-render = { path = "../third_party/pdfcraft/crates/render" }
 pdfcraft-annot = { path = "../third_party/pdfcraft/crates/annot" }
 pdfcraft-ocr = { path = "../third_party/pdfcraft/crates/ocr" }
 pdfcraft-cos = { path = "../third_party/pdfcraft/crates/cos" }
+pdfcraft-organize = { path = "../third_party/pdfcraft/crates/organize" }
+# Test-only: PdfCraft's synthetic PDF builder (dev-dependency of core-pdf).
+pdfcraft-testkit = { path = "../third_party/pdfcraft/crates/testkit" }
 
 # --- Our crates
 core-anki = { path = "crates/core-anki" }
@@ -51,7 +54,7 @@ insta = "1.49"
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
-# Copied from third_party/pdfcraft/Cargo.toml: its engine depends on these patched forks.
+# Copied from third_party/pdfcraft/Cargo.toml: its renderer depends on these patched forks.
 # A [patch] only applies at the workspace root, so it must be repeated here (docs/PROJETO.md 2.2).
 # winit and egui-wgpu are left out: they only serve PdfCraft's egui UI, which this app doesn't use.
 [patch.crates-io]

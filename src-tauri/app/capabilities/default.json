@@ -1,17 +1,32 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: the Phase 0 app commands only (the UI uses no core plugin APIs yet)",
+  "description": "Main window: the app commands, events/window basics, and the open dialog; the save dialog is opened by the core in `export_pick_path` (spec 18: minimal)",
   "windows": [
     "main"
   ],
   "permissions": [
+    "core:default",
+    "core:window:allow-destroy",
+    "dialog:allow-open",
     "allow-anki-deck-tree",
-    "allow-doc-open-path",
-    "allow-doc-info",
-    "allow-doc-outline",
+    "allow-library-list",
+    "allow-library-add",
+    "allow-library-remove",
+    "allow-library-update",
+    "allow-book-open",
+    "allow-book-bytes",
+    "allow-book-save-version",
+    "allow-export-pick-path",
+    "allow-book-export",
+    "allow-export-bytes",
+    "allow-book-open-external",
     "allow-doc-words",
-    "allow-doc-search",
-    "allow-doc-close"
+    "allow-position-get",
+    "allow-position-set",
+    "allow-reading-session-start",
+    "allow-reading-session-heartbeat",
+    "allow-reading-session-stop",
+    "allow-pending-open-paths"
   ]
 }

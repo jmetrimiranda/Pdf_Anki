@@ -1,43 +1,73 @@
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use core_anki::AnkiService;
-use core_pdf::{DocHandle, DocumentEngine, PdfcraftEngine};
-use core_store::Store;
+use core_pdf::{DocHandle, PdfCore};
+use core_store::{Clock, ReadingTracker, Store, SystemClock};
 
 use crate::error::AppError;
+use crate::files::BookFiles;
+
+/// Documents `doc_words` keeps open, keyed by book and file version.
+const DOC_CACHE_SIZE: usize = 3;
 
 /// Everything the commands and protocols share. Managed by Tauri as `Arc<AppState>` so that
 /// blocking work can take a clone off the async runtime.
 ///
 /// The collection and the store open lazily (and are retried after a failure, e.g. when another
 /// instance holds the collection), so a broken data dir never keeps the window from showing.
+///
+/// Lock order: `library_lock` → `tracker` → `store`; `docs` is never held across another lock.
 pub struct AppState {
     data_dir: PathBuf,
+    files: BookFiles,
     anki: Mutex<Option<AnkiService>>,
     /// A throwaway collection for the smoke check, which seeds demo decks: they must never
     /// reach the user's collection (and, from Phase 3, AnkiWeb).
     smoke_anki: Mutex<Option<AnkiService>>,
     store: Mutex<Option<Store>>,
-    pdf: PdfcraftEngine,
-    /// The document opened by the last smoke run, closed by the next one.
-    smoke_doc: Mutex<Option<DocHandle>>,
+    pdf: Arc<PdfCore>,
+    /// `doc_words` documents, most recently used last: `(book_uid, file_hash, handle)`.
+    docs: Mutex<VecDeque<(String, String, DocHandle)>>,
+    /// Serialises library changes (imports, versions, removals) so version numbers and files
+    /// never race.
+    library_lock: Mutex<()>,
+    tracker: Mutex<ReadingTracker<Arc<dyn Clock>>>,
+    /// PDF paths from the command line ("Abrir com"), handed to the UI once.
+    open_paths: Mutex<Vec<String>>,
+    shutting_down: AtomicBool,
 }
 
 impl AppState {
     pub fn new(data_dir: PathBuf) -> Self {
+        Self::with_clock(data_dir, Arc::new(SystemClock))
+    }
+
+    /// Same as [`AppState::new`] with the clock of the reading sessions injected (tests).
+    pub fn with_clock(data_dir: PathBuf, clock: Arc<dyn Clock>) -> Self {
         Self {
+            files: BookFiles::new(&data_dir),
             data_dir,
             anki: Mutex::new(None),
             smoke_anki: Mutex::new(None),
             store: Mutex::new(None),
-            pdf: PdfcraftEngine::new(),
-            smoke_doc: Mutex::new(None),
+            pdf: Arc::new(PdfCore::new()),
+            docs: Mutex::new(VecDeque::new()),
+            library_lock: Mutex::new(()),
+            tracker: Mutex::new(ReadingTracker::new(clock)),
+            open_paths: Mutex::new(Vec::new()),
+            shutting_down: AtomicBool::new(false),
         }
     }
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    pub fn files(&self) -> &BookFiles {
+        &self.files
     }
 
     pub fn anki_dir(&self) -> PathBuf {
@@ -63,27 +93,120 @@ impl AppState {
     }
 
     /// Runs `f` with the app database, opening it on first use. Blocks.
+    ///
+    /// Opening also closes the reading sessions a crash left open (spec 6.4).
     pub fn with_store<R>(
         &self,
         f: impl FnOnce(&mut Store) -> core_store::Result<R>,
     ) -> Result<R, AppError> {
         let mut slot = lock(&self.store);
         if slot.is_none() {
-            let store = Store::open(self.store_path())?;
+            let mut store = Store::open(self.store_path())?;
             tracing::info!(path = %self.store_path().display(), "app database open");
+            // A fresh tracker owns no session, so every open row is a leftover.
+            match ReadingTracker::new(SystemClock).recover(&mut store) {
+                Ok(report) if !report.closed.is_empty() || report.discarded > 0 => {
+                    tracing::info!(
+                        closed = report.closed.len(),
+                        discarded = report.discarded,
+                        "reading sessions recovered"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(%e, "could not recover the reading sessions"),
+            }
             *slot = Some(store);
         }
-        let store = slot.as_mut().expect("store was just opened");
+        let Some(store) = slot.as_mut() else {
+            return Err(AppError::internal("store slot empty after open"));
+        };
         Ok(f(store)?)
     }
 
-    pub fn pdf(&self) -> &PdfcraftEngine {
+    pub fn pdf(&self) -> &PdfCore {
         &self.pdf
     }
 
-    /// Remembers the smoke document and returns the previous one.
-    pub fn replace_smoke_doc(&self, doc: DocHandle) -> Option<DocHandle> {
-        lock(&self.smoke_doc).replace(doc)
+    pub(crate) fn library_guard(&self) -> MutexGuard<'_, ()> {
+        lock(&self.library_lock)
+    }
+
+    pub(crate) fn tracker(&self) -> MutexGuard<'_, ReadingTracker<Arc<dyn Clock>>> {
+        lock(&self.tracker)
+    }
+
+    /// The open document for `(book_uid, file_hash)`, opening it with `open` on a miss. The least
+    /// recently used document is closed beyond [`DOC_CACHE_SIZE`].
+    pub(crate) fn cached_doc(
+        &self,
+        book_uid: &str,
+        file_hash: &str,
+        open: impl FnOnce() -> Result<DocHandle, AppError>,
+    ) -> Result<DocHandle, AppError> {
+        {
+            let mut docs = lock(&self.docs);
+            if let Some(i) = docs
+                .iter()
+                .position(|(u, h, _)| u == book_uid && h == file_hash)
+                && let Some(entry) = docs.remove(i)
+            {
+                let handle = entry.2;
+                docs.push_back(entry);
+                return Ok(handle);
+            }
+        }
+        // Opened without the lock: parsing a big file must not block other books.
+        let handle = open()?;
+        let evicted: Vec<DocHandle> = {
+            let mut docs = lock(&self.docs);
+            docs.push_back((book_uid.to_owned(), file_hash.to_owned(), handle));
+            let mut out = Vec::new();
+            while docs.len() > DOC_CACHE_SIZE {
+                if let Some((_, _, h)) = docs.pop_front() {
+                    out.push(h);
+                }
+            }
+            out
+        };
+        for h in evicted {
+            self.pdf.close(h);
+        }
+        Ok(handle)
+    }
+
+    /// Closes the cached documents of a book (a new version was saved or the book was removed).
+    pub(crate) fn invalidate_docs(&self, book_uid: &str) {
+        let closed: Vec<DocHandle> = {
+            let mut docs = lock(&self.docs);
+            let (gone, kept): (Vec<_>, Vec<_>) =
+                docs.drain(..).partition(|(u, _, _)| u == book_uid);
+            docs.extend(kept);
+            gone.into_iter().map(|(_, _, h)| h).collect()
+        };
+        for h in closed {
+            self.pdf.close(h);
+        }
+    }
+
+    /// How many documents `doc_words` keeps open (tests).
+    pub fn open_doc_count(&self) -> usize {
+        lock(&self.docs).len()
+    }
+
+    /// Queues "Abrir com" paths for the UI.
+    pub fn push_open_paths(&self, paths: Vec<String>) {
+        if !paths.is_empty() {
+            lock(&self.open_paths).extend(paths);
+        }
+    }
+
+    /// The queued "Abrir com" paths; each one is returned once.
+    pub fn take_open_paths(&self) -> Vec<String> {
+        std::mem::take(&mut *lock(&self.open_paths))
+    }
+
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Relaxed)
     }
 
     /// Opens the collection and the database in the background so the first command is fast.
@@ -92,11 +215,11 @@ impl AppState {
         let spawned = std::thread::Builder::new()
             .name("warm-up".into())
             .spawn(move || {
-                if let Err(e) = state.anki() {
-                    tracing::warn!(code = %e.code, "could not open the Anki collection: {e}");
-                }
                 if let Err(e) = state.with_store(|s| s.schema_version()) {
                     tracing::warn!(code = %e.code, "could not open the app database: {e}");
+                }
+                if let Err(e) = state.anki() {
+                    tracing::warn!(code = %e.code, "could not open the Anki collection: {e}");
                 }
             });
         if let Err(e) = spawned {
@@ -104,8 +227,10 @@ impl AppState {
         }
     }
 
-    /// Closes the collection cleanly (flushes and releases the SQLite lock) and every document.
+    /// Closes the collection cleanly (flushes and releases the SQLite lock), the database and
+    /// every document.
     pub fn shutdown(&self) {
+        self.shutting_down.store(true, Ordering::Relaxed);
         for slot in [&self.anki, &self.smoke_anki] {
             if let Some(svc) = lock(slot).take()
                 && let Err(e) = svc.shutdown()
@@ -114,6 +239,7 @@ impl AppState {
             }
         }
         lock(&self.store).take();
+        lock(&self.docs).clear();
         for doc in self.pdf.open_documents() {
             self.pdf.close(doc);
         }
@@ -131,6 +257,6 @@ fn open_service(slot: &Mutex<Option<AnkiService>>, dir: &Path) -> Result<AnkiSer
     Ok(svc)
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }

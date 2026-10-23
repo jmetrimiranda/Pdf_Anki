@@ -25,26 +25,6 @@ export interface DeckTree {
   studiedToday: StudiedToday;
 }
 
-export interface PageSize {
-  width: number;
-  height: number;
-}
-
-export interface DocInfo {
-  docId: string;
-  pageCount: number;
-  pages: PageSize[];
-  title: string | null;
-  author: string | null;
-}
-
-export interface OutlineItem {
-  title: string;
-  /** 0-based page index, or null when the destination could not be resolved. */
-  page: number | null;
-  children: OutlineItem[];
-}
-
 export interface PageWord {
   /** Word number on the page. */
   index: number;
@@ -63,21 +43,6 @@ export interface PageWords {
   words: PageWord[];
 }
 
-export interface SearchHit {
-  page: number;
-  rects: Rect[];
-  context: string;
-}
-
-export interface SmokeReport {
-  collectionPath: string;
-  deckTree: DeckTree;
-  doc: DocInfo;
-  page1Url: string;
-  words: number;
-  millis: { anki: number; pdfOpen: number; pdfText: number };
-}
-
 /** Error payload of every command: `{ code, message }` with a pt-BR message. */
 export interface CoreErrorPayload {
   code: string;
@@ -93,25 +58,160 @@ export class CoreError extends Error implements CoreErrorPayload {
   }
 }
 
-export interface PageImageOptions {
-  /** Output pixels per point. */
-  scale: number;
-  theme?: 'claro' | 'sepia' | 'escuro';
-  /** Low-detail render for thumbnails (spec 6.2: `preview: true`). */
-  preview?: boolean;
+// ---------------------------------------------------------------- library (spec 6.6, 14)
+
+export type BookFormat = 'pdf' | 'epub';
+export type OcrStatus = 'none' | 'running' | 'done' | 'failed';
+
+/** A library book (`core-store` `Book`, serde camelCase). Times are epoch ms, UTC. */
+export interface Book {
+  /** Lowercase hex sha256 of the ORIGINAL file; never changes with annotations. */
+  bookUid: string;
+  title: string;
+  author: string | null;
+  language: string;
+  format: BookFormat;
+  fileName: string;
+  pages: number;
+  hasText: boolean;
+  ocrStatus: OcrStatus;
+  /** sha256 of the current version of the file (with PdfCraft's annotations). */
+  fileHash: string;
+  /** 1 for the original, +1 per saved version. */
+  fileVersion: number;
+  contentDeckId: number | null;
+  collectionFolder: string | null;
+  addedAt: number;
+  updatedAt: number;
+  /** Where the current version is on this device (not synced). */
+  localPath: string | null;
+  localHash: string | null;
+  downloaded: boolean;
 }
 
-/** One function per Tauri command (Phase 0 subset, spec 15), plus the page image URL builder. */
+/** Where the reader was in a book. `page` is 0-based, `progress` is 0..=1. */
+export interface ReadingPosition {
+  page: number;
+  offset: number;
+  cfi: string | null;
+  progress: number;
+  updatedAt: number;
+}
+
+export type LibraryEntry = Book & { position: ReadingPosition | null };
+
+/**
+ * `created`: new book; `existing`: already in the library (nothing changed); `restored`: a removed
+ * book is back; `newVersion`: the file carries the `LeitorBookUid` of a library book and became its
+ * current version; `otherVersion`: it carries that stamp but differs from the current version and nothing
+ * changed (ask the user, then call again with `replace`; the replaced version is kept on disk).
+ */
+export type AddOutcome = 'created' | 'existing' | 'restored' | 'newVersion' | 'otherVersion';
+
+export interface AddedBook {
+  book: LibraryEntry;
+  outcome: AddOutcome;
+}
+
+/** Partial update: a missing field is left alone; `null` clears a nullable field. */
+export interface BookPatch {
+  title?: string;
+  author?: string | null;
+  language?: string;
+  contentDeckId?: number | null;
+  collectionFolder?: string | null;
+  /** Page count as reported by PdfCraft when it differs from the import's. */
+  pages?: number;
+}
+
+/** `book_open`: the book and the page to open it at (last page read, 0-based). */
+export interface BookOpenInfo {
+  book: LibraryEntry;
+  page: number;
+}
+
+/** `book_save_version`: `changed` is false when the bytes equal the current version. */
+export interface SavedVersion {
+  fileHash: string;
+  fileVersion: number;
+  changed: boolean;
+  /** The save was based on an older version than the current one; the core kept that current version as a copy. */
+  keptNewer: boolean;
+}
+
+/** Why a reading session ended (spec 6.4). */
+export type StopReason = 'tab' | 'doc' | 'idle' | 'background' | 'close' | 'review';
+
+// ---------------------------------------------------------------- dev
+
+export interface SmokeReport {
+  doc: { pageCount: number; title: string | null; author: string | null };
+  /** First page as a PNG data URL (the cover the core draws). */
+  page1DataUrl: string;
+  words: number;
+  millis: { anki: number; pdfOpen: number; pdfText: number; cover: number };
+}
+
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+export type Unlisten = () => void;
+
+/** One function per Tauri command (spec 15), plus the platform helpers the UI needs. */
 export interface CoreClient {
   readonly kind: 'tauri' | 'mock';
+
+  // Anki
   ankiDeckTree(): Promise<DeckTree>;
-  docOpenPath(path: string): Promise<DocInfo>;
-  docInfo(docId: string): Promise<DocInfo>;
-  docOutline(docId: string): Promise<OutlineItem[]>;
-  docWords(docId: string, page: number): Promise<PageWords>;
-  docSearch(docId: string, q: string): Promise<SearchHit[]>;
-  docClose(docId: string): Promise<void>;
+
+  // Library
+  libraryList(): Promise<LibraryEntry[]>;
+  libraryAdd(path: string, opts?: { replace?: boolean }): Promise<AddedBook>;
+  libraryRemove(uid: string): Promise<void>;
+  libraryUpdate(uid: string, patch: BookPatch): Promise<LibraryEntry>;
+  bookOpen(uid: string): Promise<BookOpenInfo>;
+
+  // Document
+  /** Bytes of the current version (for `pdfcraft:open`), over raw IPC. */
+  bookBytes(uid: string): Promise<ArrayBuffer>;
+  /** Stores bytes from `pdfcraft:save` as a new version (raw IPC body, uid in a header). */
+  /** `baseVersion`: the `fileVersion` the PdfCraft tab was opened from (see `SavedVersion.keptNewer`). */
+  bookSaveVersion(uid: string, bytes: ArrayBuffer, baseVersion?: number): Promise<SavedVersion>;
+  /** Copies the current version to `path` (from `pickExportPath`). */
+  bookExport(uid: string, path: string): Promise<void>;
+  /** Writes bytes to the path just chosen in `pickExportPath` (export of a document outside the library). */
+  exportBytes(path: string, bytes: ArrayBuffer): Promise<void>;
+  /** Opens the current version in the system's default PDF viewer. */
+  bookOpenExternal(uid: string): Promise<void>;
+  docWords(uid: string, page: number): Promise<PageWords>;
+
+  // Reading
+  positionGet(uid: string): Promise<ReadingPosition | null>;
+  positionSet(uid: string, page: number, progress: number): Promise<void>;
+  readingSessionStart(uid: string, page: number): Promise<void>;
+  readingSessionHeartbeat(uid: string, page: number): Promise<void>;
+  /** Ends `uid`'s session; a no-op when another book's session is open (a late stop). */
+  readingSessionStop(uid: string | null, reason: StopReason): Promise<void>;
+
+  // Platform
+  /** Paths the app was launched with ("Abrir com"), consumed once. */
+  pendingOpenPaths(): Promise<string[]>;
   devSmoke(): Promise<SmokeReport>;
-  /** URL of a rendered page (0-based). Always goes through `protocolUrl` in Tauri. */
-  pageImageUrl(docId: string, page: number, opts: PageImageOptions): string;
+  /** Forwards a UI log line to the core's log (no-op in the mock). */
+  devLog(level: LogLevel, message: string): Promise<void>;
+  /** Library cover (first page). `fileVersion` busts the cache when a new version is saved. */
+  coverUrl(uid: string, fileVersion: number): string;
+  /** Native "open files" dialog (PDF). Empty when cancelled. */
+  pickBookFiles(): Promise<string[]>;
+  /** Native "save as" dialog, opened by the core; the chosen path is the only one `bookExport`/`exportBytes`
+   *  will write to, once. `null` when cancelled. */
+  pickExportPath(defaultName: string): Promise<string | null>;
+  /** Files opened with the app while it is running ("Abrir com", second instance). */
+  onOpenPaths(cb: (paths: string[]) => void): Unlisten;
+  /** Files dropped on the window; `onHover` reports when a drag enters/leaves it. */
+  onDragDropPaths(cb: (paths: string[]) => void, onHover?: (hovering: boolean) => void): Unlisten;
+  /**
+   * Window close: the close is held until `handler` resolves; `true` closes the window,
+   * `false` keeps it open.
+   */
+  onWindowCloseRequested(handler: () => Promise<boolean>): Unlisten;
 }

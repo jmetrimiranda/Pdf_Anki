@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectUrlStyle, pdfRenderUrl, protocolUrl } from './protocol';
+import { detectUrlStyle, protocolUrl } from './protocol';
 
 const UA = {
   linux: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko)',
@@ -13,7 +13,7 @@ describe('protocolUrl', () => {
   it('uses scheme://localhost on Linux, macOS and iOS', () => {
     for (const ua of [UA.linux, UA.mac, UA.ios]) {
       expect(detectUrlStyle(ua)).toBe('scheme');
-      expect(protocolUrl('pdf', 'render/a/0', detectUrlStyle(ua))).toBe('pdf://localhost/render/a/0');
+      expect(protocolUrl('pdf', 'cover/a', detectUrlStyle(ua))).toBe('pdf://localhost/cover/a');
     }
   });
 
@@ -24,21 +24,12 @@ describe('protocolUrl', () => {
     }
   });
 
+  it('builds library cover URLs', () => {
+    expect(protocolUrl('pdf', 'cover/abc?v=2', 'scheme')).toBe('pdf://localhost/cover/abc?v=2');
+    expect(protocolUrl('pdf', 'cover/abc?v=2', 'http')).toBe('http://pdf.localhost/cover/abc?v=2');
+  });
+
   it('strips leading slashes', () => {
     expect(protocolUrl('card', '//media/a.png', 'scheme')).toBe('card://localhost/media/a.png');
-  });
-});
-
-describe('pdfRenderUrl', () => {
-  it('builds the spec 6.2 route', () => {
-    expect(pdfRenderUrl('doc 1', 0, { scale: 1.5, theme: 'sepia' }, 'scheme')).toBe(
-      'pdf://localhost/render/doc%201/0?escala=1.5&tema=sepia',
-    );
-    expect(pdfRenderUrl('d', 3, { scale: 2, tile: [0, 10.5, 100, 200] }, 'http')).toBe(
-      'http://pdf.localhost/render/d/3?escala=2&bloco=0,10.5,100,200',
-    );
-    expect(pdfRenderUrl('d', 0, { scale: 0.6, theme: 'escuro', preview: true }, 'scheme')).toBe(
-      'pdf://localhost/render/d/0?escala=0.6&tema=escuro&previa=1',
-    );
   });
 });

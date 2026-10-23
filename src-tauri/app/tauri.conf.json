@@ -7,7 +7,7 @@
     "frontendDist": "../../web/dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "pnpm --filter @leitor/web dev",
-    "beforeBuildCommand": "pnpm --filter @leitor/web build"
+    "beforeBuildCommand": "pnpm --filter @leitor/web exec bash ../scripts/build-pdfcraft-web.sh && pnpm --filter @leitor/web build"
   },
   "app": {
     "windows": [
@@ -24,30 +24,57 @@
     "security": {
       "csp": {
         "default-src": "'self'",
-        "script-src": "'self'",
+        "script-src": "'self' 'wasm-unsafe-eval'",
         "style-src": "'self' 'unsafe-inline'",
         "img-src": "'self' data: blob: pdf: http://pdf.localhost",
         "font-src": "'self' data:",
-        "connect-src": "'self' ipc: http://ipc.localhost pdf: http://pdf.localhost",
+        "connect-src": "'self' ipc: http://ipc.localhost pdf: http://pdf.localhost data: blob:",
+        "worker-src": "'self' blob:",
+        "frame-src": "'self'",
         "object-src": "'none'",
         "base-uri": "'self'",
         "form-action": "'none'",
-        "frame-ancestors": "'none'"
+        "frame-ancestors": "'self'"
       },
       "devCsp": {
         "default-src": "'self'",
-        "script-src": "'self' 'unsafe-inline'",
+        "script-src": "'self' 'wasm-unsafe-eval' 'unsafe-inline'",
         "style-src": "'self' 'unsafe-inline'",
         "img-src": "'self' data: blob: pdf: http://pdf.localhost",
         "font-src": "'self' data:",
-        "connect-src": "'self' ipc: http://ipc.localhost pdf: http://pdf.localhost ws://localhost:5173 http://localhost:5173",
+        "connect-src": "'self' ipc: http://ipc.localhost pdf: http://pdf.localhost data: blob: ws://localhost:5173 http://localhost:5173",
+        "worker-src": "'self' blob:",
+        "frame-src": "'self'",
         "object-src": "'none'",
         "base-uri": "'self'",
         "form-action": "'none'",
-        "frame-ancestors": "'none'"
+        "frame-ancestors": "'self'"
       },
-      "dangerousDisableAssetCspModification": ["style-src"]
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ]
     }
   },
-  "bundle": { "active": true, "targets": "all", "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png", "icons/icon.ico"] }
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "pdf"
+        ],
+        "mimeType": "application/pdf",
+        "name": "PDF",
+        "description": "Documento PDF",
+        "role": "Viewer"
+      }
+    ]
+  }
 }

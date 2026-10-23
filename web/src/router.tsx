@@ -5,10 +5,10 @@ import {
   createRouter,
   lazyRouteComponent,
   redirect,
+  type RouterHistory,
 } from '@tanstack/react-router';
 import { AnkiPage } from './features/anki/AnkiPage';
 import { LibraryPage } from './features/library/LibraryPage';
-import { DocPage } from './features/reader/DocPage';
 import { AppShell } from './features/shell/AppShell';
 import { devRoutesEnabled } from './features/shell/devRoutes';
 import { NotFound } from './features/shell/NotFound';
@@ -34,14 +34,8 @@ const indexRoute = createRoute({
 
 const libraryRoute = createRoute({ getParentRoute: () => rootRoute, path: '/biblioteca', component: LibraryPage });
 
-const docRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/doc/$docId',
-  component: function DocRoute() {
-    const { docId } = docRoute.useParams();
-    return <DocPage key={docId} docId={docId} />;
-  },
-});
+// The reader itself is <LeitorHost/>, kept mounted by AppShell; this route only selects the tab.
+const leitorRoute = createRoute({ getParentRoute: () => rootRoute, path: '/leitor', component: () => null });
 
 const ankiRoute = createRoute({ getParentRoute: () => rootRoute, path: '/anki', component: AnkiPage });
 
@@ -59,16 +53,22 @@ const devSmokeRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   libraryRoute,
-  docRoute,
+  leitorRoute,
   ankiRoute,
   ...(devRoutesEnabled ? [devUiRoute, devSmokeRoute] : []),
 ]);
 
-export const router = createRouter({
-  routeTree,
-  context: { queryClient },
-  defaultPreload: false,
-});
+/** The app router; tests pass a memory history to get an isolated instance. */
+export function createAppRouter(history?: RouterHistory) {
+  return createRouter({
+    routeTree,
+    context: { queryClient },
+    defaultPreload: false,
+    ...(history ? { history } : {}),
+  });
+}
+
+export const router = createAppRouter();
 
 declare module '@tanstack/react-router' {
   interface Register {

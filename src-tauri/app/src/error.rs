@@ -36,13 +36,7 @@ impl AppError {
 
 impl From<core_pdf::PdfError> for AppError {
     fn from(e: core_pdf::PdfError) -> Self {
-        use core_pdf::PdfError as E;
-        let code = match &e {
-            // Names the web client already relies on.
-            E::UnknownDocument => "doc_not_open".to_owned(),
-            E::Invalid(_) => "pdf_invalid".to_owned(),
-            other => snake_case(other.code()),
-        };
+        let code = snake_case(e.code());
         log_detail("pdf", &e);
         Self::new(code, e.to_string())
     }
@@ -99,12 +93,14 @@ mod tests {
         assert_eq!(snake_case("anki.notFound"), "anki_not_found");
         assert_eq!(snake_case("pageOutOfRange"), "page_out_of_range");
         assert_eq!(snake_case("store_sqlite"), "store_sqlite");
-        let e = AppError::from(core_pdf::PdfError::UnknownDocument);
-        assert_eq!(e.code, "doc_not_open");
-        let e = AppError::from(core_pdf::PdfError::PageOutOfRange { page: 3, count: 2 });
-        assert_eq!(e.code, "page_out_of_range");
-        assert!(e.message.contains('4'));
+        let e = AppError::from(core_pdf::PdfError::Invalid("xref".into()));
+        assert_eq!(e.code, "pdf_invalid");
+        assert!(!e.message.contains("xref"), "details stay in the log");
+        let e = AppError::from(core_pdf::PdfError::NeedsPassword);
+        assert_eq!(e.code, "pdf_needs_password");
         let json = serde_json::to_value(&e).unwrap();
-        assert_eq!(json["code"], "page_out_of_range");
+        assert_eq!(json["code"], "pdf_needs_password");
+        let e = AppError::from(core_store::StoreError::BookNotFound("x".into()));
+        assert_eq!(e.code, "book_not_found");
     }
 }

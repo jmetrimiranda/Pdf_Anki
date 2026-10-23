@@ -1,3 +1,4 @@
 [submodule "third_party/pdfcraft"]
 	path = third_party/pdfcraft
-	url = https://github.com/storytold/pdfcraft
+	url = https://github.com/jmetrimiranda/pdfcraft.git
+	branch = leitor-bridge

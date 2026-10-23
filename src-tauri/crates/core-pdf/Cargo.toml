@@ -1,6 +1,6 @@
 [package]
 name = "core-pdf"
-description = "Facade over the PdfCraft engine: the only crate that knows PdfCraft"
+description = "PDF core without UI: text with positions, covers and metadata through PdfCraft's crates"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,9 +10,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-pdfcraft-engine.workspace = true
 pdfcraft-render.workspace = true
-pdfcraft-annot.workspace = true
+pdfcraft-cos.workspace = true
+pdfcraft-organize.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -20,7 +20,6 @@ unicode-segmentation.workspace = true
 png.workspace = true
 
 [dev-dependencies]
-anyhow.workspace = true
 insta.workspace = true
-pdfcraft-cos.workspace = true
+pdfcraft-testkit.workspace = true
 serde_json.workspace = true

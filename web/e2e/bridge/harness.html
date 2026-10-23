@@ -1,0 +1,55 @@
+<!doctype html>
+<!--
+  PdfCraft web alone, embedded the bare minimum way (one same-origin iframe, the bridge, nothing else): the baseline
+  the app is measured against in perf.spec.ts. Served by the Vite dev server at /e2e/bridge/harness.html.
+  ?file=/__e2e__/x.pdf&id=<64 hex>: posts pdfcraft:open with that file once PdfCraft is ready.
+  &w=960&h=776 (optional): fixed iframe size, to match the app's Leitor iframe in a bigger window (the real-app run).
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>PdfCraft harness</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+      }
+      iframe {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <iframe id="pdfcraft" title="PdfCraft" src="/pdfcraft/index.html?host=parent"></iframe>
+    <script type="module">
+      const params = new URLSearchParams(location.search);
+      const file = params.get('file');
+      const id = params.get('id') ?? 'f'.repeat(64);
+      const frame = document.getElementById('pdfcraft');
+      const [w, h] = [Number(params.get('w')), Number(params.get('h'))];
+      if (w > 0 && h > 0) Object.assign(frame.style, { width: `${w}px`, height: `${h}px` });
+      const perf = (window.__harness = { readyAt: null, openAt: null, activeAt: null, messages: [] });
+      addEventListener('message', async (e) => {
+        if (e.origin !== location.origin || e.source !== frame.contentWindow) return;
+        const m = e.data;
+        perf.messages.push({ type: m.type, id: m.id ?? null, page: m.page ?? null, at: performance.now() });
+        if (m.type === 'pdfcraft:ready' && file) {
+          perf.readyAt = performance.now();
+          const bytes = await (await fetch(file)).arrayBuffer();
+          perf.openAt = performance.now();
+          frame.contentWindow.postMessage(
+            { type: 'pdfcraft:open', name: file.split('/').pop(), bytes, id, infoKey: 'LeitorBookUid' },
+            location.origin,
+            [bytes],
+          );
+        }
+        if (m.type === 'pdfcraft:active' && m.id === id && perf.activeAt === null) perf.activeAt = performance.now();
+      });
+    </script>
+  </body>
+</html>

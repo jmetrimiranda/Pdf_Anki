@@ -92,7 +92,7 @@ function Gallery({ theme }: { theme: AppTheme }) {
         <Section title={t('dev.ui.buttons')}>
           <Row>
             <Button variant="primary" icon={FolderOpen}>
-              {t('library.openFile')}
+              {t('library.add')}
             </Button>
             <Button>{t('common.cancel')}</Button>
             <Button variant="ghost" icon={Pencil}>
@@ -116,7 +116,7 @@ function Gallery({ theme }: { theme: AppTheme }) {
             <Button disabled>{t('dev.ui.disabled')}</Button>
           </Row>
           <Row>
-            <IconButton icon={Search} label={t('reader.search')} shortcut="Ctrl+F" />
+            <IconButton icon={Search} label={t('dev.ui.search')} shortcut="Ctrl+F" />
             <IconButton icon={Copy} label={t('dev.ui.copy')} variant="neutral" />
             <IconButton icon={Settings} label={t('settings.label')} active />
             <IconButton icon={Share2} label={t('dev.ui.share')} size="sm" />
@@ -137,8 +137,8 @@ function Gallery({ theme }: { theme: AppTheme }) {
                 </Select>
               )}
             </Field>
-            <Field label={t('reader.search')}>
-              {({ id }) => <Input id={id} leading={<Search size={14} />} placeholder={t('reader.searchPlaceholder')} />}
+            <Field label={t('dev.ui.search')}>
+              {({ id }) => <Input id={id} leading={<Search size={14} />} placeholder={t('dev.ui.searchPlaceholder')} />}
             </Field>
             <Field label={t('dev.ui.path')} error={t('dev.ui.pathError')}>
               {({ id, describedBy, invalid }) => (
@@ -159,13 +159,13 @@ function Gallery({ theme }: { theme: AppTheme }) {
           </Row>
           <Row>
             <SegmentedControl
-              label={t('reader.readingTheme')}
+              label={t('dev.ui.readingTheme')}
               value={seg}
               onChange={setSeg}
               options={[
-                { value: 'claro', label: t('reader.theme.light') },
-                { value: 'sepia', label: t('reader.theme.sepia') },
-                { value: 'escuro', label: t('reader.theme.dark') },
+                { value: 'claro', label: t('dev.ui.theme.light') },
+                { value: 'sepia', label: t('dev.ui.theme.sepia') },
+                { value: 'escuro', label: t('dev.ui.theme.dark') },
               ]}
             />
           </Row>
@@ -175,18 +175,24 @@ function Gallery({ theme }: { theme: AppTheme }) {
           <div>
             <Tabs
               idBase={`dev-${theme}`}
-              label={t('reader.leftPanel')}
+              label={t('dev.ui.sidePanel')}
               value={tab}
               onValueChange={setTab}
               items={[
-                { value: 'sumario', label: t('reader.outline') },
-                { value: 'miniaturas', label: t('reader.thumbs') },
-                { value: 'anotacoes', label: t('reader.notes') },
+                { value: 'sumario', label: t('dev.ui.tabOutline') },
+                { value: 'miniaturas', label: t('dev.ui.tabThumbs') },
+                { value: 'anotacoes', label: t('dev.ui.tabNotes') },
               ]}
             />
             <TabPanel idBase={`dev-${theme}`} value={tab} active className="pt-3 text-base text-muted">
               {t('dev.ui.tabContent', {
-                tab: t(tab === 'sumario' ? 'reader.outline' : tab === 'miniaturas' ? 'reader.thumbs' : 'reader.notes'),
+                tab: t(
+                  tab === 'sumario'
+                    ? 'dev.ui.tabOutline'
+                    : tab === 'miniaturas'
+                      ? 'dev.ui.tabThumbs'
+                      : 'dev.ui.tabNotes',
+                ),
               })}
             </TabPanel>
           </div>
@@ -202,7 +208,7 @@ function Gallery({ theme }: { theme: AppTheme }) {
                 </Button>
               </div>
             </Card>
-            <Card title={t('book.vocab')}>
+            <Card title={t('dev.ui.vocab')}>
               <ProgressBar value={94} label={t('dev.ui.coverage')} showValue />
               <p className="mt-2 text-xs text-muted">{t('dev.ui.coverageHint')}</p>
             </Card>
@@ -246,7 +252,7 @@ function Gallery({ theme }: { theme: AppTheme }) {
           <div className="flex flex-wrap items-start gap-4">
             <div className={cn(tooltipSurface, 'static animate-none')}>
               <span className="inline-flex items-center gap-2">
-                {t('reader.search')} <Kbd>Ctrl+F</Kbd>
+                {t('dev.ui.search')} <Kbd>Ctrl+F</Kbd>
               </span>
             </div>
             <div className={cn(popoverSurface, 'w-52 animate-none p-1')} role="presentation">
@@ -330,7 +336,7 @@ function Gallery({ theme }: { theme: AppTheme }) {
           </div>
           <Row className="gap-4 text-base text-muted">
             <span className="inline-flex items-center gap-2">
-              <Spinner /> {t('reader.searching')}
+              <Spinner /> {t('dev.ui.searching')}
             </span>
           </Row>
           <ProgressBar value={37} label={t('dev.ui.progress')} showValue />
@@ -345,7 +351,7 @@ function Gallery({ theme }: { theme: AppTheme }) {
               description={t('library.emptyHint')}
               action={
                 <Button variant="primary" icon={FolderOpen}>
-                  {t('library.openFile')}
+                  {t('library.add')}
                 </Button>
               }
             />

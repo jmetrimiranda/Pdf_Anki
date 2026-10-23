@@ -1,28 +1,23 @@
-//! Words and search hits from PdfCraft's text layer.
+//! Words with rects from PdfCraft's text layer (UAX #29 segmentation mapped back to glyphs).
 
 use std::ops::Range;
 
 use pdfcraft_render::PageText;
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::types::{PageWord, Rect, SearchHit};
-
-/// Characters of context on each side of a search hit.
-const CONTEXT_CHARS: usize = 40;
+use crate::types::{PageWord, Rect};
 
 /// The page text (identical to `PageText::plain_text`) with, per byte, the glyph that produced it
-/// (`None` for the separators PdfCraft inserts), and the byte offset where each glyph starts.
+/// (`None` for the separators PdfCraft inserts).
 struct OwnedText {
     text: String,
     owner: Vec<Option<usize>>,
-    glyph_start: Vec<usize>,
 }
 
 impl OwnedText {
     fn new(pt: &PageText) -> Self {
         let mut text = String::new();
         let mut owner = Vec::new();
-        let mut glyph_start = Vec::with_capacity(pt.glyphs.len());
         let mut prev_line = None;
         for (i, g) in pt.glyphs.iter().enumerate() {
             let line = pt.line_of.get(i).copied();
@@ -39,16 +34,11 @@ impl OwnedText {
                     owner.push(None);
                 }
             }
-            glyph_start.push(text.len());
             text.push_str(&g.text);
             owner.resize(text.len(), Some(i));
             prev_line = line;
         }
-        Self {
-            text,
-            owner,
-            glyph_start,
-        }
+        Self { text, owner }
     }
 }
 
@@ -90,68 +80,6 @@ pub(crate) fn page_words(pt: &PageText) -> (String, Vec<PageWord>) {
 
 fn utf16_len(s: &str) -> usize {
     s.chars().map(char::len_utf16).sum()
-}
-
-/// Finds `query` on one page. Returns at most `limit` hits.
-pub(crate) fn search_page(
-    pt: &PageText,
-    page: usize,
-    query: &str,
-    case_sensitive: bool,
-    whole_words: bool,
-    limit: usize,
-) -> Vec<SearchHit> {
-    let ranges = pt.find_opts_limited(query, case_sensitive, whole_words, limit);
-    if ranges.is_empty() {
-        return Vec::new();
-    }
-    let owned = OwnedText::new(pt);
-    ranges
-        .into_iter()
-        .filter(|r| r.start < r.end && r.end <= pt.glyphs.len())
-        .map(|r| {
-            let start = owned.glyph_start[r.start];
-            let end = owned.glyph_start[r.end - 1] + pt.glyphs[r.end - 1].text.len();
-            SearchHit {
-                page,
-                rects: glyph_rects(pt, r),
-                context: context(&owned.text, start, end),
-            }
-        })
-        .collect()
-}
-
-/// `text[start..end]` with up to `CONTEXT_CHARS` characters on each side, on a single line.
-fn context(text: &str, start: usize, end: usize) -> String {
-    let before: String = {
-        let mut cs: Vec<char> = text[..start]
-            .chars()
-            .rev()
-            .take(CONTEXT_CHARS + 1)
-            .collect();
-        let cut = cs.len() > CONTEXT_CHARS;
-        cs.truncate(CONTEXT_CHARS);
-        cs.reverse();
-        let s: String = cs.into_iter().collect();
-        if cut {
-            format!("…{}", s.trim_start())
-        } else {
-            s
-        }
-    };
-    let after: String = {
-        let mut cs: Vec<char> = text[end..].chars().take(CONTEXT_CHARS + 1).collect();
-        let cut = cs.len() > CONTEXT_CHARS;
-        cs.truncate(CONTEXT_CHARS);
-        let s: String = cs.into_iter().collect();
-        if cut {
-            format!("{}…", s.trim_end())
-        } else {
-            s
-        }
-    };
-    let joined = format!("{before}{}{after}", &text[start..end]);
-    joined.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -269,23 +197,5 @@ mod tests {
             assert_eq!(w.rects.len(), 1);
         }
         assert_eq!(words[0].rects[0], [0.0, 0.0, 15.0, 10.0]);
-    }
-
-    #[test]
-    fn search_gives_rects_and_context() {
-        let pt = sample();
-        let hits = search_page(&pt, 3, "MUNDO", false, false, 10);
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].page, 3);
-        assert_eq!(hits[0].context, "Olá, mundo! fim 2");
-        assert!(search_page(&pt, 0, "MUNDO", true, false, 10).is_empty());
-    }
-
-    #[test]
-    fn long_context_is_cut_with_ellipsis() {
-        let text = format!("{} alvo {}", "a".repeat(100), "b".repeat(100));
-        let start = text.find("alvo").unwrap_or_default();
-        let c = context(&text, start, start + 4);
-        assert!(c.starts_with('…') && c.ends_with('…') && c.contains("alvo"));
     }
 }

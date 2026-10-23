@@ -45,3 +45,59 @@ export async function fullShot(page: Page, path: string) {
   await page.screenshot({ path });
   await page.setViewportSize(size);
 }
+
+/** `window.__leitorMock` (src/lib/core/mock.ts, mock mode only), as seen from the e2e specs. */
+export interface LeitorMockHandle {
+  readonly books: { bookUid: string; title: string; fileVersion: number; fileHash: string }[];
+  readonly savedVersions: { uid: string; fileVersion: number; fileHash: string; size: number; hasBookUid: boolean }[];
+  readonly sessions: {
+    kind: 'start' | 'heartbeat' | 'stop';
+    uid: string | null;
+    page: number | null;
+    reason: string | null;
+  }[];
+  readonly positions: Record<string, { page: number; progress: number }>;
+  readonly files: string[];
+  readonly openedExternally: string[];
+  reset(): void;
+  setNextPick(paths: string[]): void;
+  setNextExportPath(path: string | null): void;
+  setPendingOpen(paths: string[]): void;
+  openPaths(paths: string[]): void;
+  dropPaths(paths: string[]): void;
+}
+
+type MockWindow = { __leitorMock: LeitorMockHandle };
+
+/** Paths the next "Adicionar livro" dialog returns (mock core). */
+export async function setNextPick(page: Page, paths: string[]) {
+  await page.waitForFunction(() => !!(window as unknown as Partial<MockWindow>).__leitorMock);
+  await page.evaluate((p) => (window as unknown as MockWindow).__leitorMock.setNextPick(p), paths);
+}
+
+/** Simulates files dropped on the window (Tauri drag and drop, mock core). */
+export async function dropPaths(page: Page, paths: string[]) {
+  await page.evaluate((p) => (window as unknown as MockWindow).__leitorMock.dropPaths(p), paths);
+}
+
+/** Options applied by the mock core when it loads (before the app reads them), e.g. "Abrir com" paths. */
+export interface MockInit {
+  pendingOpen?: string[];
+  nextPick?: string[];
+}
+
+export async function mockInit(page: Page, init: MockInit) {
+  await page.addInitScript((value) => {
+    (window as unknown as { __leitorMockInit?: unknown }).__leitorMockInit = value;
+  }, init);
+}
+
+/**
+ * The mocked e2e suite does not load the real PdfCraft (that is the bridge suite, e2e/bridge): /pdfcraft/ answers
+ * with an empty page, so the Leitor tab mounts its iframe without the WASM build.
+ */
+export async function stubPdfcraft(page: Page) {
+  await page.route('**/pdfcraft/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>PdfCraft (stub)</title>' }),
+  );
+}

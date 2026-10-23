@@ -71,11 +71,22 @@ interface ToastItem {
   onRetry?: (() => void) | undefined;
 }
 
-interface ToastApi {
-  show: (message: string, opts?: { tone?: NoticeTone; onRetry?: () => void; durationMs?: number }) => void;
+export interface ToastOptions {
+  tone?: NoticeTone;
+  onRetry?: () => void;
+  /** 0 keeps the toast until it is dismissed or replaced. */
+  durationMs?: number;
+  /** Replaces the toast with this id in place (progress toasts). */
+  id?: number;
 }
 
-const ToastContext = createContext<ToastApi>({ show: () => {} });
+interface ToastApi {
+  /** Shows a toast and returns its id. */
+  show: (message: string, opts?: ToastOptions) => number;
+  dismiss: (id: number) => void;
+}
+
+const ToastContext = createContext<ToastApi>({ show: () => 0, dismiss: () => {} });
 
 export function useToast(): ToastApi {
   return useContext(ToastContext);
@@ -85,20 +96,36 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
   const nextId = useRef(1);
 
-  const dismiss = useCallback((id: number) => setItems((xs) => xs.filter((x) => x.id !== id)), []);
+  const timers = useRef(new Map<number, ReturnType<typeof setTimeout>>());
+
+  const dismiss = useCallback((id: number) => {
+    clearTimeout(timers.current.get(id));
+    timers.current.delete(id);
+    setItems((xs) => xs.filter((x) => x.id !== id));
+  }, []);
 
   const show = useCallback<ToastApi['show']>(
     (message, opts = {}) => {
-      const id = nextId.current++;
+      const id = opts.id ?? nextId.current++;
       const tone = opts.tone ?? 'info';
-      setItems((xs) => [...xs.slice(-2), { id, tone, message, onRetry: opts.onRetry }]);
+      const item = { id, tone, message, onRetry: opts.onRetry };
+      setItems((xs) =>
+        xs.some((x) => x.id === id) ? xs.map((x) => (x.id === id ? item : x)) : [...xs.slice(-2), item],
+      );
+      clearTimeout(timers.current.get(id));
+      timers.current.delete(id);
       const duration = opts.durationMs ?? (tone === 'error' ? 8000 : 4000);
-      if (duration > 0) setTimeout(() => dismiss(id), duration);
+      if (duration > 0)
+        timers.current.set(
+          id,
+          setTimeout(() => dismiss(id), duration),
+        );
+      return id;
     },
     [dismiss],
   );
 
-  const api = useMemo(() => ({ show }), [show]);
+  const api = useMemo(() => ({ show, dismiss }), [show, dismiss]);
 
   return (
     <ToastContext.Provider value={api}>

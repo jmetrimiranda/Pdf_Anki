@@ -1,6 +1,15 @@
 # Leitor de Estudos
 
-PDF/EPUB reader with Anki's core inside (Tauri 2 + React). The spec is the source of truth: [docs/PROJETO.md](docs/PROJETO.md).
+PDF/EPUB reader with Anki's core inside (Tauri 2 + React). The spec is the source of truth: [docs/PROJETO.md](docs/PROJETO.md)
+(v1.1).
+
+The reading screen **is PdfCraft's own UI**: the web build of `third_party/pdfcraft/apps/pdfcraft-web` (egui → WebAssembly,
+WebGL canvas) runs in an iframe at the same origin under `/pdfcraft/`, and talks to the app only through `postMessage`
+(the bridge, spec 6.2). The app adds things *around* the iframe (tabs Biblioteca | Leitor | Anki, the "Painel Anki do
+livro") and never restyles what is inside. Annotations and bookmarks are PdfCraft's, saved inside the PDF (autosave →
+new file version, spec 6.5). `core-pdf` uses only `pdfcraft-render`/`-annot`/`-ocr`/`-cos` (+ `-organize` for the Info dict) for page text with word rects,
+covers, metadata/Info (`LeitorBookUid`) and OCR — no `pdfcraft-engine`, no reading renderer.
+
 Decisions: [docs/decisoes.md](docs/decisoes.md) · Progress per phase: [docs/progresso.md](docs/progresso.md) · Upstream API notes: [docs/tecnico/](docs/tecnico/).
 
 Scope for now (user decision, 2026-10-22): desktop only — Linux first, Windows via CI. iOS/iPad deferred, but keep the
@@ -9,21 +18,40 @@ Rust core free of desktop-only APIs (desktop-only code goes behind `cfg(desktop)
 ## Environment
 
 Everything runs in the devcontainer (`.devcontainer/`): Rust 1.97.1, protoc 31.1 (`PROTOC` is set), Node 22 + pnpm, Tauri
-Linux deps, g++/clang, Xvfb. Without VS Code: `scripts/dev.sh <cmd…>` runs a command inside the same image.
+Linux deps, g++/clang, Xvfb, the PdfCraft web toolchain (trunk 0.22.0, wasm-bindgen 0.2.129, wasm-opt/binaryen
+version_131, `wasm32-unknown-unknown`) and the Playwright browsers (`PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`,
+Mesa for software WebGL). Without VS Code: `scripts/dev.sh <cmd…>` runs a command inside the same image
+(`LEITOR_DEV_IMAGE=<tag>` picks another image, `LEITOR_DEV_NETWORK=<net>` joins a docker network).
 
 ## Commands
 
 | What | Command |
 |---|---|
-| Dev desktop | `pnpm --dir web install && cd src-tauri && cargo tauri dev` (or `pnpm --dir web tauri dev`) |
+| PdfCraft web build | `scripts/build-pdfcraft-web.sh` (`--force` to rebuild; ~4 min the first time, "up to date" after) → `src-tauri/resources/pdfcraft-web/` |
+| Dev desktop | `scripts/build-pdfcraft-web.sh` once (again whenever the fork changes), then `pnpm --dir web install && pnpm --dir web tauri dev` |
 | Dev iOS | deferred (see docs/decisoes.md) |
 | Rust tests | `cd src-tauri && cargo test -j 8 --workspace` |
 | Web tests | `pnpm --dir web test` · checkers: `pnpm --dir packages/checkers test` |
-| E2E (mocked core) | `pnpm --dir web e2e` |
+| E2E (mocked core) | `pnpm --dir web e2e:mock` (Chromium + WebKit) |
+| E2E bridge (real PdfCraft web build) | `pnpm --dir web e2e:bridge` (needs the PdfCraft web build; `xvfb-run -a` in CI) · performance: `pnpm --dir web e2e:perf` |
+| Real app bridge probe (debug) | `LEITOR_BRIDGE_PROBE=1 LEITOR_START_ROUTE=/leitor xvfb-run -a src-tauri/target/debug/leitor-estudos [file.pdf]` logs every `pdfcraft:*` message, CSP violations and WebGL support; `LEITOR_BRIDGE_PROBE=perf` also times open → active and scrolling |
+| Real app performance (WebKitGTK, debug build + `perf-500.pdf` from `e2e:perf`) | `scripts/perf-real-app.sh` (inside the devcontainer) → `web/test-results/realapp/summary.txt` |
+| Leitor tab load time (click → `pdfcraft:ready`, later openings; `window.__leitorTimings`) | `pnpm --dir web e2e:load` (Chromium + WebKit) · real app: `scripts/load-real-app.sh` (`CACHE=warm`, `BIN=…/release/leitor-estudos` built with `--features bridge-probe,tauri/custom-protocol`) |
 | Lint | `cd src-tauri && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings` · `pnpm --dir web lint` |
-| Build | `pnpm --dir web tauri build` (AppImage/.deb on Linux, .msi on Windows CI) |
+| Build | `pnpm --dir web tauri build` (AppImage/.deb on Linux, .msi on Windows CI; runs `build-pdfcraft-web.sh` first) |
 | Release | push a tag `v*` → `.github/workflows/release.yml` |
 | Anki web assets | `scripts/fetch-anki-web.sh` (extracts `aqt==26.9.3` web assets to `src-tauri/resources/anki-web/`) |
+
+## PdfCraft fork workflow
+
+- `third_party/pdfcraft` is the fork `jmetrimiranda/pdfcraft`, branch `leitor-bridge` (remote `fork`), based on the
+  pinned upstream commit in docs/decisoes.md. Core crates and the reading screen always come from the **same** commit.
+- Edit only `apps/pdfcraft-web` and the smallest hook points in `crates/ui-egui` (bridge events). Follow PdfCraft's
+  `AGENTS.md`/`CLAUDE.md` (Rust only, never panic, no GPL/AGPL code, their style and tests) so it can go upstream as a PR.
+- Validate in the submodule: `cargo test`/`cargo clippy` of the touched crates and a wasm32 check
+  (`cargo check --target wasm32-unknown-unknown -p pdfcraft-web`; `build-pdfcraft-web.sh` does it through trunk).
+- Commit inside the submodule, `git -C third_party/pdfcraft push fork leitor-bridge`, then commit the new submodule
+  pointer here. Rebasing on upstream `main` is its own PR (re-diff `[patch.crates-io]`, rerun the bridge tests).
 
 ## Rules that bite
 
@@ -31,7 +59,12 @@ Linux deps, g++/clang, Xvfb. Without VS Code: `scripts/dev.sh <cmd…>` runs a c
   pinned source before using an API (`docs/tecnico/` has verified notes).
 - `[patch.crates-io]` in `src-tauri/Cargo.toml` mirrors PdfCraft's; re-diff it whenever the submodule moves.
 - One `rusqlite`/`libsqlite3-sys` in the graph: Anki's (0.36). No sqlx, no Tauri SQL plugin.
-- `core-pdf` is the only crate that touches PdfCraft; `core-anki` (AnkiService actor thread) is the only owner of the collection.
+- `core-pdf` is the only Rust crate that touches PdfCraft; `core-anki` (AnkiService actor thread) is the only owner of the collection.
+- The `/pdfcraft/` iframe must stay same-origin: CSP keeps `frame-ancestors 'self'`/`frame-src 'self'` and allows
+  `'wasm-unsafe-eval'` and `blob:` workers. PdfCraft never gets `invoke`; the app validates every bridge message.
+- Book bytes cross IPC raw (`tauri::ipc::Response` / raw request body), never as JSON arrays.
+- Never `preventDefault` a key PdfCraft uses (it owns Ctrl+1/2/3, Ctrl+P, Ctrl+Shift+N…): app shortcuts are listed in
+  docs/decisoes.md.
 - Untrusted input (PDF, EPUB, .apkg) never panics the app — errors become pt-BR messages.
 - UI text in pt-BR in `web/src/i18n/pt-BR.ts`; code, commands and commits in English.
 - Custom protocol URLs only through `protocolUrl(scheme, path)` (Windows uses `http://<scheme>.localhost/`).

@@ -14,6 +14,9 @@ node_modules/
 # Downloaded/generated assets (scripts/*)
 /src-tauri/resources/anki-web/
 /src-tauri/resources/ocr-models/
+# PdfCraft web build (scripts/build-pdfcraft-web.sh); copied to web/dist/pdfcraft/ by the Vite plugin
+/src-tauri/resources/pdfcraft-web/
+/src-tauri/resources/.pdfcraft-web.*
 /data/generated/
 # Local
 *.zip

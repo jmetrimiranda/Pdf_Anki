@@ -1,5 +1,6 @@
-//! The Phase 0 integration check (spec 21): open the collection, read the deck tree, open a
-//! PDF and read page 1. Runs from the `dev_smoke` command and from `--smoke` on the CLI.
+//! The smoke check (spec 21, Phase 0): open a collection, read the deck tree, open a PDF in the
+//! core, read its words and render page 1 (the cover renderer). Runs from the `dev_smoke` command
+//! and from `--smoke` on the CLI.
 //!
 //! It seeds demo decks, so it works on its own collection (`<data dir>/smoke/anki`), never on
 //! the user's.
@@ -7,29 +8,37 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use base64::Engine as _;
 use core_anki::{DeckTree, decks, demo};
-use core_pdf::{DocHandle, DocInfo, DocumentEngine, RenderReq};
 use serde::Serialize;
 
 use crate::error::AppError;
-use crate::protocol::render_url;
 use crate::state::AppState;
 
 /// The spike's sample (docs/referencia/spike/sample.pdf), bundled so the check needs no files.
 pub const SAMPLE_PDF: &[u8] = include_bytes!("../../../docs/referencia/spike/sample.pdf");
 
-/// Device pixels per point of the page-1 image.
-pub const PAGE1_SCALE: f32 = 2.0;
+/// Longest side of the page-1 image, in pixels.
+pub const PAGE1_PX: u32 = 1200;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SmokeReport {
     pub collection_path: String,
     pub deck_tree: DeckTree,
-    pub doc: DocInfo,
-    pub page1_url: String,
+    pub doc: SmokeDoc,
+    /// Page 1 as `data:image/png;base64,…`.
+    pub page1_data_url: String,
     pub words: usize,
     pub millis: SmokeMillis,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SmokeDoc {
+    pub page_count: usize,
+    pub title: Option<String>,
+    pub author: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -38,11 +47,11 @@ pub struct SmokeMillis {
     pub anki: u64,
     pub pdf_open: u64,
     pub pdf_text: u64,
+    pub cover: u64,
 }
 
-/// Runs the check and returns the report with the handle of the sample document, which stays
-/// open (the page-1 URL points at it) until the next run. Blocks.
-pub fn run(state: &AppState) -> Result<(SmokeReport, DocHandle), AppError> {
+/// Runs the check and returns the report with page 1 as PNG. Blocks.
+pub fn run(state: &AppState) -> Result<(SmokeReport, Vec<u8>), AppError> {
     let t = Instant::now();
     let anki = state.smoke_anki()?;
     let added = anki.call_blocking(demo::seed_demo)?;
@@ -55,40 +64,52 @@ pub fn run(state: &AppState) -> Result<(SmokeReport, DocHandle), AppError> {
         "smoke: Anki ok"
     );
 
-    let t = Instant::now();
     let pdf = state.pdf();
-    let doc = pdf.open(Arc::new(SAMPLE_PDF.to_vec()), None)?;
-    if let Some(previous) = state.replace_smoke_doc(doc) {
-        pdf.close(previous);
-    }
-    let info = pdf.info(doc)?;
-    let pdf_open = elapsed_ms(t);
-
     let t = Instant::now();
-    let words = pdf.page_words(doc, 0)?.words.len();
-    let pdf_text = elapsed_ms(t);
-    tracing::info!(%doc, pages = info.page_count, words, pdf_open, pdf_text, "smoke: PDF ok");
+    let bytes = Arc::new(SAMPLE_PDF.to_vec());
+    let meta = pdf.inspect(Arc::clone(&bytes), None)?;
+    let doc = pdf.open(bytes, None)?;
+    let pdf_open = elapsed_ms(t);
+    let result = (|| {
+        let t = Instant::now();
+        let words = pdf.page_words(doc, 0)?.words.len();
+        let pdf_text = elapsed_ms(t);
+        let t = Instant::now();
+        let png = pdf.cover_png(doc, PAGE1_PX)?;
+        Ok::<_, core_pdf::PdfError>((words, pdf_text, png, elapsed_ms(t)))
+    })();
+    pdf.close(doc);
+    let (words, pdf_text, png, cover) = result?;
+    tracing::info!(
+        pages = meta.page_count,
+        words,
+        pdf_open,
+        pdf_text,
+        cover,
+        "smoke: PDF ok"
+    );
 
     let report = SmokeReport {
         collection_path: anki.paths().collection.display().to_string(),
         deck_tree,
-        doc: info,
-        page1_url: render_url(doc, 0, PAGE1_SCALE),
+        doc: SmokeDoc {
+            page_count: meta.page_count,
+            title: meta.title,
+            author: meta.author,
+        },
+        page1_data_url: format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&png)
+        ),
         words,
         millis: SmokeMillis {
             anki: anki_ms,
             pdf_open,
             pdf_text,
+            cover,
         },
     };
-    Ok((report, doc))
-}
-
-/// Page 1 of the smoke document as PNG, exactly what the `pdf` protocol serves for `page1Url`.
-pub fn page1_png(state: &AppState, doc: DocHandle) -> Result<Vec<u8>, AppError> {
-    Ok(state
-        .pdf()
-        .render_png(doc, RenderReq::page(0, PAGE1_SCALE))?)
+    Ok((report, png))
 }
 
 fn elapsed_ms(t: Instant) -> u64 {
@@ -103,7 +124,7 @@ mod tests {
     fn smoke_opens_the_collection_and_the_sample() {
         let dir = tempfile::tempdir().unwrap();
         let state = AppState::new(dir.path().to_path_buf());
-        let (report, doc) = run(&state).unwrap();
+        let (report, png) = run(&state).unwrap();
         assert!(report.collection_path.ends_with("collection.anki2"));
         assert!(
             report
@@ -113,35 +134,31 @@ mod tests {
         // The user's collection is never created or touched by the check.
         assert!(!state.anki_dir().exists());
         assert!(report.deck_tree.find(demo::VOCAB_DECK).is_some());
-        assert_eq!(report.doc.page_count, report.doc.pages.len());
         assert!(report.doc.page_count >= 1);
         assert!(report.words > 0);
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
         assert!(
             report
-                .page1_url
-                .contains(&format!("render/{doc}/0?escala=2"))
+                .page1_data_url
+                .starts_with("data:image/png;base64,iVBOR")
         );
-
-        let png = page1_png(&state, doc).unwrap();
-        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
-
-        // A second run replaces the previous sample document instead of leaking it.
-        let (_, doc2) = run(&state).unwrap();
-        assert_ne!(doc, doc2);
-        assert_eq!(state.pdf().open_documents(), vec![doc2]);
+        // The sample document is closed again.
+        assert!(state.pdf().open_documents().is_empty());
 
         let json = serde_json::to_value(&report).unwrap();
         for key in [
             "collectionPath",
             "deckTree",
             "doc",
-            "page1Url",
+            "page1DataUrl",
             "words",
             "millis",
         ] {
             assert!(json.get(key).is_some(), "missing {key}");
         }
+        assert!(json["doc"].get("pageCount").is_some());
         assert!(json["millis"].get("pdfOpen").is_some());
+        assert!(json["millis"].get("cover").is_some());
         assert!(json["deckTree"].get("studiedToday").is_some());
         state.shutdown();
     }

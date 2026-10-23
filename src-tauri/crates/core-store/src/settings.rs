@@ -10,8 +10,6 @@ use crate::{Result, Store, StoreError};
 
 /// Setting keys. Add new settings here and in [`SPECS`].
 pub mod keys {
-    pub const READING_THEME: &str = "reading_theme";
-    pub const DEFAULT_RENDERER: &str = "default_renderer";
     pub const VOCAB_ROOT_DECK_ID: &str = "vocab_root_deck_id";
     pub const VOCAB_KNOWN_IVL_DAYS: &str = "vocab_known_ivl_days";
     pub const VOCAB_COUNT_YOUNG: &str = "vocab_count_young";
@@ -61,18 +59,6 @@ fn null() -> Value {
 use keys::*;
 
 const SPECS: &[Spec] = &[
-    spec(
-        READING_THEME,
-        Kind::Choice(&["claro", "sepia", "escuro"]),
-        false,
-        || "claro".into(),
-    ),
-    spec(
-        DEFAULT_RENDERER,
-        Kind::Choice(&["pdfcraft", "pdfjs"]),
-        false,
-        || "pdfcraft".into(),
-    ),
     spec(VOCAB_ROOT_DECK_ID, Kind::Int { min: i64::MIN }, true, null),
     spec(VOCAB_KNOWN_IVL_DAYS, Kind::Int { min: 1 }, false, || {
         21.into()

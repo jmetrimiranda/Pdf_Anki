@@ -24,7 +24,7 @@ describe('i18n', () => {
   });
 
   it('fills placeholders', () => {
-    expect(t('tabs.close', { title: 'Livro' })).toBe('Fechar Livro');
-    expect(t('reader.pageOf', { n: 3, total: 10 })).toBe('3 / 10');
+    expect(t('library.pageOf', { n: 3, total: 10 })).toBe('p. 3 de 10');
+    expect(t('library.addFailed', { nome: 'a.pdf', mensagem: 'x' })).toBe('Não foi possível adicionar a.pdf: x');
   });
 });

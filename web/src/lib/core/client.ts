@@ -1,4 +1,4 @@
-import { mockClient } from './mock';
+import { installMockHandle, mockClient } from './mock';
 import { tauriClient } from './tauri';
 import type { CoreClient } from './types';
 
@@ -12,5 +12,7 @@ export function useMockCore(): boolean {
 
 /** The core client for this runtime: the Tauri commands, or the in-browser mock. */
 export const core: CoreClient = useMockCore() ? mockClient : tauriClient;
+
+if (core.kind === 'mock') installMockHandle();
 
 export * from './types';

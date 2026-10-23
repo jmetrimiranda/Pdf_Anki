@@ -1,9 +1,10 @@
-//! The `pdf` URI scheme (spec 6.2): `pdf://localhost/render/{docId}/{page}?escala=…&bloco=…&tema=…`
-//! (`http://pdf.localhost/…` on Windows) answers with the page as PNG.
+//! The `pdf` URI scheme (spec 15): only library covers.
+//! `GET pdf://localhost/cover/{book_uid}?v={file_version}` (`http://pdf.localhost/…` on Windows)
+//! answers with the cover PNG of the book's current file version. The reader itself is PdfCraft,
+//! served as a static file of the UI under `/pdfcraft/`.
 
 use std::sync::Arc;
 
-use core_pdf::{DocHandle, DocumentEngine, PdfError, RenderReq};
 use tauri::http::{Method, Request, Response, StatusCode, header};
 use tauri::{AppHandle, Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 
@@ -22,9 +23,9 @@ pub fn protocol_url(scheme: &str, path: &str) -> String {
     }
 }
 
-/// `pdfRenderUrl(docId, page, { scale })` of the web client.
-pub fn render_url(doc: DocHandle, page: usize, scale: f32) -> String {
-    protocol_url(PDF_SCHEME, &format!("render/{doc}/{page}?escala={scale}"))
+/// `pdfCoverUrl(bookUid, fileVersion)` of the web client.
+pub fn cover_url(book_uid: &str, file_version: u32) -> String {
+    protocol_url(PDF_SCHEME, &format!("cover/{book_uid}?v={file_version}"))
 }
 
 pub fn handle<R: Runtime>(
@@ -46,74 +47,74 @@ pub fn handle<R: Runtime>(
             ));
         }
     }
-    let (doc, req) = match parse(request.uri().path(), request.uri().query().unwrap_or("")) {
-        Ok(parsed) => parsed,
+    let route = match parse(request.uri().path()) {
+        Ok(route) => route,
         Err(bad) => return reply(bad.response()),
     };
     let head_only = request.method() == Method::HEAD;
     let state = Arc::clone(app.state::<Arc<AppState>>().inner());
     tauri::async_runtime::spawn_blocking(move || {
-        let res = match state.pdf().render_png(doc, req) {
-            Ok(png) => png_response(if head_only { Vec::new() } else { png }),
-            Err(e) => {
-                tracing::warn!(%doc, page = req.page, code = e.code(), detail = ?e, "pdf render failed");
-                error(&e)
-            }
+        let res = match route {
+            Route::Cover(uid) => match state.cover_png(&uid) {
+                Ok(Some(png)) => png_response(if head_only { Vec::new() } else { png }),
+                Ok(None) => not_found_cover(),
+                Err(e) => {
+                    tracing::warn!(book_uid = %uid, code = %e.code, "cover failed");
+                    not_found_cover()
+                }
+            },
         };
         reply(res);
     });
 }
 
-/// Why a request never reached the engine.
-#[derive(Debug)]
-enum BadRequest {
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    Cover(String),
+}
+
+/// Why a request never reached the library.
+#[derive(Debug, PartialEq, Eq)]
+enum BadRoute {
     UnknownRoute,
-    Pdf(PdfError),
+    NoCover,
 }
 
-impl From<PdfError> for BadRequest {
-    fn from(e: PdfError) -> Self {
-        Self::Pdf(e)
-    }
-}
-
-impl BadRequest {
+impl BadRoute {
     fn response(&self) -> Response<Vec<u8>> {
         match self {
             Self::UnknownRoute => text(StatusCode::NOT_FOUND, "Endereço desconhecido."),
-            Self::Pdf(e) => error(e),
+            Self::NoCover => not_found_cover(),
         }
     }
 }
 
-/// `/render/{docId}/{page}` plus its query.
-fn parse(path: &str, query: &str) -> Result<(DocHandle, RenderReq), BadRequest> {
+/// `/cover/{book_uid}`. The `v` query only busts the cache; the current version is served.
+fn parse(path: &str) -> Result<Route, BadRoute> {
     let mut parts = path.trim_matches('/').split('/');
-    let (Some("render"), Some(doc), Some(page), None) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return Err(BadRequest::UnknownRoute);
-    };
-    let doc: DocHandle = doc.parse()?;
-    let page: usize = page
-        .parse()
-        .map_err(|_| PdfError::InvalidRequest("a página precisa ser um número".into()))?;
-    Ok((doc, RenderReq::from_query(page, query)?))
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("cover"), Some(uid), None) if core_store::is_valid_book_uid(uid) => {
+            Ok(Route::Cover(uid.to_owned()))
+        }
+        (Some("cover"), Some(_), None) => Err(BadRoute::NoCover),
+        _ => Err(BadRoute::UnknownRoute),
+    }
+}
+
+fn not_found_cover() -> Response<Vec<u8>> {
+    text(StatusCode::NOT_FOUND, "Capa não encontrada.")
 }
 
 fn png_response(png: Vec<u8>) -> Response<Vec<u8>> {
     response(StatusCode::OK)
         .header(header::CONTENT_TYPE, "image/png")
-        // Doc ids restart at 1 on every launch, so a cached image could belong to another
-        // document; the engine keeps the in-memory page cache instead (spec 6.2).
-        .header(header::CACHE_CONTROL, "no-store")
+        // The URL carries `?v={file_version}`, so a cached cover never outlives its version.
+        .header(
+            header::CACHE_CONTROL,
+            "private, max-age=31536000, immutable",
+        )
         .body(png)
         .unwrap_or_else(|_| Response::new(Vec::new()))
-}
-
-fn error(e: &PdfError) -> Response<Vec<u8>> {
-    let status = StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    text(status, &e.to_string())
 }
 
 fn text(status: StatusCode, message: &str) -> Response<Vec<u8>> {
@@ -182,56 +183,65 @@ fn cors_origin<R: Runtime>(app: &AppHandle<R>, origin: Option<&header::HeaderVal
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_pdf::ReadingTheme;
+
+    const UID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     #[test]
-    fn parses_the_render_route() {
-        let (doc, req) = parse("/render/7/2", "escala=1.5&bloco=10,20,30,40&tema=sepia").unwrap();
-        assert_eq!(doc, DocHandle(7));
-        assert_eq!(req.page, 2);
-        assert_eq!(req.scale, 1.5);
-        assert_eq!(req.tile, Some([10.0, 20.0, 30.0, 40.0]));
-        assert_eq!(req.theme, ReadingTheme::Sepia);
-        let (_, req) = parse("/render/1/0", "escala=2&bloco=1%2C2%2C3%2C4").unwrap();
-        assert_eq!(req.tile, Some([1.0, 2.0, 3.0, 4.0]));
+    fn parses_the_cover_route() {
+        assert_eq!(
+            parse(&format!("/cover/{UID}")).unwrap(),
+            Route::Cover(UID.into())
+        );
+        assert_eq!(
+            parse(&format!("cover/{UID}/")).unwrap(),
+            Route::Cover(UID.into())
+        );
     }
 
     #[test]
-    fn bad_routes_map_to_4xx() {
-        let status =
-            |path: &str, query: &str| parse(path, query).unwrap_err().response().status().as_u16();
-        assert_eq!(status("/render/abc/0", ""), 404);
-        assert_eq!(status("/render/1/x", ""), 400);
-        assert_eq!(status("/render/1/-1", ""), 400);
-        assert_eq!(status("/render/1", ""), 404);
-        assert_eq!(status("/other/1/0", ""), 404);
-        assert_eq!(status("/render/1/0/extra", ""), 404);
-        assert_eq!(status("/render/1/0", "escala=x"), 400);
-        assert_eq!(status("/render/1/0", "bloco=1,2"), 400);
-        assert_eq!(status("/render/1/0", "tema=azul"), 400);
-    }
-
-    #[test]
-    fn error_bodies_are_pt_br_text() {
-        let res = error(&PdfError::UnknownDocument);
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    fn bad_routes_map_to_404_text() {
+        let status = |path: &str| parse(path).unwrap_err().response().status().as_u16();
+        assert_eq!(status("/cover/abc"), 404);
+        assert_eq!(status(&format!("/cover/{}", UID.to_uppercase())), 404);
+        assert_eq!(status(&format!("/cover/{UID}/extra")), 404);
+        assert_eq!(status("/render/1/0"), 404);
+        assert_eq!(status("/"), 404);
+        let res = parse("/cover/x").unwrap_err().response();
         assert_eq!(
             res.headers()[header::CONTENT_TYPE],
             "text/plain; charset=utf-8"
         );
         assert_eq!(
             String::from_utf8(res.body().clone()).unwrap(),
-            "O documento não está aberto."
+            "Capa não encontrada."
+        );
+    }
+
+    #[test]
+    fn covers_are_cached_per_version() {
+        let res = png_response(vec![1, 2]);
+        assert_eq!(res.headers()[header::CONTENT_TYPE], "image/png");
+        assert!(
+            res.headers()[header::CACHE_CONTROL]
+                .to_str()
+                .unwrap()
+                .contains("immutable")
+        );
+        let res = with_cors(preflight(), "tauri://localhost");
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            res.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            "tauri://localhost"
         );
     }
 
     #[test]
     fn urls_match_the_web_helper() {
-        let url = render_url(DocHandle(3), 0, 2.0);
+        let url = cover_url(UID, 2);
         if cfg!(windows) {
-            assert_eq!(url, "http://pdf.localhost/render/3/0?escala=2");
+            assert_eq!(url, format!("http://pdf.localhost/cover/{UID}?v=2"));
         } else {
-            assert_eq!(url, "pdf://localhost/render/3/0?escala=2");
+            assert_eq!(url, format!("pdf://localhost/cover/{UID}?v=2"));
         }
     }
 }

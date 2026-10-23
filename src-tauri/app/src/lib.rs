@@ -1,9 +1,16 @@
-//! The Tauri shell: app state, the Phase 0 commands, the `pdf` protocol and the smoke check.
-//! All the real work lives in the `core-*` crates.
+//! The Tauri shell: app state, the commands of spec 15, the `pdf` cover protocol and the smoke
+//! check. The reader is PdfCraft's own web UI (`/pdfcraft/`, an iframe of the UI); all the real
+//! work lives in the `core-*` crates and in plain [`AppState`] methods, so the integration tests
+//! need no webview.
 
 mod commands;
 mod error;
+mod export_grant;
+mod files;
+pub mod library;
+mod open_paths;
 mod protocol;
+mod reading;
 mod smoke;
 mod state;
 
@@ -13,14 +20,20 @@ use std::sync::Arc;
 use tauri::{App, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
 pub use error::AppError;
-pub use protocol::{protocol_url, render_url};
+pub use files::BookFiles;
+pub use library::{AddedBook, BookOpen, SavedVersion};
+pub use open_paths::pdf_paths_from_args;
+pub use protocol::{cover_url, protocol_url};
+pub use reading::SessionStarted;
 pub use smoke::SmokeReport;
 pub use state::AppState;
 
 /// Overrides the app data dir (tests, CI and side-by-side dev profiles).
 const DATA_DIR_ENV: &str = "LEITOR_DATA_DIR";
-/// Route the main window opens at, e.g. `/dev/smoke` (development aid).
+/// Route the main window opens at, e.g. `/dev/smoke` or `/leitor` (development aid).
 const START_ROUTE_ENV: &str = "LEITOR_START_ROUTE";
+/// Event with the PDF paths of a second launch ("Abrir com" while the app is open).
+pub const OPEN_PATHS_EVENT: &str = "leitor://open-paths";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -33,8 +46,16 @@ pub fn run() {
             std::process::exit(2);
         }
     };
+    #[cfg(desktop)]
+    let launch_paths = if cli.smoke {
+        Vec::new()
+    } else {
+        cli.paths.clone()
+    };
+    #[cfg(not(desktop))]
+    let launch_paths = Vec::new();
 
-    let app = match build() {
+    let app = match build(launch_paths) {
         Ok(app) => app,
         Err(e) => {
             tracing::error!(%e, "could not start the app");
@@ -49,17 +70,29 @@ pub fn run() {
 
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
-            handle.state::<Arc<AppState>>().shutdown();
+            let state = handle.state::<Arc<AppState>>();
+            state.reading_stop_on_exit();
+            state.shutdown();
         }
     });
 }
 
-fn build() -> Result<App, Box<dyn std::error::Error>> {
-    let app = tauri::Builder::default()
+fn build(launch_paths: Vec<String>) -> Result<App, Box<dyn std::error::Error>> {
+    let builder = tauri::Builder::default();
+    // Must be the first plugin: a second launch hands its paths over and exits right away.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+        open_paths::second_instance(app, argv, &cwd);
+    }));
+    let app = builder
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .register_asynchronous_uri_scheme_protocol(protocol::PDF_SCHEME, protocol::handle)
         .invoke_handler(invoke_handler())
         .setup(|app| {
-            app.state::<Arc<AppState>>().warm_up();
+            let state = Arc::clone(app.state::<Arc<AppState>>().inner());
+            state.warm_up();
+            reading::spawn_ticker(&state);
             // Without a window there is nothing to show; exit cleanly instead of panicking.
             if let Err(e) = create_main_window(app) {
                 tracing::error!(%e, "could not create the main window");
@@ -74,22 +107,37 @@ fn build() -> Result<App, Box<dyn std::error::Error>> {
         None => app.path().app_data_dir()?,
     };
     tracing::info!(data_dir = %data_dir.display(), "starting");
-    app.manage(Arc::new(AppState::new(data_dir)));
+    let state = AppState::new(data_dir);
+    state.push_open_paths(launch_paths);
+    app.manage(Arc::new(state));
+    app.manage(export_grant::ExportGrants::default());
     Ok(app)
 }
 
-/// Commands callable from the UI. `dev_smoke` is a development aid, so it only exists in debug
-/// builds (release keeps `--smoke` on the CLI). Both use a separate smoke collection.
+/// Commands callable from the UI. `dev_smoke` and `dev_log` are development aids, so they only
+/// exist in debug builds (release keeps `--smoke` on the CLI).
 macro_rules! app_commands {
     ($($extra:path),*) => {
         tauri::generate_handler![
             commands::anki_deck_tree,
-            commands::doc_open_path,
-            commands::doc_info,
-            commands::doc_outline,
+            commands::library_list,
+            commands::library_add,
+            commands::library_remove,
+            commands::library_update,
+            commands::book_open,
+            commands::book_bytes,
+            commands::book_save_version,
+            commands::export_pick_path,
+            commands::book_export,
+            commands::export_bytes,
+            commands::book_open_external,
             commands::doc_words,
-            commands::doc_search,
-            commands::doc_close,
+            commands::position_get,
+            commands::position_set,
+            commands::reading_session_start,
+            commands::reading_session_heartbeat,
+            commands::reading_session_stop,
+            commands::pending_open_paths,
             $($extra),*
         ]
     };
@@ -97,8 +145,10 @@ macro_rules! app_commands {
 
 fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
     #[cfg(debug_assertions)]
-    return app_commands![commands::dev_smoke];
-    #[cfg(not(debug_assertions))]
+    return app_commands![commands::dev_smoke, commands::dev_log];
+    #[cfg(all(not(debug_assertions), feature = "bridge-probe"))]
+    return app_commands![commands::dev_log];
+    #[cfg(all(not(debug_assertions), not(feature = "bridge-probe")))]
     return app_commands![];
 }
 
@@ -112,15 +162,230 @@ fn create_main_window(app: &App) -> tauri::Result<()> {
     if let Ok(route) = std::env::var(START_ROUTE_ENV) {
         config.url = WebviewUrl::App(route.trim_start_matches('/').into());
     }
-    WebviewWindowBuilder::from_config(app, &config)?.build()?;
+    let builder = WebviewWindowBuilder::from_config(app, &config)?;
+    #[cfg(any(debug_assertions, feature = "bridge-probe"))]
+    let builder = if let Some(mode) = std::env::var_os(BRIDGE_PROBE_ENV) {
+        // `LEITOR_BRIDGE_PROBE=perf` also times open → active and the frames while scrolling;
+        // `load` clicks the Leitor tab and times its first and later openings.
+        let perf = mode == "perf";
+        let load = mode == "load";
+        builder.initialization_script(format!(
+            "window.__probePerf = {perf};\nwindow.__probeLoad = {load};\n{BRIDGE_PROBE_JS}"
+        ))
+    } else {
+        builder
+    };
+    let window = builder.build()?;
+    #[cfg(target_os = "linux")]
+    webkit::configure(&window);
+    #[cfg(not(target_os = "linux"))]
+    let _ = window;
     Ok(())
+}
+
+/// Debug builds: logs every `pdfcraft:*` message the UI receives (through `dev_log`), whether the
+/// iframe sees Tauri's IPC, and WebGL support. Used to check the real webview under Xvfb.
+/// Perf mode (`window.__probePerf`): logs `open` as received inside the iframe and `active`, with
+/// absolute times, and the frame times inside the iframe between the first and the last
+/// `pdfcraft:page` of a scroll (logged once the pages stop for 3 s). Phase 1 acceptance 4 in the
+/// real WebKitGTK webview (docs/progresso.md).
+/// Load mode (`window.__probeLoad`, scripts/load-real-app.sh): from the Biblioteca, clicks the
+/// Leitor tab and logs click → `pdfcraft:ready` with `window.__leitorTimings`, then 5 round trips
+/// through Biblioteca/Anki (click → painted) and whether the iframe survived them unreloaded.
+/// Also in release builds with the `bridge-probe` feature.
+#[cfg(any(debug_assertions, feature = "bridge-probe"))]
+const BRIDGE_PROBE_ENV: &str = "LEITOR_BRIDGE_PROBE";
+#[cfg(any(debug_assertions, feature = "bridge-probe"))]
+const BRIDGE_PROBE_JS: &str = r#"
+(() => {
+  const log = (message) => window.__TAURI_INTERNALS__?.invoke('dev_log', { level: 'info', message });
+  const abs = () => (performance.timeOrigin + performance.now()).toFixed(1);
+  // Perf mode: frame times inside the iframe (rAF), summarized over each scroll.
+  let frames = [];
+  let scroll = null;
+  let quiet = null;
+  const pct = (xs, p) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))] : 0; };
+  const pageSeen = (at) => {
+    if (!scroll) scroll = { from: at, pages: 0 };
+    scroll.to = at;
+    scroll.pages += 1;
+    clearTimeout(quiet);
+    quiet = setTimeout(() => {
+      const ts = frames.filter((x) => x >= scroll.from && x <= scroll.to);
+      const d = ts.slice(1).map((x, i) => x - ts[i]);
+      log(`probe: perf scroll ms=${(scroll.to - scroll.from).toFixed(0)} pageMsgs=${scroll.pages} frames=${ts.length} p50=${pct(d, 50).toFixed(1)} p95=${pct(d, 95).toFixed(1)} long=${d.filter((x) => x > 50).length}`);
+      scroll = null;
+      frames = [];
+    }, 3000);
+  };
+  // The same synthetic wheel input for every run: 1200 notches of 100 px (about 190 pages of the 500-page test PDF), one per 16 ms, on
+  // PdfCraft's canvas (no xdotool in the devcontainer).
+  const autoScroll = () => {
+    const f = document.querySelector('iframe');
+    const w = f && f.contentWindow;
+    const c = w && w.document.querySelector('canvas');
+    if (!c) { log('probe: perf no canvas to scroll'); return; }
+    const r = c.getBoundingClientRect();
+    log(`probe: perf iframe ${f.clientWidth}x${f.clientHeight}`);
+    const at = { clientX: r.left + r.width * 0.45, clientY: r.top + r.height * 0.55, bubbles: true, cancelable: true };
+    // egui scrolls what is under the pointer: move it there first.
+    c.dispatchEvent(new w.PointerEvent('pointermove', { ...at, pointerType: 'mouse', isPrimary: true }));
+    c.dispatchEvent(new w.MouseEvent('mousemove', at));
+    let n = 0;
+    const tick = () => {
+      c.dispatchEvent(new w.WheelEvent('wheel', { ...at, deltaY: 100, deltaMode: 0 }));
+      if (++n < 1200) setTimeout(tick, 16);
+    };
+    tick();
+  };
+  const perfAttach = (w) => {
+    if (!window.__probePerf || !w || w.__probeAttached) return;
+    w.__probeAttached = true;
+    w.addEventListener('message', (e) => {
+      if (e.data && e.data.type === 'pdfcraft:open') log(`probe: perf open-received id=${String(e.data.id).slice(0, 12)} abs=${abs()}`);
+    });
+  };
+  // Started once a document is active, so it runs in PdfCraft's final document.
+  const startFrames = () => {
+    const w = document.querySelector('iframe')?.contentWindow;
+    if (!w) return;
+    const loop = () => { frames.push(w.performance.timeOrigin + w.performance.now()); if (frames.length > 20000) frames.splice(0, 10000); w.requestAnimationFrame(loop); };
+    w.requestAnimationFrame(loop);
+  };
+  if (window.__probePerf) {
+    // Every iframe document (load events), as early as possible so the first `open` is seen.
+    setInterval(() => {
+      const f = document.querySelector('iframe');
+      if (!f || f.__probeLoad) return;
+      f.__probeLoad = true;
+      perfAttach(f.contentWindow);
+      f.addEventListener('load', () => perfAttach(f.contentWindow));
+    }, 20);
+  }
+  // Load mode: the Leitor tab's first and later openings, driven by clicks on the app tabs.
+  if (window.__probeLoad && window.top === window) {
+    const tabLink = (href) => document.querySelector(`nav[aria-label="Abas"] a[href="${href}"]`);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const until = async (fn, ms) => { const end = Date.now() + ms; while (Date.now() < end) { const v = fn(); if (v) return v; await sleep(5); } return null; };
+    const r1 = (x) => (x == null ? 'null' : (Math.round(x * 10) / 10).toFixed(1));
+    const timings = () => window.__leitorTimings || [];
+    const agains = () => timings().filter((t) => t.kind === 'again').length;
+    const frameEl = () => document.querySelector('iframe[title="PdfCraft"]');
+    let clickAbs = 0;
+    const readyAbs = [];
+    window.addEventListener('click', (e) => { clickAbs = performance.timeOrigin + e.timeStamp; }, true);
+    window.addEventListener('message', (e) => { if (e.data && e.data.type === 'pdfcraft:ready') readyAbs.push(performance.timeOrigin + performance.now()); });
+    const run = async () => {
+      if (!(await until(() => tabLink('/leitor'), 60000))) { log('probe: load no Leitor tab'); return; }
+      // Let the Biblioteca settle first (covers, queries), as a user would.
+      await sleep(3000);
+      tabLink('/leitor').click();
+      const first = await until(() => timings().find((t) => t.kind === 'first'), 120000);
+      if (!first) { log('probe: load first timeout'); return; }
+      const activate = performance.timeOrigin + performance.getEntriesByName('leitor:activate')[0].startTime;
+      const w = frameEl().contentWindow;
+      const wasm = w.performance.getEntriesByType('resource').find((e) => e.name.endsWith('.wasm'));
+      log(`probe: load first clickToReady=${r1(readyAbs[0] - clickAbs)} clickToActivate=${r1(activate - clickAbs)} activateToReady=${r1(first.ms)} frameStart=${r1(first.frameStartMs)} wasmFetched=${r1(first.wasmFetchedMs)} wasmTransferKB=${r1(wasm ? wasm.transferSize / 1024 : null)} wasmUrl=${wasm ? wasm.name.slice(0, 60) : 'none'}`);
+      const el = frameEl();
+      const origin = w.performance.timeOrigin;
+      w.__leitorMarker = 'still-here';
+      for (let i = 0; i < 5; i++) {
+        await sleep(1000);
+        tabLink(i % 2 ? '/anki' : '/biblioteca').click();
+        await sleep(1000);
+        const n = agains();
+        tabLink('/leitor').click();
+        if (!(await until(() => agains() > n, 30000))) { log(`probe: load again timeout ${i}`); continue; }
+        const painted = performance.getEntriesByName('leitor:again-painted').at(-1);
+        const again = timings().filter((t) => t.kind === 'again').at(-1);
+        log(`probe: load again via=${i % 2 ? 'anki' : 'biblioteca'} clickToPaint=${r1(performance.timeOrigin + painted.startTime - clickAbs)} activateToPaint=${r1(again.ms)}`);
+      }
+      const now = frameEl();
+      log(`probe: load reload-check sameElement=${now === el} marker=${now.contentWindow.__leitorMarker === 'still-here'} sameDocument=${now.contentWindow.performance.timeOrigin === origin} readyCount=${readyAbs.length} firsts=${timings().filter((t) => t.kind === 'first').length}`);
+      log('probe: load done');
+    };
+    window.addEventListener('load', () => void run());
+  }
+  window.addEventListener('message', (e) => {
+    const t = e.data && e.data.type;
+    if (typeof t !== 'string' || !t.startsWith('pdfcraft:')) return;
+    const frame = document.querySelector('iframe');
+    // `frameIpc`: Tauri's IPC in the iframe's own window. `parentIpc`: what code inside the iframe
+    // reaches through `parent` (same origin, so it is the UI's invoke: isolation is by trust, spec 18).
+    let frameIpc = 'n/a';
+    let parentIpc = 'n/a';
+    try {
+      frameIpc = String(!!frame?.contentWindow?.__TAURI_INTERNALS__);
+      parentIpc = String(typeof frame?.contentWindow?.parent?.__TAURI_INTERNALS__?.invoke === 'function');
+    } catch (_) { frameIpc = 'blocked'; parentIpc = 'blocked'; }
+    const fields = ['id', 'page', 'pageCount', 'dirty', 'theme', 'bridge', 'error', 'name', 'saveAs'];
+    const extra = fields.filter((k) => e.data[k] !== undefined).map((k) => ` ${k}=${String(e.data[k]).slice(0, 12)}`).join('')
+      + (e.data.bytes ? ` bytes=${e.data.bytes.byteLength}` : '');
+    log(`probe: ${t} origin=${e.origin} frameIpc=${frameIpc} parentIpc=${parentIpc}${extra} abs=${abs()}`);
+    if (window.__probePerf && t === 'pdfcraft:page') pageSeen(Number(abs()));
+    if (window.__probePerf && t === 'pdfcraft:active' && e.data.id && !window.__probeScrolled) {
+      window.__probeScrolled = true;
+      startFrames();
+      setTimeout(autoScroll, 4000);
+    }
+  });
+  const watch = (w, where) => {
+    w.addEventListener('securitypolicyviolation', (e) => log(`probe: csp ${where} ${e.violatedDirective} ${e.blockedURI}`));
+    w.addEventListener('error', (e) => log(`probe: error ${where} ${e.message || e.type}`));
+    w.addEventListener('unhandledrejection', (e) => log(`probe: rejection ${where} ${e.reason}`));
+  };
+  watch(window, 'main');
+  window.addEventListener('DOMContentLoaded', () => {
+    const c = document.createElement('canvas');
+    log(`probe: page ${location.href} webgl2=${!!c.getContext('webgl2')} webgl=${!!document.createElement('canvas').getContext('webgl')}`);
+  });
+  let n = 0;
+  const seen = new WeakSet();
+  const timer = setInterval(() => {
+    const f = document.querySelector('iframe');
+    if (f && f.contentWindow && !seen.has(f.contentWindow)) { seen.add(f.contentWindow); watch(f.contentWindow, 'frame'); }
+    let state = 'no iframe';
+    if (f) {
+      try {
+        const d = f.contentDocument;
+        state = `src=${f.getAttribute("src")} url=${f.contentWindow?.location.href} title=${d?.title} ready=${d?.readyState} canvas=${!!d?.querySelector("canvas")} wasm=${!!f.contentWindow?.wasmBindings} html=${(d?.documentElement?.outerHTML || "").slice(0, 300)}`;
+      } catch (_) { state = `src=${f.getAttribute('src')} cross-origin`; }
+    }
+    log(`probe: t=${++n * 5}s ${state}`);
+    if (n >= 6) clearInterval(timer);
+  }, 5000);
+})();
+"#;
+
+/// WebKitGTK settings for the embedded PdfCraft, which draws with WebGL (spec 22).
+#[cfg(target_os = "linux")]
+mod webkit {
+    use webkit2gtk::{SettingsExt, WebViewExt};
+
+    pub fn configure(window: &tauri::WebviewWindow) {
+        let result = window.with_webview(|webview| {
+            let webview = webview.inner();
+            if let Some(settings) = WebViewExt::settings(&webview) {
+                settings.set_enable_webgl(true);
+                tracing::debug!(
+                    webgl = settings.enables_webgl(),
+                    policy = ?settings.hardware_acceleration_policy(),
+                    "webkit settings"
+                );
+            }
+        });
+        if let Err(e) = result {
+            tracing::warn!(%e, "could not configure the webview");
+        }
+    }
 }
 
 /// Logs go to stderr (stdout carries the `--smoke` report). `RUST_LOG` overrides the filter.
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,leitor_app=debug,core_anki=debug,core_pdf=debug"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("info,leitor_app=debug,core_anki=debug,core_pdf=debug,core_store=debug")
+    });
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
@@ -141,15 +406,19 @@ mod cli {
     pub struct Cli {
         /// Run the smoke check headless, print the report as JSON and exit.
         pub smoke: bool,
-        /// Also write page 1 as PNG here.
+        /// Also write the sample's cover (page 1) as PNG here.
         pub smoke_png: Option<PathBuf>,
+        /// PDF files to add and open ("Abrir com"), as given (made absolute later).
+        pub paths: Vec<String>,
     }
 
     impl Cli {
-        /// Unknown arguments are left alone (the OS or a launcher may add its own).
+        /// Unknown flags are left alone (the OS or a launcher may add its own); other arguments
+        /// that look like PDF files are kept for "Abrir com".
         pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
             let mut cli = Self::default();
             let mut args = args.into_iter();
+            let mut rest = Vec::new();
             while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--smoke" => cli.smoke = true,
@@ -160,6 +429,8 @@ mod cli {
                     _ => {
                         if let Some(path) = arg.strip_prefix("--smoke-png=") {
                             cli.smoke_png = Some(path.into());
+                        } else {
+                            rest.push(arg);
                         }
                     }
                 }
@@ -167,6 +438,8 @@ mod cli {
             if cli.smoke_png.is_some() && !cli.smoke {
                 return Err("--smoke-png só vale junto com --smoke".into());
             }
+            let cwd = std::env::current_dir().unwrap_or_default();
+            cli.paths = crate::open_paths::pdf_paths_from_args(rest, &cwd);
             Ok(cli)
         }
     }
@@ -189,10 +462,9 @@ mod cli {
     }
 
     fn smoke_and_print(state: &AppState, png: Option<&Path>) -> Result<(), crate::AppError> {
-        let (report, doc) = smoke::run(state)?;
+        let (report, cover) = smoke::run(state)?;
         if let Some(path) = png {
-            let bytes = smoke::page1_png(state, doc)?;
-            std::fs::write(path, bytes).map_err(|e| {
+            std::fs::write(path, cover).map_err(|e| {
                 crate::AppError::new(
                     "file_write",
                     format!("Não foi possível gravar {}: {e}", path.display()),
@@ -220,8 +492,20 @@ mod cli {
             assert_eq!(cli.smoke_png, Some(PathBuf::from("/tmp/p1.png")));
             let cli = parse(&["--smoke-png=/tmp/a.png", "--smoke", "-psn_0_1"]).unwrap();
             assert_eq!(cli.smoke_png, Some(PathBuf::from("/tmp/a.png")));
+            assert!(cli.paths.is_empty());
             assert!(parse(&["--smoke", "--smoke-png"]).is_err());
             assert!(parse(&["--smoke-png", "x.png"]).is_err());
+        }
+
+        #[test]
+        fn keeps_pdf_paths_for_open_with() {
+            let dir = tempfile::tempdir().unwrap();
+            let pdf = dir.path().join("Livro.PDF");
+            std::fs::write(&pdf, b"%PDF-1.4").unwrap();
+            let pdf = pdf.display().to_string();
+            let cli = parse(&["-psn_0_1", &pdf, "/nao/existe.pdf", "notas.txt"]).unwrap();
+            assert_eq!(cli.paths, vec![pdf]);
+            assert!(!cli.smoke);
         }
     }
 }

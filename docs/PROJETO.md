@@ -2,7 +2,7 @@
 
 > **Para quem é este documento:** Claude Opus 5.5 (esforço xhigh), que vai implementar o app do zero.
 > **Dono do produto:** Jorge — usuário único.
-> **Versão:** 1.0 · 22/10/2026 · fuso America/Sao_Paulo.
+> **Versão:** 1.1 · 22/10/2026 · fuso America/Sao_Paulo. **Mudança da 1.1:** a tela de leitura é a interface do próprio PdfCraft, embutida (seção 6).
 > **Nome provisório:** "Leitor de Estudos" (repositório `leitor-estudos`).
 > **Projeto irmão:** "Painel de Estudos" (produtividade: trilhas, pomodoro, painel). São dois apps separados que conversam por um contrato pequeno (Apêndice A, idêntico nos dois documentos).
 
@@ -50,7 +50,7 @@ O usuário lê livros técnicos e em inglês num leitor de PDF e estuda no Anki 
 
 Um leitor de PDF e EPUB com o Anki dentro dele:
 
-1. **Leitor** com o motor do PdfCraft: renderização, texto selecionável, busca, sumário, anotações, OCR.
+1. **Leitor que é o próprio PdfCraft**, embutido, com o visual e todas as funções dele: destaques, comentários, bookmarks, busca, sumário, miniaturas, cores de leitura, OCR.
 2. **Aba Anki** com o núcleo oficial do Anki: decks, revisão com o mesmo agendador (FSRS), adicionar, navegar, estatísticas, opções de deck, importar `.apkg`.
 3. **Painel Anki do livro**, ao lado da página: criar um card da seleção com link de volta para a página, ver o deck do livro e revisar sem sair da leitura.
 4. **Escaneamento de vocabulário:** antes de ler, medir a cobertura do livro com base nas palavras maduras da pasta de vocabulário e gerar o deck das que faltam.
@@ -86,14 +86,15 @@ Um leitor de PDF e EPUB com o Anki dentro dele:
 **O PdfCraft (repositório `storytold/pdfcraft`)** tem duas camadas:
 
 - Crates de motor em Rust (licença MIT OR Apache-2.0): `pdfcraft-engine` (a fachada: abrir, editar, desfazer, salvar), `pdfcraft-render` (pixels e texto com posição de cada glifo), `pdfcraft-annot` (comentários), `pdfcraft-ocr` (OCR com o motor ocrs, só alfabeto latino sem acentos) e outros. O projeto exige que nada abaixo da camada de interface dependa do egui.
-- `pdfcraft-ui-egui`: a interface em egui. **Não serve para nós:** o egui não renderiza HTML, e os cards do Anki são HTML, CSS e JavaScript (MathJax, áudio, imagens). Além disso, o PdfCraft não tem suporte a iOS.
+- `pdfcraft-ui-egui`: a interface completa em egui. Ela tem uma versão para navegador (`apps/pdfcraft-web`, em WebAssembly) com uma ponte oficial para ser embutida numa página. **É ela que vira a tela de leitura do app** (seção 6). Ela não serve para o resto: o egui não renderiza HTML, e os cards do Anki são HTML, CSS e JavaScript (MathJax, áudio, imagens).
 
 **Conclusão:**
 
 1. Juntamos o `rslib` do Anki, as páginas web prontas do Anki e as crates de motor do PdfCraft num único núcleo em Rust.
-2. Por cima, uma interface web nova (React) dentro do **Tauri 2**, que roda no Windows, no macOS, no Linux, no iPadOS e no iOS (e no Android, de graça).
-3. Os cards do Anki rodam num webview de verdade, com HTML completo.
-4. **Não há versão para navegador:** o `rslib` usa SQLite nativo e não roda em WebAssembly de forma suportada. No navegador fica só o app de produtividade.
+2. Por cima, uma interface web (React) dentro do **Tauri 2**, que roda no Windows, no macOS, no Linux, no iPadOS e no iOS (e no Android, de graça).
+3. **A tela de leitura é o próprio PdfCraft**, na versão WebAssembly, embutida num iframe, com todas as funções e o visual dele. O app se liga a ele por mensagens (seleção, página, menu, marcas).
+4. O Anki (aba própria e painel ao lado do livro) é interface React, e os cards rodam num webview de verdade, com HTML completo.
+5. **Não há versão para navegador:** o `rslib` usa SQLite nativo e não roda em WebAssembly de forma suportada. No navegador fica só o app de produtividade.
 
 ### 2.2 Prova de conceito (já feita)
 
@@ -102,7 +103,7 @@ Um protótipo em Rust (`spike-leitor-anki`, em `docs/referencia/spike/`) foi com
 - **Anki:** criou uma coleção, criou o deck `Vocabulário::Livros::Teste`, adicionou uma nota "windmill / moinho de vento", exportou o deck como `.apkg`, importou esse `.apkg` numa segunda coleção, pegou o card na fila, renderizou a frente (`"windmill"`), respondeu "Bom" com 4,2 s e confirmou 1 linha no revlog com 4200 ms.
 - **PdfCraft:** abriu um PDF em inglês, renderizou a página 1 em 1191×1684 pixels (escala 2) em 274 ms e extraiu o texto da página (293 caracteres) com o retângulo de cada glifo, em pontos, com origem no canto superior esquerdo da página.
 
-**Não testado no protótipo** (é o primeiro item da Fase 0): compilar para iOS (exige Mac), o `pdfcraft-engine` (só o `pdfcraft-render` foi usado) e o Tauri.
+**Não testado no protótipo:** o Tauri (Fase 0), o build web do PdfCraft embutido (Fase 1) e compilar para iOS (exige Mac; Fase 10).
 
 Lições do protótipo, que valem para o projeto:
 
@@ -114,7 +115,7 @@ Lições do protótipo, que valem para o projeto:
 - O `anki` não é publicado no crates.io. Use como dependência git na tag fixada. O `cargo` baixa os submódulos de tradução (`ftl/core-repo`, `ftl/qt-repo`) sozinho. A compilação precisa do `protoc` **31.1** (a versão que o próprio Anki usa), indicado pela variável `PROTOC`.
 - **TLS do Anki:** a crate `anki` não liga TLS por padrão (tem as features `rustls` e `native-tls`). O protótipo não sincronizou, então não precisou. Para sincronizar com `https://anki.<domínio>/`, declare `anki` com `features = ["rustls"]`.
 - O PdfCraft corrige crates de terceiros em `vendor/` via `[patch.crates-io]` (`hayro`, `hayro-interpret`, `hayro-syntax`, `hayro-cmap`, `hayro-jbig2`, `lopdf`, `vello_common`). Um `[patch]` só vale no workspace raiz, então **o workspace deste app precisa repetir essas entradas**. Como elas apontam para pastas locais, traga o PdfCraft como **submódulo git** (`third_party/pdfcraft`, no commit fixado) e aponte as dependências e os patches para lá. Sem isso, a compilação usa as versões do crates.io, que não têm as correções.
-- O protótipo usou só o `pdfcraft-render`. O `pdfcraft-engine` puxa bem mais: `craft-docpath` (do repositório separado `storytold/craft-libs`), `pdfcraft-sign` (que traz o `aws-lc-sys`, compilado em C), `pdfcraft-js` (motor JavaScript boa), formulários, XFA e impressão. Nada disso foi compilado para iOS ainda (Fase 0).
+- O protótipo usou só o `pdfcraft-render`. O `pdfcraft-engine` puxa bem mais: `craft-docpath` (do repositório separado `storytold/craft-libs`), `pdfcraft-sign` (que traz o `aws-lc-sys`, compilado em C), `pdfcraft-js` (motor JavaScript boa), formulários, XFA e impressão. Nada disso foi compilado para iOS ainda (Fase 10).
 - O Anki fixa `unicase = "=2.6.0"` porque a ordenação afeta índices do SQLite. Não force outra versão.
 - Toolchain: o Anki fixa Rust 1.97.1 e o PdfCraft exige pelo menos 1.95 com edição 2024. Use **Rust 1.97.1** no `rust-toolchain.toml` do app.
 
@@ -122,8 +123,8 @@ Lições do protótipo, que valem para o projeto:
 
 | Plataforma | Como | Observações |
 |---|---|---|
-| Linux, Windows, macOS | Tauri 2 desktop | O usuário usa Linux hoje. |
-| iPad e iPhone | Tauri 2 iOS | **Exige compilar num Mac com Xcode** (ou num runner macOS de CI). Para instalar nos próprios aparelhos sem expirar em 7 dias, precisa da Apple Developer Program (US$ 99/ano) e do TestFlight. Com um Apple ID gratuito, o app expira a cada 7 dias e precisa ser reinstalado pelo Xcode. |
+| Linux, Windows, macOS | Tauri 2 desktop | **Prioridade agora** (decisão do usuário): Linux e Windows primeiro. O usuário usa Linux. |
+| iPad e iPhone | Tauri 2 iOS, **adiado para a Fase 10** | **Exige compilar num Mac com Xcode** (ou num runner macOS de CI). Para instalar nos próprios aparelhos sem expirar em 7 dias, precisa da Apple Developer Program (US$ 99/ano) e do TestFlight. Com um Apple ID gratuito, o app expira a cada 7 dias e precisa ser reinstalado pelo Xcode. |
 | Android | Tauri 2 Android | Sai quase de graça. Não é prioridade. |
 
 ### 2.4 Visão geral
@@ -134,13 +135,15 @@ flowchart TB
     UI[Interface web<br/>React + TS]
     subgraph Core["Núcleo Rust"]
       CA[core-anki<br/>rslib do Anki]
-      CP[core-pdf<br/>motor PdfCraft]
+      CP[core-pdf<br/>texto, capas, OCR]
       CV[core-vocab<br/>lematização e cobertura]
       CS[core-store<br/>SQLite do app]
     end
     UI <-->|comandos Tauri| Core
     UI <-->|"protocolo anki:// (/_anki/*)"| CA
-    UI <-->|protocolo pdf://| CP
+    UI <-->|comandos| CP
+    PC[PdfCraft web<br/>WebAssembly, iframe]
+    UI <-->|postMessage| PC
   end
   subgraph VPS["VPS (do projeto irmão)"]
     SYNC[Servidor de sync<br/>oficial do Anki]
@@ -157,11 +160,11 @@ flowchart TB
 
 ### 2.5 Decisões e motivos
 
-1. **Tauri 2 em vez de egui** (a interface do PdfCraft): o egui não renderiza HTML, então os cards do Anki não funcionariam, e o PdfCraft não roda em iOS. O Tauri usa o webview do sistema (WKWebView no iPad), onde HTML, MathJax e áudio funcionam.
+1. **Tauri 2 como casca, com o PdfCraft embutido para a leitura:** um app inteiro em egui (a interface nativa do PdfCraft) não renderizaria os cards do Anki, que são HTML, e o PdfCraft nativo não roda em iOS. No Tauri, o webview do sistema (WKWebView no iPad) roda o HTML do Anki e também a versão WebAssembly do PdfCraft, que é a mesma interface do PdfCraft desktop.
 2. **Tauri 2 em vez de Electron:** o núcleo já é Rust, e o Electron não roda em iOS.
-3. **O PdfCraft como motor principal de PDF**, com o PDF.js como alternativa de renderização atrás da mesma interface (seção 6.1). O renderizador do PdfCraft ainda é provisório (crate `hayro`, segundo o próprio projeto), então o usuário precisa poder trocar de renderizador num documento problemático.
+3. **O leitor é o PdfCraft, sem redesenho** (requisito do usuário: "exatamente igual ao PdfCraft"). O app não reimplementa ferramentas de anotação, bookmarks ou busca: usa as do PdfCraft. As ligações com o Anki entram por uma ponte de mensagens num fork mínimo, pensado para virar PR no projeto original (seção 6.2). Se um PDF não abrir no PdfCraft, o app oferece "Abrir no visualizador do sistema".
 4. **Reaproveitar as páginas web prontas do Anki** (opções de deck, estatísticas, informações do card, importação, oclusão de imagem) em vez de reescrever. Elas são rotas de um único app SvelteKit que vem compilado no wheel `aqt` da mesma versão (`_aqt/data/web/sveltekit/`, com `index.html` e `_app/`), junto com o `reviewer.js`, o `reviewer.css` e o MathJax (`_aqt/data/web/js/`) que o Anki desktop usa para mostrar os cards. A outra metade do revisor do Anki desktop é Python e precisa ser portada (seção 8.2).
-5. **Anotações guardadas no banco do app**, não gravadas no PDF, na v1. Registros pequenos sincronizam sem conflito entre aparelhos. Um PDF alterado em dois aparelhos geraria conflito de arquivo. "Exportar PDF anotado" grava os destaques numa cópia, com o `pdfcraft-annot`.
+5. **Anotações gravadas no próprio PDF**, como o PdfCraft faz (salvamento incremental), com salvamento automático pelo app (seção 6.5). O custo é o conflito de arquivo quando o mesmo livro é anotado em dois aparelhos sem sincronizar no meio; a seção 16 trata disso.
 6. **Sincronização do Anki pelo servidor oficial auto-hospedado**, o mesmo do projeto irmão. O AnkiWeb só atende os clientes oficiais, e este app é um cliente de terceiros.
 7. **Licença:** o app linka o `rslib`, que é AGPL-3.0-or-later, então o app inteiro é AGPL. Para uso pessoal, isso não traz obrigação prática. Se um dia for distribuído, o código precisa ser publicado. As crates do PdfCraft (MIT/Apache) são compatíveis com isso. Nunca copie código AGPL para dentro de uma contribuição ao PdfCraft, que exige código limpo de GPL.
 
@@ -174,7 +177,8 @@ flowchart TB
 | Toolchain | Rust 1.97.1 |
 | Shell | Tauri 2 (plugins: `fs`, `dialog`, `deep-link`, `notification`, `opener`, keychain/stronghold para segredos) |
 | Anki | crate `anki` (git `ankitects/anki`, tag `26.09.3`) + `anki_proto` |
-| PDF | `pdfcraft-engine`, `pdfcraft-render`, `pdfcraft-annot`, `pdfcraft-ocr` (git `storytold/pdfcraft`, commit fixado) |
+| PDF (núcleo) | `pdfcraft-render`, `pdfcraft-annot`, `pdfcraft-ocr` e `pdfcraft-cos` (do fork em `third_party/pdfcraft`) para texto, capas e OCR |
+| PDF (tela) | build WebAssembly de `apps/pdfcraft-web` do fork, feito com `trunk` (alvo `wasm32-unknown-unknown`) |
 | EPUB (texto) | crate `epub` (ou `rbook`) + parser HTML (`scraper`) para extrair texto |
 | Banco do app | SQLite via `rusqlite`, **obrigatoriamente a mesma versão do Anki** (o Cargo não aceita duas versões de `libsqlite3-sys` no mesmo grafo) |
 | Texto | `unicode-segmentation` (palavras e frases, UAX #29) |
@@ -191,7 +195,6 @@ flowchart TB
 | Estilo | Tailwind CSS v4, com os mesmos tokens do projeto irmão |
 | Editor de código | CodeMirror 6 |
 | EPUB (visual) | foliate-js (verificar a licença antes) |
-| PDF alternativo | `pdfjs-dist` (só como renderizador alternativo) |
 | Python | Pyodide num Web Worker, offline (no instalador do desktop; baixado no primeiro uso no iPad e no iPhone, seção 19) |
 | Testes | Vitest; Playwright contra o build web do frontend com o núcleo simulado; testes manuais no iPad |
 
@@ -216,10 +219,10 @@ leitor-estudos/
 │   ├── app/                       ← crate do Tauri: comandos, protocolos, janelas
 │   └── crates/
 │       ├── core-anki/             ← AnkiService, ponte /_anki/, sync, cards de código
-│       ├── core-pdf/              ← fachada sobre o pdfcraft-engine
+│       ├── core-pdf/              ← texto com posição, capas e OCR (crates do PdfCraft)
 │       ├── core-epub/             ← texto e sumário de EPUB
 │       ├── core-vocab/            ← tokenização, lematização, cobertura
-│       ├── core-store/            ← SQLite do app (livros, anotações, progresso, escaneamentos)
+│       ├── core-store/            ← SQLite do app (livros, progresso, anotações de EPUB, escaneamentos)
 │       └── core-ai/               ← provedores de IA
 ├── web/                           ← React + Vite
 │   └── src/
@@ -227,7 +230,7 @@ leitor-estudos/
 ├── packages/
 │   └── checkers/                  ← verificador de comandos (TS puro)
 ├── third_party/
-│   └── pdfcraft/                  ← submódulo git no commit fixado
+│   └── pdfcraft/                  ← submódulo: fork jmetrimiranda/pdfcraft, branch leitor-bridge (seção 6.2)
 ├── server/
 │   ├── library-sync/              ← Rust + axum (Fase 9)
 │   ├── runner/                    ← execução de C++ (Fase 5)
@@ -235,6 +238,7 @@ leitor-estudos/
 ├── data/                          ← dados de build: WordNet, frequências, lista de funcionais
 └── scripts/
     ├── fetch-anki-web.sh          ← baixa aqt==26.9.3 do PyPI e extrai _aqt/data/web/ para src-tauri/resources/anki-web/
+    ├── build-pdfcraft-web.sh      ← trunk build --release do fork → src-tauri/resources/pdfcraft-web/
     ├── build-wordnet.sh
     └── fetch-ocr-models.sh
 ```
@@ -246,14 +250,15 @@ leitor-estudos/
 | Anki (`anki`, `anki_proto`) | tag `26.09.3` | dependência git com `features = ["rustls"]`; `PROTOC` apontando para o protoc 31.1 |
 | Páginas web do Anki | wheel `aqt==26.9.3` (PyPI) | `scripts/fetch-anki-web.sh` extrai `_aqt/data/web/` para `src-tauri/resources/anki-web/` (recursos do Tauri, fora do git) |
 | Servidor de sync | mesma versão (26.9.3) | no VPS do projeto irmão |
-| PdfCraft | um commit de `main`, anotado em `docs/decisoes.md` | submódulo `third_party/pdfcraft`; dependências por caminho; o `[patch.crates-io]` dele copiado para `src-tauri/Cargo.toml`, apontando para `third_party/pdfcraft/vendor/` |
+| PdfCraft | fork `jmetrimiranda/pdfcraft`, branch `leitor-bridge`, rebaseado sobre um commit de `main` anotado em `docs/decisoes.md` | submódulo `third_party/pdfcraft`; crates do núcleo por caminho; o `[patch.crates-io]` dele copiado para `src-tauri/Cargo.toml`, apontando para `third_party/pdfcraft/vendor/`; a tela de leitura é o build web do mesmo commit (`scripts/build-pdfcraft-web.sh`, com `trunk` e o alvo `wasm32-unknown-unknown`) |
 | Modelos de OCR | os do commit fixado | `scripts/fetch-ocr-models.sh` (equivalente ao `cargo xtask models` do PdfCraft) |
 
 Regras:
 
 - **Atualizar o Anki e o PdfCraft em PRs separados**, com a suíte inteira rodando.
 - **Atualizar o Anki aqui sempre junto com o servidor de sync e com o pacote `anki` do projeto irmão.** O protocolo de sincronização muda entre versões.
-- **Ao atualizar o PdfCraft**, comparar de novo o `[patch.crates-io]` dele com o nosso.
+- **Ao atualizar o PdfCraft**, rebasear o fork, comparar de novo o `[patch.crates-io]` dele com o nosso e rodar os testes da ponte (seção 20).
+- **O núcleo e a tela de leitura usam o mesmo commit do PdfCraft**, para o texto extraído no núcleo (vocabulário, marcas) bater com o que a tela mostra.
 - **Uma única versão de `rusqlite`/`libsqlite3-sys` no grafo inteiro**, a do Anki. O Cargo não aceita duas crates com `links = "sqlite3"`. Nada de `sqlx` ou do plugin SQL do Tauri.
 - **Features do Tokio:** o `rslib` depende de features do Tokio (como `io-util`) que, dentro do workspace do Anki, outras crates ligam. Aqui, declare `tokio` com `fs`, `rt-multi-thread`, `macros`, `signal` e `io-util`. Sem isso, o `rslib` não compila (descoberto no protótipo).
 
@@ -261,14 +266,15 @@ Regras:
 
 ## 4. Design
 
-**O mesmo sistema visual do projeto irmão (seção 4 de lá):** tokens, tipografia, cartões, abas com sublinhado lima, nada de sombras pesadas. Copie os tokens para `web/src/styles/tokens.css` e mantenha os dois iguais.
+**A tela de leitura é o PdfCraft, com o visual dele, sem alterações** (seção 6). Todo o resto (Biblioteca, aba Anki, Painel Anki do livro, Configurações) usa o sistema visual do projeto irmão (seção 4 de lá): tokens, tipografia, cartões, abas com sublinhado lima, nada de sombras pesadas. Copie os tokens para `web/src/styles/tokens.css` e mantenha os dois iguais.
 
-Específico do leitor:
+Específico deste app:
 
-- **Tema de leitura** (independente do tema do app): claro, sépia e escuro. O escuro usa as "cores de leitura" do próprio PdfCraft (`ReadingColors`: texto e traços remapeados, fundo trocado), e não um filtro de inversão, que estraga imagens.
+- **Convivência com o PdfCraft:** o Painel Anki do livro fica ao lado do iframe do PdfCraft. Ajuste só os tons neutros do painel (fundo, bordas) para combinarem com o tema claro ou escuro que o PdfCraft estiver usando. Nada dentro do iframe muda.
+- **Tema de leitura:** o do próprio PdfCraft (incluindo as "cores de leitura" dele).
 - **Cores de status do Anki:** novos `#2a7ae2`, aprendendo `#cc3d3d`, para revisar `#2f9e44`.
 - **Realce de vocabulário:** desconhecida com sublinhado coral `#d85a30`; em aprendizado com sublinhado âmbar `#ba7517`. Sublinhado de 2px, nunca fundo cheio, para não atrapalhar a leitura.
-- **Destaques** em 4 cores suaves: amarelo `#f7e27a`, verde `#b9e08a`, azul `#a9cdf2`, rosa `#f4b4c4`, com 45% de opacidade.
+- **Destaques em EPUB** (o leitor de EPUB não é o PdfCraft): imitar as cores e a aparência dos destaques do PdfCraft, para a experiência ser a mesma.
 - **Movimento:** virar página e abrir painel em até 150ms, desligado com `prefers-reduced-motion`.
 
 ---
@@ -278,30 +284,29 @@ Específico do leitor:
 ### 5.1 Estrutura da janela
 
 ```
-┌ Biblioteca │ Animal Farm.pdf × │ ROS 2 Book.pdf × │ Anki ┐            [sync ✓] [⚙]
-├──────────────────────────────────────────────────────────────────────────────────┤
-│ [≡ Sumário] [▦ Miniaturas] [✎ Anotações]     ‹ 37 / 112 ›   − 110% +   [Aa] [🔍]  │
-├───────────────┬──────────────────────────────────────────────┬───────────────────┤
-│ Sumário       │                                              │ Anki · Animal Farm│
-│  Chapter I    │                página do PDF                 │  ＋ Card da seleção│
-│  Chapter II ● │        (texto selecionável, destaques,       │  Deck do livro    │
-│  …            │         realce de vocabulário)               │   12 novos · 4 rev│
-│               │                                              │  [Revisar aqui]   │
-│               │                                              │  Vocabulário 94% →│
-└───────────────┴──────────────────────────────────────────────┴───────────────────┘
+┌ Biblioteca │ Leitor │ Anki ┐                                        [sync ✓] [⚙]
+├──────────────────────────────────────────────────────────────┬───────────────────┤
+│  ┌ PdfCraft (iframe, interface original) ─────────────────┐  │ Anki · Animal Farm│
+│  │ abas de documentos · barras · ferramentas do PdfCraft   │  │  ＋ Card da seleção│
+│  │                                                          │  │  Deck do livro    │
+│  │        página do PDF, destaques, comentários,            │  │   12 novos · 4 rev│
+│  │        bookmarks, busca, miniaturas (tudo do PdfCraft)   │  │  [Revisar aqui]   │
+│  │        + marcas de vocabulário (pela ponte)              │  │  Vocabulário 94% →│
+│  └──────────────────────────────────────────────────────────┘  │  Cards desta pág. │
+└────────────────────────────────────────────────────────────────┴───────────────────┘
 ```
 
-- **Abas no topo:** "Biblioteca" (fixa à esquerda), um documento por aba (fecháveis, reordenáveis) e "Anki" (fixa à direita).
-- **Painéis laterais** recolhíveis: à esquerda, Sumário / Miniaturas / Anotações; à direita, o Painel Anki do livro.
-- **No iPad em retrato e no iPhone:** as abas viram uma lista no menu; os painéis viram folhas inferiores; a página ocupa a tela toda, e um toque no centro mostra ou esconde as barras.
-- **Atalhos (desktop e teclado do iPad):** `Ctrl+O` abrir, `Ctrl+W` fechar aba, `Ctrl+Tab` próxima aba, `Ctrl+F` buscar, `←`/`→` página, `+`/`−` zoom, `Ctrl+Shift+A` ir para a aba Anki, `Ctrl+Shift+N` card da seleção, `?` lista de atalhos.
+- **Abas do app no topo:** "Biblioteca", "Leitor" e "Anki". Os documentos abertos são abas **dentro** do PdfCraft, não do app.
+- **Painel Anki do livro** à direita, recolhível, fora do iframe. Ele acompanha o documento ativo do PdfCraft (`pdfcraft:active`).
+- **No iPad em retrato e no iPhone** (Fase 10): as abas do app viram um menu, e o painel vira uma folha inferior.
+- **Atalhos do app** (os do PdfCraft continuam valendo dentro dele): `Ctrl+1/2/3` Biblioteca, Leitor e Anki; `Ctrl+Shift+N` card da seleção; `Ctrl+Shift+P` mostra ou esconde o painel; `?` lista de atalhos. Nenhum atalho do app pode roubar um atalho que o PdfCraft use; conferir na lista dele.
 
 ### 5.2 Mapa de telas
 
 | Tela | Seção |
 |---|---|
 | Biblioteca | 6.6 |
-| Leitor de PDF | 6 |
+| Leitor de PDF (PdfCraft embutido) | 6 |
 | Leitor de EPUB | 7 |
 | Anki: Decks, Estudar, Navegar, Adicionar, Estatísticas, Opções do deck, Info do card, Importar | 8 |
 | Painel Anki do livro | 10 |
@@ -310,82 +315,81 @@ Específico do leitor:
 
 ---
 
-## 6. Leitor de PDF (motor PdfCraft)
+## 6. Leitor de PDF (a interface do próprio PdfCraft)
 
-### 6.1 A fachada `core-pdf`
+**Requisito do usuário:** a tela de leitura é **exatamente a do PdfCraft**, com todas as funções dele: destaque, sublinhado, comentários em conversa, notas, formas, tinta, caixas de texto, bookmarks (sumário editável), busca, miniaturas, cores de leitura, OCR e o resto. O app não redesenha o leitor: ele embute o PdfCraft e se conecta a ele.
 
-O `core-pdf` é a única crate que conhece o PdfCraft. Ele fala com o `pdfcraft-engine` (a fachada oficial do projeto, que mantém os documentos abertos, o histórico de edições e o salvamento incremental) e expõe uma interface pequena e estável para o resto do app:
+### 6.1 Como o PdfCraft entra no app
 
-```rust
-pub trait DocumentEngine {
-    fn open(&mut self, bytes: Arc<Vec<u8>>, password: Option<&str>) -> Result<DocHandle, OpenError>;
-    fn info(&self, doc: DocHandle) -> DocInfo;                       // páginas, tamanhos, título, autor
-    fn outline(&self, doc: DocHandle) -> Vec<OutlineItem>;
-    fn render(&mut self, doc: DocHandle, req: RenderReq) -> Result<Rendered, RenderError>; // página ou bloco, escala
-    fn page_text(&mut self, doc: DocHandle, page: usize) -> Result<PageText, TextError>;   // glifos com retângulos
-    fn search(&mut self, doc: DocHandle, query: &str, opts: SearchOpts) -> Vec<Hit>;
-    fn export_annotated(&mut self, doc: DocHandle, notes: &[Annotation]) -> Result<Vec<u8>, EditError>;
-    fn ocr_page(&mut self, doc: DocHandle, page: usize) -> Result<Vec<OcrWord>, OcrError>;
-}
-```
+- O PdfCraft tem uma versão para navegador: `apps/pdfcraft-web` (a interface egui completa, compilada para WebAssembly com `trunk build --release`, desenhando num canvas com WebGL via `glow`).
+- Essa versão **já tem uma ponte oficial para ser embutida** numa página: ela conversa com a janela-mãe por `postMessage` (só quando a mãe está na mesma origem). Mensagens existentes no commit fixado:
+  - `pdfcraft:ready` (PdfCraft → app): pronto para receber arquivos.
+  - `pdfcraft:open` (app → PdfCraft): `{ name, bytes }`, abre o PDF numa aba do PdfCraft.
+  - `pdfcraft:save` (PdfCraft → app): `{ name, saveAs, bytes }`, quando o usuário salva; o app guarda o arquivo.
+  - `pdfcraft:dirty` (PdfCraft → app): `{ dirty }`, quando surgem ou somem mudanças não salvas.
+  - `pdfcraft:failed` (PdfCraft → app): `{ error }`, se não conseguiu iniciar.
+- **No app:** a aba "Leitor" contém um iframe com o build web do PdfCraft, servido **na mesma origem** da interface (em `/pdfcraft/`, a partir de `src-tauri/resources/pdfcraft-web/`), para a ponte funcionar. Os documentos abrem como abas **do próprio PdfCraft**; o app não duplica a barra de abas.
+- O visual dentro do iframe é o do PdfCraft, sem CSS nem alterações visuais do app. O que o app acrescenta fica **fora** do iframe (o Painel Anki do livro, à direita) ou entra pela ponte (itens de menu e marcas, seção 6.3).
 
-- **Implementação principal:** `PdfcraftEngine`, sobre o `pdfcraft-engine`. **Plano B**, se o `pdfcraft-engine` não compilar para iOS (por causa do `aws-lc-sys`, do boa ou do `craft-libs`): montar o `PdfcraftEngine` direto sobre `pdfcraft-render`, `pdfcraft-annot`, `pdfcraft-ocr` e `pdfcraft-cos`, que é tudo de que a v1 precisa. Decidir na Fase 0.
-- **Alternativa:** `PdfJsEngine`, rodando no webview. A interface do leitor funciona igual com qualquer uma. No menu do documento: "Renderizador: PdfCraft | PDF.js". A escolha fica salva por livro.
-- **Erros nunca derrubam o app.** Todo PDF é entrada não confiável (essa é também a regra do PdfCraft). Uma página que não renderiza mostra um aviso no lugar e oferece trocar de renderizador.
+### 6.2 Fork mínimo do PdfCraft (`third_party/pdfcraft`)
 
-### 6.2 Renderização
+A ponte atual não basta para as ligações com o Anki. O app usa um **fork** do PdfCraft (repositório `jmetrimiranda/pdfcraft`, branch `leitor-bridge`, como submódulo no commit fixado) com extensões **só na ponte de embutimento**, pensadas para virar um PR para o projeto original:
 
-- O frontend pede páginas pelo protocolo `pdf`, sempre com a rota no caminho: `pdf://localhost/render/{doc}/{página}?escala={s}&bloco={x,y,w,h}&tema={claro|sepia|escuro}`. No Windows e no Android, o Tauri serve protocolos próprios como `http://pdf.localhost/…`, então as URLs são montadas por um helper único (`protocolUrl(scheme, path)`), nunca à mão. As respostas levam cabeçalhos CORS para a origem da interface.
-- O núcleo usa o `RenderPool` do PdfCraft (várias threads) e responde com a imagem. Comece com PNG. Se uma página levar mais de 200 ms entre o pedido e o desenho, troque para RGBA cru desenhado com `ImageData` num canvas.
-- **Virtualização:** só as páginas visíveis ± 2 ficam renderizadas. Ao rolar, os canvases fora da tela são liberados.
-- **Zoom em duas etapas:** primeiro a página na escala atual (rápido), depois blocos de alta resolução da área visível.
-- **Miniaturas** com `preview: true` (o modo de pré-visualização do PdfCraft, que pula imagens minúsculas).
-- **Cache** em memória com limite de tamanho (padrão 256 MB no desktop, 96 MB no iPad).
+- O código do fork segue as regras do PdfCraft (`AGENTS.md` e `CLAUDE.md` de lá): só Rust, nunca entrar em pânico, sem código GPL/AGPL. Assim o rebase é simples e o PR pode ser aceito.
+- As mudanças ficam em `apps/pdfcraft-web` e no menor ponto possível do `pdfcraft-ui-egui` (eventos de seleção, de página e de documento ativo, itens extras no menu da seleção, e uma camada de marcas temporárias desenhada por cima da página).
+- Atualizar o fork = rebase sobre o `main` do PdfCraft + suíte de testes, num PR separado.
 
-### 6.3 Camada de texto
+**Mensagens novas** (todas com `id` = `book_uid` do documento):
 
-- O `page_text` devolve os glifos da página em ordem de leitura, com o retângulo de cada um (`PageText` do PdfCraft, com `word_at`, `line_rects` e `find`).
-- **Coordenadas:** os retângulos (`TextGlyph.rect`) vêm no "espaço de visualização" da página: pontos, eixo y para baixo, origem no canto superior esquerdo, já com a rotação e o recorte da página aplicados (conferido no protótipo). Multiplique pela escala de exibição.
-- **Palavras:** o núcleo segmenta o texto da página com UAX #29 (`unicode-segmentation`) e mapeia cada palavra para os índices dos glifos e, daí, para os retângulos (`glyph_rects` / `line_rects`). O resultado vai para o frontend já como lista de palavras com retângulo, número da palavra na página e posição no texto.
-- O frontend desenha, por cima do canvas, um `<span>` transparente por palavra, posicionado pelo retângulo. Isso permite:
-  - **seleção de texto** nativa (inclusive no iPad, com as alças do sistema);
-  - **busca** com os resultados destacados;
-  - **realce de vocabulário** (seção 12);
-  - **tocar numa palavra** para abrir o dicionário.
-- Copiar a seleção usa o texto do PdfCraft (`text_of`), não o texto dos spans, para manter os espaços e as quebras de linha corretas.
+| Mensagem | Direção | Conteúdo | Uso |
+|---|---|---|---|
+| `pdfcraft:open` (estendida) | app → PdfCraft | `{ name, bytes, id, page? }` | abrir na página certa |
+| `pdfcraft:active` | PdfCraft → app | `{ id, page, pageCount }` | qual livro está à frente (Painel Anki do livro) |
+| `pdfcraft:page` | PdfCraft → app | `{ id, page }` | progresso e "cards desta página" |
+| `pdfcraft:activity` | PdfCraft → app | `{ id }`, no máximo 1 a cada 10 s | tempo de leitura (seção 6.4) |
+| `pdfcraft:selection` | PdfCraft → app | `{ id, page, text, rects }` (com espera de 300 ms) | botão "Card da seleção" no painel |
+| `pdfcraft:menu-items` | app → PdfCraft | `{ items: [{ key, label }] }` | acrescenta "Criar card", "Criar cards com IA" e "Definir palavra" ao menu da seleção |
+| `pdfcraft:menu` | PdfCraft → app | `{ key, id, page, text, rects }` | o usuário escolheu um desses itens |
+| `pdfcraft:goto` | app → PdfCraft | `{ id, page, find? }` | links `leitor://` e cliques no relatório de vocabulário |
+| `pdfcraft:marks` | app → PdfCraft | `{ id, set, marks: [{ page, rects, style: "underline", color }] }` | realce de vocabulário (seção 12.7) |
+| `pdfcraft:clear-marks` | app → PdfCraft | `{ id, set }` | desligar o realce |
+| `pdfcraft:mark-click` | PdfCraft → app | `{ id, set, index, page, rect }` | tocar numa palavra realçada |
+| `pdfcraft:request-save` | app → PdfCraft | `{ id }` | pedir um `pdfcraft:save` (salvamento automático, seção 6.5) |
+| `pdfcraft:save` (estendida) | PdfCraft → app | `{ name, saveAs, bytes, id }` | saber de qual livro é o arquivo |
 
-### 6.4 Navegação e leitura
+**Regras das marcas:** são temporárias, desenhadas por cima da página, **nunca gravadas no PDF** e não entram no histórico de desfazer. Retângulos no espaço de visualização da página (pontos, eixo y para baixo, como o `TextGlyph.rect`). `rect` no `mark-click` vem em pixels CSS relativos ao iframe, para o app posicionar um popover por cima.
 
-- Rolagem contínua (padrão) ou página a página (bom no iPad). No iPad em paisagem, duas páginas lado a lado (opcional).
-- Zoom: ajustar à largura, ajustar à página, ou porcentagem; pinça no iPad.
-- Sumário (do `outline`), miniaturas, ir para página, voltar e avançar no histórico de navegação (links internos do PDF funcionam).
-- Busca com "anterior / próximo" e contagem de resultados.
-- **Progresso salvo** (página e deslocamento) a cada 5 s e ao fechar.
-- **Tempo de leitura (sessões):**
-  - Uma sessão é **um intervalo contínuo de leitura ativa de um livro**: o documento está na aba visível, o app está em primeiro plano e houve rolagem, toque ou virada de página nos últimos 2 min.
-  - A sessão **termina** quando: passam 2 min sem atividade (o fim é o momento da última atividade), o usuário troca de aba ou de documento, abre a mini-revisão do Painel Anki do livro, o app vai para segundo plano ou a janela fecha.
-  - **Queda do app:** a sessão aberta grava um "batimento" a cada 30 s; ao reabrir, ela é fechada no último batimento.
-  - Sessões com menos de 1 min são descartadas. Sessões com mais de 12 h são divididas.
-  - `pages`: as páginas vistas (PDF) ou os índices dos capítulos (EPUB).
-  - Cada sessão é gravada localmente e, se a integração estiver ligada, enviada ao Painel de Estudos pela fila `outbox` (Apêndice A.5).
+### 6.3 O que fica no núcleo nativo (`core-pdf`)
 
-### 6.5 Anotações
+O núcleo Rust continua usando as crates do PdfCraft (as mesmas do fork) para o que não é tela:
 
-- **Tipos:** destaque (4 cores), sublinhado, nota num destaque, nota solta na página e marcador de página.
-- **Onde ficam:** no banco do app (`annotation`): página, quadriláteros no mesmo espaço de visualização da camada de texto (seção 6.3), texto, cor, comentário, `updated_at`. **O PDF original não é alterado na v1.** Ao exportar o PDF anotado, converter para o espaço do PDF (desfazendo rotação e recorte da página). Teste obrigatório com uma página girada 90° e uma com recorte.
-- **Exibição:** desenhadas por cima da página (SVG). Os comentários que já existiam dentro do PDF aparecem porque fazem parte da renderização do PdfCraft.
-- **Painel Anotações:** lista por página, com busca, filtro por cor e link para a página.
-- **Exportar:** "PDF anotado" (uma cópia com os destaques gravados como comentários de verdade, via `pdfcraft-annot`) e Markdown (citações com página). Toda cópia exportada grava o `book_uid` do original nos metadados do PDF (chave própria no dicionário Info, `LeitorBookUid`). Se a cópia for adicionada à biblioteca de novo, o app a associa ao livro original em vez de criar outro.
-- **Menu da seleção:** Destacar · Sublinhar · Nota · Copiar · **Criar card** · **Criar cards com IA** · **Definir palavra** (se a seleção for uma palavra).
+- **Texto com posição** de cada página (`pdfcraft-render`), para o escaneamento de vocabulário e para calcular os retângulos das marcas. Segmentação de palavras com UAX #29 e mapeamento para os glifos (aprendido no protótipo).
+- **Capa e metadados** da biblioteca.
+- **OCR** (`pdfcraft-ocr`), seção 7.2.
+- **Plano B para iOS** (Fase 10): se o `pdfcraft-engine` não compilar para iOS, o núcleo usa só `pdfcraft-render`, `-annot`, `-ocr` e `-cos`. O leitor não depende disso, porque roda em WebAssembly.
+
+### 6.4 Leitura, progresso e tempo
+
+- **Abrir um livro:** a Biblioteca manda `pdfcraft:open` com os bytes da versão atual do arquivo e a última página lida.
+- **Progresso:** a cada `pdfcraft:page`, o app grava a página (`reading_position`).
+- **Sessões de leitura:** uma sessão é um intervalo contínuo de leitura ativa de um livro: o documento está à frente no PdfCraft, a aba "Leitor" está visível, o app está em primeiro plano e chegou `pdfcraft:activity` nos últimos 2 min. Ela termina quando passam 2 min sem atividade (o fim é a última atividade), quando o usuário troca de documento ou de aba do app, abre a mini-revisão do Painel Anki do livro, o app vai para segundo plano ou a janela fecha. Queda do app: a sessão aberta grava um batimento a cada 30 s e, ao reabrir, é fechada no último. Menos de 1 min: descartada. Mais de 12 h: dividida. `pages`: as páginas vistas. Cada sessão vai para o Painel de Estudos pela fila `outbox` (Apêndice A.5).
+
+### 6.5 Anotações e bookmarks (do PdfCraft, dentro do PDF)
+
+- Destaques, comentários, notas, desenhos e bookmarks são os do PdfCraft e ficam **gravados no próprio PDF**, como o PdfCraft faz (salvamento incremental: o arquivo original mais uma revisão anexada).
+- **Salvamento automático:** quando o PdfCraft avisa `dirty: true`, o app espera 10 s sem novas mudanças (ou a troca de documento, a troca de aba ou o fechamento) e manda `pdfcraft:request-save`. O `pdfcraft:save` que volta é gravado como a nova versão do arquivo do livro. "Salvar como" do PdfCraft vira "Exportar cópia".
+- **Identidade:** o `book_uid` continua sendo o sha256 do arquivo **original** e não muda com as anotações. A versão atual tem seu próprio hash (`file_hash`). Toda versão salva leva o `book_uid` nos metadados do PDF (chave `LeitorBookUid` no dicionário Info, gravada pela ponte no momento do save), para o arquivo ser reconhecido se for exportado e adicionado de novo.
+- A tabela própria de anotações do app passa a existir **só para EPUB** (seção 7.1).
 
 ### 6.6 Biblioteca
 
-- Grade ou lista: capa, título, autor, progresso, cobertura de vocabulário (se escaneado) e o tamanho do deck do livro.
-- **Adicionar:** abrir arquivo, arrastar e soltar, ou "Abrir com" pelo sistema (no iPad, pelo app Arquivos e pelo menu Compartilhar). O arquivo é copiado para a pasta do app.
-- **Identidade do livro:** `book_uid` = sha256 do arquivo original, em hexadecimal minúsculo. É o mesmo identificador usado na integração com o Painel, no `library-sync` e nos links `leitor://`. O mesmo arquivo adicionado em dois aparelhos vira o mesmo livro. Um PDF exportado pelo app (anotado ou pesquisável) carrega o `book_uid` do original nos metadados e é associado a ele (seção 6.5).
-- Metadados, capa (primeira página) e contagem de páginas na importação.
+- Grade ou lista: capa, título, autor, progresso, cobertura de vocabulário (se escaneado) e o tamanho do deck do livro. Visual nos tokens do app (seção 4), não no estilo do PdfCraft.
+- **Adicionar:** abrir arquivo, arrastar e soltar, ou "Abrir com" pelo sistema. O arquivo é copiado para a pasta do app. Se o PDF tiver `LeitorBookUid` nos metadados, ele é associado ao livro original.
+- **Identidade do livro:** `book_uid` = sha256 do arquivo original, em hexadecimal minúsculo. É o mesmo identificador usado no Painel, no `library-sync` e nos links `leitor://`.
+- Metadados, capa (primeira página, renderizada pelo núcleo) e contagem de páginas na importação.
 - **Texto da página detectado:** se menos de 50% das páginas tiverem mais de 20 caracteres de texto, marcar "parece escaneado" e oferecer OCR (seção 7.2).
 - Coleções simples (pastas) e busca por título e autor.
+- Abrir um livro leva para a aba "Leitor" com o documento já aberto no PdfCraft.
 
 ---
 
@@ -395,12 +399,12 @@ pub trait DocumentEngine {
 
 - **Visual:** foliate-js no webview (paginação reflow, temas, tamanho de fonte), com posições em CFI.
 - **Texto:** o `core-epub` extrai o texto por capítulo (para busca e escaneamento de vocabulário) e o sumário.
-- As anotações de EPUB guardam a faixa CFI em vez de página e quadriláteros. O resto (Painel Anki, cards da seleção, vocabulário) funciona igual.
+- O EPUB não abre no PdfCraft (ele só lê PDF). O leitor de EPUB fica na mesma aba "Leitor", com destaques, notas e marcadores próprios, guardados no banco do app (`epub_annotation`, faixa CFI), imitando a aparência do PdfCraft. O resto (Painel Anki, cards da seleção, vocabulário) funciona igual.
 
 ### 7.2 OCR
 
 - **Motor:** `pdfcraft-ocr` (motor ocrs, MIT/Apache; modelos com licença CC-BY-SA-4.0, baixados por script). Lê o alfabeto latino **sem acentos**: serve para livros em inglês, não para português.
-- **Fluxo:** "Reconhecer texto" num livro escaneado roda o OCR página por página, em segundo plano, com progresso e cancelamento. As palavras reconhecidas (texto + posição) ficam guardadas no banco do app e alimentam a camada de texto, a busca e o escaneamento de vocabulário como se fossem texto do PDF. O PDF original não é alterado. "Exportar PDF pesquisável" gera uma cópia com a camada de texto invisível, como o próprio PdfCraft faz.
+- **Fluxo:** "Reconhecer texto" num livro escaneado roda o OCR página por página no núcleo nativo, em segundo plano, com progresso e cancelamento (no WebAssembly seria lento demais). No fim, o núcleo grava uma **nova versão do PDF com a camada de texto invisível** (`text_layer` do `pdfcraft-ocr`, o mesmo "Searchable Image" do PdfCraft). Daí em diante, a seleção, a busca e as anotações do PdfCraft funcionam no livro, e o escaneamento de vocabulário também.
 - **Desempenho esperado:** alguns segundos por página no desktop. No iPad, avisar que um livro inteiro pode levar bastante tempo e deixar rodar com a tela acesa.
 - Português escaneado fica fora da v1 (anotado em 23.2).
 
@@ -471,7 +475,7 @@ As páginas são **rotas de um único app SvelteKit** compilado, extraído do wh
   - As páginas do Anki (8.3) têm acesso à API inteira da lista branca.
   - Os cards (e qualquer HTML vindo de um deck) rodam no protocolo `card`, que atende em `/_anki/` só quatro métodos: `getSchedulingStatesWithContext`, `setSchedulingStates`, `i18nResources` e `congratsInfo`. Qualquer outro devolve 403. Decks importados podem trazer JavaScript, e sem essa regra um card poderia chamar `addNote` ou `importAnkiPackage`.
 - **Origem separada para os cards:** os cards são servidos por outro protocolo (`card`), num iframe com `sandbox="allow-scripts"`. As permissões do Tauri valem por janela ou webview, não por iframe, então o isolamento vem da origem e do sandbox. O iframe fala com o app só por `postMessage`, com mensagens validadas.
-- **Mídia na raiz da origem dos cards:** os templates usam nomes de arquivo soltos (`<img src="foto.jpg">`), então a mídia é servida em `card://localhost/<arquivo>` (pelo helper da seção 6.2).
+- **Mídia na raiz da origem dos cards:** os templates usam nomes de arquivo soltos (`<img src="foto.jpg">`), então a mídia é servida em `card://localhost/<arquivo>` (pelo helper da seção 15).
 - **Teste obrigatório:** de dentro de um card, `invoke` do Tauri e `POST /_anki/addNote` precisam falhar.
 
 ### 8.5 Importar e exportar
@@ -510,18 +514,18 @@ As páginas são **rotas de um único app SvelteKit** compilado, extraído do wh
   - **Desfazer:** trocar de deck também é uma operação desfazível no Anki. O `Ctrl+Z` das telas de estudo só desfaz se a última operação da pilha for uma resposta; senão, fica desabilitado.
   - Enquanto a mini-revisão está aberta, a sessão de leitura fica pausada (seção 6.4), para o mesmo tempo não contar duas vezes no Painel.
 - **Vocabulário:** cobertura atual do livro, se já escaneado, com link para o relatório (seção 12).
-- **Cards desta página:** cards cuja `Fonte` aponta para a página atual, para rever o que já foi anotado.
+- **Cards desta página:** cards cuja `Fonte` aponta para a página atual (vinda de `pdfcraft:page`), para rever o que já foi anotado.
 
 ### 10.2 Criar card a partir da seleção
 
-1. O usuário seleciona um trecho e escolhe "Criar card" (menu da seleção, `Ctrl+Shift+N` ou o botão do painel).
+1. O usuário seleciona um trecho no PdfCraft e escolhe "Criar card": no menu da seleção do próprio PdfCraft (item acrescentado pela ponte, `pdfcraft:menu`), com `Ctrl+Shift+N` ou no botão do painel (que usa a última `pdfcraft:selection`).
 2. O painel abre um formulário compacto já preenchido:
    - **Tipo:** Básico, Cloze (o trecho vira o texto, e o usuário marca as lacunas), Código · Comando, Código · Programa, ou Vocabulário (se a seleção for uma palavra).
    - **Deck:** o último usado para este livro.
    - **Campos:** o trecho vai para o campo principal. O campo `Fonte` recebe a referência.
-3. `Ctrl+Enter` adiciona. O card fica marcado na página com um pequeno ícone na margem.
+3. `Ctrl+Enter` adiciona. O painel passa a listar o card em "Cards desta página".
 
-**A `Fonte`:** "Animal Farm, p. 37" com um link `leitor://livro/<book_uid>?pagina=37&q=<trecho>`. Ao revisar o card na aba Anki ou no Painel Anki do livro, "Abrir no livro" abre o documento na página e destaca o trecho. No AnkiMobile e no Anki desktop, o link aparece no card e, tocado, abre o Leitor se ele estiver instalado no mesmo aparelho (deep link registrado no sistema). O `book_uid` é o sha256 do arquivo, então o link funciona em qualquer aparelho que tenha o livro.
+**A `Fonte`:** "Animal Farm, p. 37" com um link `leitor://livro/<book_uid>?pagina=37&q=<trecho>`. Ao revisar o card na aba Anki ou no Painel Anki do livro, "Abrir no livro" abre o documento no PdfCraft (`pdfcraft:open` se ainda não estiver aberto) e manda `pdfcraft:goto` com a página e o trecho para busca. No AnkiMobile e no Anki desktop, o link aparece no card e, tocado, abre o Leitor se ele estiver instalado no mesmo aparelho (deep link registrado no sistema). O `book_uid` é o sha256 do arquivo, então o link funciona em qualquer aparelho que tenha o livro.
 
 **Tipos de nota que recebem a `Fonte`:** os tipos do app (seção 11.1 e 12.6) já têm o campo. Para os tipos padrão (Básico, Cloze), o app usa os clones "Básico (Leitor)" e "Cloze (Leitor)", criados no "Preparar coleção" com um campo `Fonte` a mais. Os tipos originais do usuário não são alterados.
 
@@ -836,8 +840,8 @@ Filtros: status, mínimo de ocorrências (padrão 2), capítulo e ocultar raras.
 
 ### 12.7 Vocabulário durante a leitura
 
-- O botão "Realçar vocabulário" sublinha, na camada de texto, as palavras desconhecidas (coral) e as que estão em aprendizado (âmbar).
-- **Tocar numa palavra** abre um popover com o lema, o status, a definição (da nota no deck, se existir; senão do WordNet, ou da IA sob demanda) e os botões "Adicionar ao deck do livro", "Já sei" e "Nome próprio". Adicionar cria a nota na hora; o enriquecimento com IA vem depois, em segundo plano.
+- O botão "Realçar vocabulário" (no Painel Anki do livro) sublinha as palavras desconhecidas (coral) e as que estão em aprendizado (âmbar). O núcleo calcula os retângulos de cada ocorrência (texto com posição do `core-pdf`, no mesmo commit do PdfCraft da tela) e o app manda `pdfcraft:marks` para as páginas visíveis e as vizinhas, conforme chegam os `pdfcraft:page`. As marcas nunca vão para o PDF.
+- **Tocar numa palavra realçada** gera `pdfcraft:mark-click`, e o app abre, por cima do iframe na posição recebida, um popover com o lema, o status, a definição (da nota no deck, se existir; senão do WordNet, ou da IA sob demanda) e os botões "Adicionar ao deck do livro", "Já sei" e "Nome próprio". Adicionar cria a nota na hora; o enriquecimento com IA vem depois, em segundo plano.
 - **Escanear de novo** só recalcula os status (a tabela de lemas fica guardada por livro), em segundos. O processamento completo só roda de novo se o texto mudar (depois de um OCR, por exemplo).
 
 ### 12.8 Desempenho e qualidade esperados
@@ -868,24 +872,25 @@ A coleção do Anki fica no arquivo dela. O banco do app guarda o resto. Todo re
 
 ```
 settings(key PK, value JSON)
-  -- tema de leitura, renderizador padrão, vocab_root_deck_id, vocab_known_ivl_days(21),
+  -- vocab_root_deck_id, vocab_known_ivl_days(21),
   -- vocab_count_young, vocab_suspended_policy, vocab_function_words_known,
   -- anki_sync_url, anki_sync_user (a chave fica no keychain), runner_url,
   -- ai_provider, ai_base_url, ai_model_fast, ai_model_strong, ai_monthly_limit_usd,
   -- painel_url, painel_integration_enabled (o token fica no keychain)
 
 book(book_uid PK (sha256), title, author, language DEFAULT 'en', format ENUM('pdf','epub'),
-     file_name, pages, has_text BOOL, ocr_status, renderer ENUM('pdfcraft','pdfjs'),
+     file_name, pages, has_text BOOL, ocr_status,
+     file_hash,                -- sha256 da versão atual (muda com anotações e OCR); book_uid não muda
+     file_version INT,         -- 1, 2, 3… a cada versão salva
      content_deck_id NULL, collection_folder NULL, added_at, updated_at, deleted)
-book_file(book_uid PK, local_path NULL, downloaded BOOL)          -- não sincroniza; cada aparelho sabe o que tem
+book_file(book_uid PK, local_path NULL, local_hash NULL, downloaded BOOL)   -- não sincroniza; cada aparelho sabe o que tem
 reading_position(book_uid PK, page, offset REAL, cfi NULL, progress REAL, updated_at, deleted)
 reading_session(uid PK, book_uid, started_at, ended_at NULL, last_heartbeat_at, pages JSON,
                 sent_to_painel_at NULL)                                -- não sincroniza: vai para o Painel
-annotation(uid PK, book_uid, kind ENUM('highlight','underline','note','bookmark'),
-           page NULL, cfi NULL, quads JSON NULL, text NULL, color NULL, comment NULL,
-           updated_at, deleted)
+epub_annotation(uid PK, book_uid, kind ENUM('highlight','underline','note','bookmark'),
+                cfi, text NULL, color NULL, comment NULL, updated_at, deleted)
+-- as anotações de PDF ficam dentro do próprio PDF (seção 6.5)
 book_text(book_uid, unit INT, label NULL, text TEXT, PRIMARY KEY(book_uid, unit))   -- cache, recriável
-ocr_word(book_uid, page, words JSON, PRIMARY KEY(book_uid, page))                     -- palavras do OCR
 
 notetype_mapping(anki_notetype_id PK, role ENUM('vocab','code_command','code_program'),
                  fields JSON, updated_at, deleted)
@@ -912,8 +917,8 @@ Comandos (`invoke`), agrupados. Todos devolvem erros tipados com mensagem em pt-
 | Grupo | Comandos |
 |---|---|
 | Biblioteca | `library_list`, `library_add(path)`, `library_remove(uid)`, `library_update(uid, patch)`, `book_open(uid)` |
-| Documento | `doc_info`, `doc_outline`, `doc_words(page)` (palavras com retângulos), `doc_search(q)`, `doc_set_renderer`, `doc_export_annotated`, `doc_export_markdown` |
-| Leitura | `position_get/set`, `reading_session_start/stop`, `annotation_list/upsert/delete` |
+| Documento | `book_bytes(uid)` (versão atual, para o `pdfcraft:open`), `book_save_version(uid, bytes)` (vindo do `pdfcraft:save`), `doc_words(uid, page)` (palavras com retângulos), `vocab_marks(uid, pages)` (retângulos das marcas) |
+| Leitura | `position_get/set`, `reading_session_start/heartbeat/stop`, `epub_annotation_list/upsert/delete` |
 | OCR | `ocr_start(uid)`, `ocr_cancel(uid)` |
 | Anki | `anki_deck_tree`, `anki_study_next(deck)`, `anki_answer(card, rating, ms)`, `anki_undo`, `anki_card_action(card, bury|suspend|flag)`, `anki_search(q)`, `anki_note_get/update/add`, `anki_notetypes`, `anki_import(path)`, `anki_export(deck, path)`, `anki_prepare_collection` |
 | Sync do Anki | `anki_sync_login`, `anki_sync`, `anki_sync_full(direction)`, `anki_sync_status` |
@@ -924,10 +929,10 @@ Comandos (`invoke`), agrupados. Todos devolvem erros tipados com mensagem em pt-
 
 **Protocolos customizados:**
 
-- `pdf` para as imagens das páginas (`pdf://localhost/render/...`).
+- `pdf` só para capas e miniaturas da Biblioteca (`pdf://localhost/cover/...`). A leitura é do PdfCraft embutido, servido como arquivo estático da própria interface em `/pdfcraft/` (mesma origem, para a ponte funcionar).
 - `anki` para as páginas web do Anki e os `POST /_anki/*` (seção 8.3).
 - `card` para os cards e a mídia deles, numa origem separada (seção 8.4).
-- Todas as URLs desses protocolos passam pelo helper da seção 6.2 (no Windows e no Android viram `http://<protocolo>.localhost/...`).
+- Todas as URLs desses protocolos passam por um helper único, `protocolUrl(scheme, path)`, sempre com a rota no caminho (`<protocolo>://localhost/<rota>`). No Windows e no Android, o Tauri serve protocolos próprios como `http://<protocolo>.localhost/<rota>`, e o helper cuida disso. As respostas levam cabeçalhos CORS para a origem da interface.
 - `leitor://` não é um protocolo interno: é o deep link registrado no sistema para os links de volta para o livro (funciona a partir do AnkiMobile no mesmo aparelho).
 
 Tarefas longas (escaneamento, OCR, importação, sincronização) emitem eventos de progresso (`job://<id>`) e podem ser canceladas.
@@ -944,17 +949,18 @@ O Anki sincroniza pelo servidor dele. Os livros, as anotações e o progresso pr
 |---|---|
 | `GET /v1/changes?since=<cursor>` | Registros alterados desde o cursor, com o novo cursor (um número de sequência do servidor, nunca o relógio dos aparelhos). |
 | `POST /v1/changes` | Envia registros alterados. |
-| `HEAD/GET/PUT /v1/files/{book_uid}` | Arquivo do livro, pelo sha256. O servidor confere o hash no `PUT`. |
-| `HEAD/GET/PUT /v1/files/{book_uid}.ocr` | Palavras do OCR do livro (arquivo derivado, comprimido). |
+| `HEAD/GET /v1/files/{book_uid}` | Versão atual do arquivo do livro (com `file_hash` e `file_version` nos cabeçalhos). |
+| `PUT /v1/files/{book_uid}?base={file_hash}` | Envia uma nova versão, dizendo de qual versão ela partiu. O servidor confere o hash do corpo. |
 
-**Registros que sincronizam:** `book`, `reading_position`, `annotation`, `vocab_override`, `notetype_mapping` e `code_note_extra` (todos com chave estável, `updated_at` e `deleted`; seção 14).
+**Registros que sincronizam:** `book`, `reading_position`, `epub_annotation`, `vocab_override`, `notetype_mapping` e `code_note_extra` (todos com chave estável, `updated_at` e `deleted`; seção 14). As anotações de PDF viajam dentro do arquivo.
 
 **Regras:**
 
 - **Conflito:** para cada chave, vence o `updated_at` mais recente (empate: vence o que chegou por último no servidor). A chave de livros e posições é o `book_uid`, então o mesmo arquivo adicionado em dois aparelhos é o mesmo registro, sem conflito.
 - **Exclusões:** viram `deleted = true` (lápide) e sincronizam como qualquer alteração. Excluir um livro apaga as anotações e a posição dele (também como lápides) e, no servidor, o arquivo é removido depois de 30 dias. As lápides ficam 90 dias.
-- **Arquivos:** enviados ao adicionar um livro; baixados sob demanda. A biblioteca mostra todos os livros; os que não estão no aparelho aparecem com "Baixar".
-- **O que não sincroniza:** caches recriáveis (`book_text`, `book_lemma`, `vocab_scan`) e as sessões de leitura (que vão para o Painel). As palavras do OCR sincronizam como o arquivo derivado `.ocr`, porque refazer o OCR no iPad é caro.
+- **Arquivos:** enviados ao adicionar um livro e a cada nova versão salva (anotações, OCR); baixados sob demanda. A biblioteca mostra todos os livros; os que não estão no aparelho aparecem com "Baixar".
+- **Conflito de arquivo:** se o `PUT` parte de uma versão que já não é a atual no servidor (o livro foi anotado em dois aparelhos sem sincronizar no meio), o servidor responde 409. O app baixa a versão do servidor, guarda a sua como "<título> (cópia de conflito, <aparelho>, <data>)" na biblioteca e avisa o usuário. Nada é perdido. Para evitar isso, o app sincroniza o livro ao abrir e ao fechar.
+- **O que não sincroniza:** caches recriáveis (`book_text`, `book_lemma`, `vocab_scan`) e as sessões de leitura (que vão para o Painel). O OCR vai dentro do arquivo, como camada de texto.
 - **Quando:** ao abrir o app, ao fechar um livro e a cada 5 min com o app aberto. Offline, as alterações esperam numa fila local.
 
 ## 17. Integração com o Painel de Estudos
@@ -974,6 +980,7 @@ Opcional, configurada em Configurações → Integração com o Painel (URL e to
 - **CSP restritiva** na interface. Os cards rodam isolados, com acesso a apenas quatro métodos do Anki (seção 8.4).
 - **O protocolo `anki` só aceita os métodos da lista branca e da tabela de handlers**, com `Content-Type: application/binary` (seção 8.3).
 - **Arquivos não confiáveis** (PDF, EPUB, `.apkg`) nunca derrubam o app: erros viram mensagens.
+- **O PdfCraft embutido** é código nosso (o fork, compilado no nosso CI) e roda na mesma origem da interface, o que a ponte exige. Ele não recebe acesso a `invoke`: tudo passa pela ponte de mensagens, e o app valida cada mensagem (tipo, `id` de um livro aberto, tamanhos). O JavaScript embutido em PDFs roda no motor isolado do próprio PdfCraft, não no webview.
 - **Código C++ local** roda com tempo limite e limites de recursos. No runner remoto, isolado e sem internet (seção 11.5).
 - Os livros e a coleção ficam no aparelho e no VPS do próprio usuário. Nada vai para terceiros, exceto o texto enviado ao provedor de IA quando o usuário usa uma função de IA.
 
@@ -989,7 +996,7 @@ Opcional, configurada em Configurações → Integração com o Painel (URL e to
 - **Tamanho e pacotes de dados:**
   - **Sempre no instalador:** o MathJax e as páginas do Anki (precisam funcionar offline desde a Fase 2).
   - **No instalador do desktop; baixados no primeiro uso no iPad e no iPhone:** Pyodide, WordNet com as frequências, e os modelos de OCR. Os pacotes ficam em `https://leitor.<domínio>/assets/<versão>/`, servidos pelo `library-sync`, com hash conferido no download. Antes do `library-sync` existir (Fase 9), o build de iOS inclui os pacotes no instalador.
-- **CI:** `cargo fmt`, `clippy -D warnings`, `cargo test` (com `-j 2` e tempo limite, porque compilar o Anki e o PdfCraft é pesado), testes do frontend, build desktop Linux em todo PR, build iOS no runner macOS no merge.
+- **CI:** `cargo fmt`, `clippy -D warnings`, `cargo test` (com `-j 2` e tempo limite, porque compilar o Anki e o PdfCraft é pesado), build do PdfCraft web (`trunk`, alvo `wasm32-unknown-unknown`), testes do frontend e da ponte, build desktop Linux e Windows em todo PR, build iOS no runner macOS no merge (quando chegar a Fase 10).
 - **Custos:**
 
   | Item | Custo |
@@ -1005,7 +1012,8 @@ Opcional, configurada em Configurações → Integração com o Painel (URL e to
 
 - **Núcleo do Anki:** com uma coleção de exemplo em `tests/fixtures/` (deck básico, mídia com áudio e imagem, cloze, "digitar resposta", tipos de código), testar abrir, estudar, responder, desfazer, importar e exportar `.apkg`, e sincronizar contra um servidor de sync de teste (Docker no CI).
 - **Ponte `/_anki/`:** cada método da lista branca chamado com uma requisição gravada da página do Anki.
-- **PDF:** um conjunto de PDFs de teste (texto, escaneado, com sumário, com comentários, protegido por senha, corrompido): abrir, renderizar, extrair palavras com retângulos, buscar, exportar anotado. Os corrompidos devem dar erro, nunca derrubar o app.
+- **PDF no núcleo:** um conjunto de PDFs de teste (texto, escaneado, com sumário, com comentários, protegido por senha, corrompido, com página girada): extrair palavras com retângulos, capas e OCR. Os corrompidos devem dar erro, nunca derrubar o app.
+- **Ponte com o PdfCraft:** Playwright abrindo a interface com o PdfCraft embutido: `ready` → `open` → `active`/`page` → seleção → item de menu → `goto` → `marks` sobre as palavras certas (comparar os retângulos das marcas com os do texto da tela) → `request-save` → `save` com o `LeitorBookUid` nos metadados.
 - **Verificador de comandos:** todos os casos do Apêndice B.
 - **Ida e volta de código** nos campos do Anki.
 - **Vocabulário:** textos curtos com status conhecidos (lematização, nomes próprios, cobertura, curva) e a conferência manual de 100 tokens de um livro real.
@@ -1029,18 +1037,22 @@ Entregas: workspace Tauri 2 com as crates `core-*`, o `rust-toolchain.toml`, o `
 
 Aceite:
 
-- [ ] **O app compila para Linux, Windows, macOS e iOS (dispositivo e simulador) com o `rslib` (com `rustls`) e o motor do PdfCraft linkados.** Este é o primeiro item. Se o `pdfcraft-engine` não compilar para iOS, aplicar o plano B da seção 6.1 e registrar em `docs/decisoes.md`. Se o `rslib` não compilar para iOS, parar e reportar ao usuário antes de seguir.
-- [ ] No simulador de iOS, o `rslib` faz login e sincroniza por HTTPS com um servidor de sync de teste (local, com certificado de desenvolvimento), provando que o TLS funciona.
+- [ ] **O app compila e roda no Linux e no Windows** com o `rslib` (com `rustls`) e as crates do PdfCraft linkadas. macOS é opcional. **iOS adiado para a Fase 10** (decisão do usuário: desktop primeiro), sem usar nada que feche essa porta.
+- [ ] O `rslib` faz login e sincroniza por HTTPS com um servidor de sync de teste (local, com certificado de desenvolvimento), provando que o TLS funciona.
 - [ ] Um comando de teste no app abre uma coleção, mostra a árvore de decks, abre um PDF e mostra a página 1 (a repetição do protótipo dentro do Tauri).
 - [ ] `/dev/ui` com todos os componentes nos temas claro e escuro, aprovado visualmente pelo usuário.
 
-### Fase 1 — Leitor de PDF
+### Fase 1 — Leitor (PdfCraft embutido) e biblioteca
+
+Entregas: o fork do PdfCraft como submódulo, o build web dele no CI, a aba "Leitor" com o iframe na mesma origem, a ponte (mensagens originais + `id`, `active`, `page`, `activity`, `request-save`), a Biblioteca, o salvamento automático de versões e as sessões de leitura.
 
 Aceite:
 
-- [ ] Abrir um PDF de 500 páginas em até 3 s no desktop e rolar sem travar: cada página visível desenhada em até 500 ms, memória estável depois de rolar 200 páginas.
-- [ ] Seleção de texto, busca, sumário, miniaturas, zoom (com pinça no iPad), temas de leitura e progresso salvo.
-- [ ] Trocar o renderizador para PDF.js num documento e voltar.
+- [ ] A tela de leitura é o PdfCraft sem alterações visuais: comparar capturas do app com o PdfCraft web rodando sozinho no navegador, com o mesmo PDF e a mesma janela. Diferença aceita: só o que está fora do iframe.
+- [ ] Destacar, comentar, criar bookmark e usar a busca, as miniaturas e as cores de leitura do PdfCraft dentro do app. Fechar e reabrir o app: tudo continua lá (salvamento automático, seção 6.5), e o `book_uid` do livro não mudou.
+- [ ] Abrir um livro pela Biblioteca abre no PdfCraft na última página lida.
+- [ ] Um PDF de 500 páginas abre e rola no app com desempenho igual ao do PdfCraft web sozinho no mesmo computador (o app não pode piorar o PdfCraft).
+- [ ] Sessões de leitura gravadas conforme a seção 6.4 (incluindo a troca de aba e a pausa por inatividade).
 - [ ] Um PDF corrompido mostra erro e não derruba o app.
 
 ### Fase 2 — Anki local
@@ -1068,9 +1080,9 @@ Aceite:
 
 Aceite:
 
-- [ ] Destaques, notas e marcadores salvos e listados; exportar PDF anotado e Markdown.
-- [ ] Criar um card Básico e um Cloze a partir de uma seleção com `Ctrl+Shift+N`, com a `Fonte` preenchida.
-- [ ] Revisando esse card na aba Anki, "Abrir no livro" vai para a página e destaca o trecho. O link `leitor://` tocado num card no AnkiMobile do mesmo iPad abre o Leitor na página.
+- [ ] Os itens "Criar card", "Criar cards com IA" e "Definir palavra" aparecem no menu da seleção do próprio PdfCraft (`pdfcraft:menu-items`).
+- [ ] Criar um card Básico e um Cloze a partir de uma seleção, pelo menu do PdfCraft e por `Ctrl+Shift+N`, com a `Fonte` preenchida.
+- [ ] Revisando esse card na aba Anki, "Abrir no livro" abre o PdfCraft na página e encontra o trecho (`pdfcraft:goto`). O link `leitor://` tocado num card no AnkiMobile do mesmo iPad abre o Leitor na página.
 - [ ] Mini-revisão no painel lateral seguindo as regras da seção 10.1 (um deck por vez, deck atual restaurado ao fechar, `Ctrl+Z` só desfaz respostas, leitura pausada).
 
 ### Fase 5 — Cards de código
@@ -1094,14 +1106,14 @@ Aceite:
 - [ ] O relatório mostra a cobertura, a curva (95% e 98%) e os capítulos.
 - [ ] O deck é gerado dentro da pasta de vocabulário, na ordem de leitura, com a `Fonte` apontando para a primeira ocorrência.
 - [ ] "Já sei" e escanear de novo atualiza os status em segundos.
-- [ ] Realce e popover no leitor, e "Adicionar ao deck do livro" a partir dele.
+- [ ] Realce no PdfCraft pelas marcas da ponte, sublinhando as palavras certas (teste da seção 20), sem gravar nada no PDF; popover ao tocar numa palavra e "Adicionar ao deck do livro" a partir dele.
 
 ### Fase 7 — EPUB e OCR
 
 Aceite:
 
 - [ ] Um EPUB abre, guarda o progresso, aceita anotações e cards da seleção, e pode ser escaneado.
-- [ ] Um PDF escaneado em inglês passa pelo OCR; depois, a busca, a seleção e o escaneamento funcionam nele.
+- [ ] Um PDF escaneado em inglês passa pelo OCR no núcleo e vira uma nova versão pesquisável; depois, a busca, a seleção e as anotações do PdfCraft e o escaneamento funcionam nele.
 
 ### Fase 8 — IA
 
@@ -1120,10 +1132,12 @@ Aceite:
 - [ ] Contra o Painel simulado: sessões de leitura enviadas, reenviadas sem duplicar, guardadas offline e enviadas quando a rede volta; 401 para de tentar e avisa; 429 e 5xx tentam de novo.
 - [ ] **[VPS]** O mesmo com o `library-sync` no VPS e com o Painel de verdade (Fase 4 de lá): ler 20 min → o tempo aparece no realizado da trilha ligada ao livro.
 
-### Fase 10 — Acabamento e distribuição no iPad e no iPhone
+### Fase 10 — iPad e iPhone
 
 Aceite:
 
+- [ ] O app compila para iOS (dispositivo e simulador) com o `rslib` (com `rustls`) e as crates do PdfCraft. Se o `pdfcraft-engine` não compilar, aplicar o plano B da seção 6.3 e registrar em `docs/decisoes.md`.
+- [ ] No iPad, o `rslib` sincroniza por HTTPS com o servidor de sync, e o PdfCraft web roda no WKWebView com desempenho aceitável num livro grande.
 - [ ] Layout de iPad refinado (painéis como folhas, gestos, teclado externo, Split View).
 - [ ] App no TestFlight, instalado no iPad e no iPhone do usuário.
 - [ ] Uma semana de uso real (ler, criar cards, revisar) só por este app, aprovada pelo usuário.
@@ -1134,11 +1148,14 @@ Aceite:
 
 | Risco | Cuidado |
 |---|---|
-| O PdfCraft está em fase alfa e muda muito rápido | Commit fixado, tudo atrás do `core-pdf`, atualização deliberada em PR separado, PDF.js como renderizador alternativo. |
-| Fidelidade de renderização do PdfCraft (renderizador provisório) | Conjunto de PDFs de teste comparados visualmente; troca de renderizador por livro. |
+| O PdfCraft está em fase alfa e muda muito rápido | Fork com mudanças só na ponte de embutimento, rebase deliberado em PR separado, testes da ponte; propor as mudanças como PR ao projeto original para reduzir o fork. |
+| Fidelidade de renderização do PdfCraft (renderizador provisório) | É a do próprio PdfCraft: o app herda as melhorias a cada atualização. Para um PDF que não abrir, "Abrir no visualizador do sistema". |
+| Desempenho do PdfCraft em WebAssembly | Medido na Fase 1 contra o PdfCraft web sozinho. Se for lento demais em livros grandes, avaliar com o usuário a alternativa de rodar o PdfCraft nativo (egui) numa janela própria no desktop, com a mesma ponte. |
+| WebGL no webview do Linux (WebKitGTK) | O PdfCraft web desenha com WebGL. Testar no Linux do usuário na Fase 1; se a aceleração falhar, documentar o ajuste do WebKitGTK (ou a variável de ambiente) que resolve. |
+| Conflito de arquivo (o mesmo livro anotado em dois aparelhos) | Cópia de conflito, nada perdido (seção 16); sincronizar o livro ao abrir e ao fechar. |
 | API Rust do `rslib` mudar | Tag fixada; tudo atrás do `AnkiService`; testes com a coleção de exemplo; atualizar junto com o servidor de sync e o Painel. |
-| O `rslib` não compilar para iOS | É o primeiro critério da Fase 0. O AnkiMobile usa o mesmo núcleo, então é viável, mas pode exigir ajustes (TLS, protoc). |
-| O `pdfcraft-engine` não compilar para iOS (dependências em C, motor JS) | Plano B da seção 6.1: usar só `pdfcraft-render`, `-annot`, `-ocr` e `-cos`. |
+| O `rslib` não compilar para iOS | É o primeiro critério da Fase 10. O AnkiMobile usa o mesmo núcleo, então é viável, mas pode exigir ajustes (TLS, protoc). |
+| O `pdfcraft-engine` não compilar para iOS (dependências em C, motor JS) | Plano B da seção 6.3: o núcleo usa só `pdfcraft-render`, `-annot`, `-ocr` e `-cos`. A tela de leitura não depende disso (é WebAssembly). |
 | Portar a metade Python do revisor do Anki | Lista na seção 8.2; comparar card a card com o Anki desktop na Fase 2. |
 | Páginas web do Anki esperarem o ambiente do Anki desktop | Seguir o `mediasrv.py` da tag; shim para `bridgeCommand`; testar cada página. |
 | Conflito de sincronização completa | Diálogo claro, nunca enviar sem o usuário escolher, backup antes, evitar mudanças de esquema. |
@@ -1153,9 +1170,10 @@ Aceite:
 ### 23.1 Decisões
 
 - Dois apps separados: este (leitor + Anki) e o Painel de Estudos (produtividade), ligados pelo contrato do Apêndice A.
-- Juntar o núcleo do Anki (`rslib`), as páginas web do Anki e as crates de motor do PdfCraft num app Tauri 2. A interface egui do PdfCraft e a interface Qt do Anki não são usadas.
+- Juntar o núcleo do Anki (`rslib`), as páginas web do Anki e o PdfCraft num app Tauri 2. **A tela de leitura é a interface do próprio PdfCraft** (versão WebAssembly, embutida, com um fork mínimo só na ponte), com o visual e todas as funções dele. A interface Qt do Anki não é usada.
+- Desktop primeiro (Linux e Windows); iPad e iPhone na Fase 10.
 - O Anki fica numa aba própria e também no painel lateral do leitor.
-- Plataformas: Linux, Windows, macOS, iPad e iPhone. Sem versão para navegador.
+- Plataformas: Linux, Windows e macOS agora; iPad e iPhone depois. Sem versão para navegador.
 - Sincronização do Anki pelo servidor próprio no VPS do Painel. AnkiWeb não.
 - Livros em PDF e EPUB, com OCR em inglês.
 - Cards de código: Python, C++ e ROS 2/shell.
@@ -1166,7 +1184,7 @@ Aceite:
 
 | Pergunta | Padrão |
 |---|---|
-| O usuário tem um Mac para os builds de iPad e iPhone? | Se não: GitHub Actions com runner macOS. Perguntar no início da Fase 0. |
+| O usuário tem um Mac para os builds de iPad e iPhone? | Se não: GitHub Actions com runner macOS. Perguntar no início da Fase 10. |
 | Assinar a Apple Developer Program (US$ 99/ano)? | Necessário a partir da Fase 10. Até lá, testar no simulador e no aparelho com Apple ID gratuito (reinstalando a cada 7 dias). |
 | Continuar usando o AnkiMobile? | Sim, em paralelo, até a Fase 10 ser aprovada. |
 | OCR de livros em português | Fora da v1 (o motor do PdfCraft só lê latim sem acentos). |

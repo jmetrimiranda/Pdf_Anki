@@ -1,6 +1,6 @@
 use core_store::{
-    AddOutcome, BookFormat, BookPatch, NewBook, OcrStatus, ReadingPosition, Renderer,
-    SCHEMA_VERSION, Store, StoreError, book_uid_of, book_uid_of_reader, setting_keys as keys,
+    AddOutcome, BookFormat, BookPatch, NewBook, OcrStatus, ReadingPosition, SCHEMA_VERSION, Store,
+    StoreError, book_uid_of, book_uid_of_reader, setting_keys as keys,
 };
 use serde_json::json;
 
@@ -16,6 +16,7 @@ fn new_book(bytes: &[u8]) -> NewBook {
         file_name: "animal-farm.pdf".into(),
         pages: 120,
         has_text: true,
+        file_hash: book_uid_of(bytes),
         local_path: Some("/books/animal-farm.pdf".into()),
     }
 }
@@ -48,7 +49,7 @@ fn migrations_are_idempotent_on_reopen() {
         let mut store = Store::open(&path).unwrap();
         assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
         tables = table_count(&store);
-        assert_eq!(tables, 17);
+        assert_eq!(tables, 16);
         store.add_book(&new_book(b"x")).unwrap();
         let mode: String = store
             .connection()
@@ -131,7 +132,7 @@ fn remove_tombstones_and_readd_restores() {
     store
         .connection()
         .execute(
-            "INSERT INTO annotation (uid, book_uid, kind, page, updated_at) VALUES ('a1', ?1, 'highlight', 3, 0)",
+            "INSERT INTO epub_annotation (uid, book_uid, kind, cfi, updated_at) VALUES ('a1', ?1, 'highlight', 'epubcfi(/6/4)', 0)",
             [&uid],
         )
         .unwrap();
@@ -145,7 +146,7 @@ fn remove_tombstones_and_readd_restores() {
         .connection()
         .query_row(
             "SELECT (SELECT deleted FROM book WHERE book_uid = ?1),
-                    (SELECT deleted FROM annotation WHERE uid = 'a1'),
+                    (SELECT deleted FROM epub_annotation WHERE uid = 'a1'),
                     (SELECT deleted FROM reading_position WHERE book_uid = ?1)",
             [&uid],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -204,13 +205,14 @@ fn update_book_patch() {
     let patch: BookPatch = serde_json::from_value(json!({
         "author": null,
         "renderer": "pdfjs",
+        "fileHash": "ignored",
         "contentDeckId": 1700000000000i64,
         "ocrStatus": "done",
     }))
     .unwrap();
     let b = store.update_book(&added.book_uid, &patch).unwrap();
     assert_eq!(b.author, None);
-    assert_eq!(b.renderer, Renderer::Pdfjs);
+    assert_eq!(b.file_hash, added.file_hash, "not patchable");
     assert_eq!(b.content_deck_id, Some(1_700_000_000_000));
     assert_eq!(b.ocr_status, OcrStatus::Done);
     assert_eq!(b.title, added.title);
@@ -246,7 +248,6 @@ fn settings_defaults_and_validation() {
         store.setting_as::<u32>(keys::VOCAB_KNOWN_IVL_DAYS).unwrap(),
         21
     );
-    assert_eq!(store.setting(keys::READING_THEME).unwrap(), json!("claro"));
     assert_eq!(
         store.setting(keys::VOCAB_COUNT_YOUNG).unwrap(),
         json!(false)
@@ -261,18 +262,22 @@ fn settings_defaults_and_validation() {
         30
     );
     store
-        .set_setting(keys::READING_THEME, json!("escuro"))
+        .set_setting(keys::VOCAB_SUSPENDED_POLICY, json!("known"))
         .unwrap();
     assert_eq!(
-        store.all_settings().unwrap()["reading_theme"],
-        json!("escuro")
+        store.all_settings().unwrap()["vocab_suspended_policy"],
+        json!("known")
+    );
+    assert!(
+        store.all_settings().unwrap().get("reading_theme").is_none(),
+        "the old reader's settings are gone"
     );
 
     for (key, value) in [
         (keys::VOCAB_KNOWN_IVL_DAYS, json!(0)),
         (keys::VOCAB_KNOWN_IVL_DAYS, json!("21")),
-        (keys::READING_THEME, json!("rosa")),
-        (keys::READING_THEME, json!(null)),
+        (keys::VOCAB_SUSPENDED_POLICY, json!("rosa")),
+        (keys::VOCAB_SUSPENDED_POLICY, json!(null)),
     ] {
         let err = store.set_setting(key, value).unwrap_err();
         assert!(matches!(err, StoreError::InvalidSetting { .. }), "{err}");
@@ -308,7 +313,7 @@ fn schema_constraints_hold() {
     let uid = store.add_book(&new_book(b"pdf")).unwrap().book.book_uid;
     let conn = store.connection();
     let bad_kind = conn.execute(
-        "INSERT INTO annotation (uid, book_uid, kind, page, updated_at) VALUES ('a', ?1, 'scribble', 0, 0)",
+        "INSERT INTO epub_annotation (uid, book_uid, kind, cfi, updated_at) VALUES ('a', ?1, 'scribble', 'epubcfi(/6/2)', 0)",
         [&uid],
     );
     assert!(bad_kind.is_err());

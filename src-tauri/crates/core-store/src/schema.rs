@@ -5,7 +5,7 @@ use rusqlite::Connection;
 
 use crate::{Result, StoreError};
 
-const MIGRATIONS: &[&str] = &[V1];
+const MIGRATIONS: &[&str] = &[V1, V2];
 
 /// Schema version this build creates and understands.
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -219,3 +219,199 @@ CREATE TABLE sync_state (
     value TEXT NOT NULL
 ) STRICT;
 "#;
+
+/// Spec 1.1 (sections 6.5 and 14): PDF annotations live inside the PDF (PdfCraft), so the app's
+/// annotation table becomes EPUB-only; a book has a current file version with its own hash; the
+/// PDF.js renderer choice and the OCR word table are gone.
+///
+/// Only `ALTER TABLE ADD/DROP COLUMN`, never the rebuild procedure: with `foreign_keys = ON`,
+/// dropping and recreating `book` would cascade-delete every child row.
+const V2: &str = r#"
+ALTER TABLE book ADD COLUMN file_hash TEXT NOT NULL DEFAULT ''
+    CHECK (file_hash = '' OR (length(file_hash) = 64 AND file_hash NOT GLOB '*[^0-9a-f]*'));
+UPDATE book SET file_hash = book_uid;
+ALTER TABLE book ADD COLUMN file_version INTEGER NOT NULL DEFAULT 1 CHECK (file_version >= 1);
+ALTER TABLE book DROP COLUMN renderer;
+
+ALTER TABLE book_file ADD COLUMN local_hash TEXT
+    CHECK (local_hash IS NULL OR (length(local_hash) = 64 AND local_hash NOT GLOB '*[^0-9a-f]*'));
+UPDATE book_file SET local_hash = (SELECT file_hash FROM book WHERE book.book_uid = book_file.book_uid)
+    WHERE local_path IS NOT NULL;
+
+DROP TABLE annotation;
+DROP TABLE ocr_word;
+
+CREATE TABLE epub_annotation (
+    uid        TEXT PRIMARY KEY NOT NULL,
+    book_uid   TEXT NOT NULL REFERENCES book (book_uid) ON DELETE CASCADE,
+    kind       TEXT NOT NULL CHECK (kind IN ('highlight', 'underline', 'note', 'bookmark')),
+    cfi        TEXT NOT NULL,
+    text       TEXT,
+    color      TEXT,
+    comment    TEXT,
+    updated_at INTEGER NOT NULL,
+    deleted    INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1))
+) STRICT;
+CREATE INDEX epub_annotation_book ON epub_annotation (book_uid);
+CREATE INDEX epub_annotation_updated_at ON epub_annotation (updated_at);
+"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const UID_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const UID_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    fn columns(conn: &Connection, table: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .expect("pragma");
+        stmt.query_map([], |r| r.get(0))
+            .expect("query")
+            .collect::<rusqlite::Result<_>>()
+            .expect("rows")
+    }
+
+    fn tables(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")
+            .expect("schema");
+        stmt.query_map([], |r| r.get(0))
+            .expect("query")
+            .collect::<rusqlite::Result<_>>()
+            .expect("rows")
+    }
+
+    /// A real V1 file with data in the tables V2 touches is upgraded in place, rows kept.
+    #[test]
+    fn v1_database_with_data_migrates_to_v2() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("app.sqlite");
+        {
+            let mut conn = Connection::open(&path).expect("open");
+            conn.pragma_update(None, "foreign_keys", "ON").expect("fk");
+            let tx = conn.transaction().expect("tx");
+            tx.execute_batch(V1).expect("v1");
+            tx.execute_batch("PRAGMA user_version = 1")
+                .expect("version");
+            tx.commit().expect("commit");
+            conn.execute_batch(&format!(
+                r#"
+                INSERT INTO book (book_uid, title, format, file_name, pages, renderer, added_at, updated_at)
+                    VALUES ('{UID_A}', 'Livro A', 'pdf', 'a.pdf', 10, 'pdfjs', 1, 2),
+                           ('{UID_B}', 'Livro B', 'epub', 'b.epub', 0, 'pdfcraft', 3, 4);
+                INSERT INTO book_file (book_uid, local_path, downloaded)
+                    VALUES ('{UID_A}', '/books/a.pdf', 1), ('{UID_B}', NULL, 0);
+                INSERT INTO reading_position (book_uid, page, progress, updated_at)
+                    VALUES ('{UID_A}', 7, 0.7, 5);
+                INSERT INTO reading_session (uid, book_uid, started_at, ended_at, last_heartbeat_at, pages)
+                    VALUES ('s1', '{UID_A}', 100, 200, 190, '[1,2]');
+                INSERT INTO annotation (uid, book_uid, kind, page, updated_at)
+                    VALUES ('n1', '{UID_A}', 'highlight', 1, 6);
+                INSERT INTO ocr_word (book_uid, page, words) VALUES ('{UID_A}', 0, '[]');
+                "#
+            ))
+            .expect("v1 rows");
+        }
+
+        let mut conn = Connection::open(&path).expect("reopen");
+        conn.pragma_update(None, "foreign_keys", "ON").expect("fk");
+        migrate(&mut conn).expect("migrate");
+        let version: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .expect("version");
+        assert_eq!(version, 2);
+
+        let book_cols = columns(&conn, "book");
+        assert!(!book_cols.iter().any(|c| c == "renderer"), "{book_cols:?}");
+        assert!(book_cols.iter().any(|c| c == "file_hash"));
+        assert!(book_cols.iter().any(|c| c == "file_version"));
+        assert!(
+            columns(&conn, "book_file")
+                .iter()
+                .any(|c| c == "local_hash")
+        );
+        let t = tables(&conn);
+        assert!(t.iter().any(|n| n == "epub_annotation"), "{t:?}");
+        assert!(
+            !t.iter().any(|n| n == "annotation" || n == "ocr_word"),
+            "{t:?}"
+        );
+
+        let books: Vec<(String, String, String, i64)> = conn
+            .prepare("SELECT book_uid, title, file_hash, file_version FROM book ORDER BY book_uid")
+            .expect("prepare")
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .expect("query")
+            .collect::<rusqlite::Result<_>>()
+            .expect("rows");
+        assert_eq!(
+            books,
+            [
+                (UID_A.into(), "Livro A".into(), UID_A.into(), 1),
+                (UID_B.into(), "Livro B".into(), UID_B.into(), 1),
+            ]
+        );
+        let files: Vec<(String, Option<String>, Option<String>)> = conn
+            .prepare("SELECT book_uid, local_path, local_hash FROM book_file ORDER BY book_uid")
+            .expect("prepare")
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .expect("query")
+            .collect::<rusqlite::Result<_>>()
+            .expect("rows");
+        assert_eq!(
+            files,
+            [
+                (
+                    UID_A.into(),
+                    Some("/books/a.pdf".into()),
+                    Some(UID_A.into())
+                ),
+                (UID_B.into(), None, None),
+            ]
+        );
+        let (page, sessions): (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT page FROM reading_position), (SELECT count(*) FROM reading_session)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("children");
+        assert_eq!((page, sessions), (7, 1), "children survive the migration");
+
+        // The new constraints hold.
+        assert!(
+            conn.execute(
+                &format!("UPDATE book SET file_version = 0 WHERE book_uid = '{UID_A}'"),
+                []
+            )
+            .is_err()
+        );
+        assert!(
+            conn.execute(
+                &format!("UPDATE book SET file_hash = 'XYZ' WHERE book_uid = '{UID_A}'"),
+                []
+            )
+            .is_err()
+        );
+        assert!(
+            conn.execute(
+                &format!(
+                    "INSERT INTO epub_annotation (uid, book_uid, kind, cfi, updated_at) VALUES ('e', '{UID_B}', 'scribble', 'epubcfi(/6/2)', 0)"
+                ),
+                []
+            )
+            .is_err()
+        );
+        conn.execute(
+            &format!(
+                "INSERT INTO epub_annotation (uid, book_uid, kind, cfi, updated_at) VALUES ('e', '{UID_B}', 'note', 'epubcfi(/6/2)', 0)"
+            ),
+            [],
+        )
+        .expect("epub annotation");
+        // Running the migrations again changes nothing.
+        migrate(&mut conn).expect("idempotent");
+    }
+}

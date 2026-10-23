@@ -78,171 +78,35 @@ pub struct PageWords {
     pub words: Vec<PageWord>,
 }
 
+/// What the library needs from a file at import time (spec 6.6), without keeping it open.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SearchHit {
-    pub page: usize,
-    pub rects: Vec<Rect>,
-    /// The match with a little text around it, on one line.
-    pub context: String,
+pub struct PdfMeta {
+    pub page_count: usize,
+    pub title: Option<String>,
+    pub author: Option<String>,
+    /// `LeitorBookUid` from the Info dictionary (spec 6.5), only when it is a well-formed
+    /// `book_uid` (64 lowercase hex digits).
+    pub leitor_book_uid: Option<String>,
+    /// Structure problems PdfCraft worked around (English, for logs).
+    pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct SearchOpts {
-    pub case_sensitive: bool,
-    pub whole_words: bool,
-    /// Stop after this many hits.
-    pub limit: usize,
-}
-
-impl Default for SearchOpts {
-    fn default() -> Self {
-        Self {
-            case_sensitive: false,
-            whole_words: false,
-            limit: 1000,
-        }
-    }
-}
-
-/// Reading theme of the page raster (independent from the app theme, spec 4).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ReadingTheme {
-    #[default]
-    #[serde(rename = "claro")]
-    Light,
-    #[serde(rename = "sepia")]
-    Sepia,
-    #[serde(rename = "escuro")]
-    Dark,
-}
-
-impl ReadingTheme {
-    /// The `tema` value of the `pdf://` URL.
-    pub fn as_param(self) -> &'static str {
-        match self {
-            Self::Light => "claro",
-            Self::Sepia => "sepia",
-            Self::Dark => "escuro",
-        }
-    }
-
-    pub fn from_param(s: &str) -> Option<Self> {
-        match s {
-            "claro" => Some(Self::Light),
-            "sepia" => Some(Self::Sepia),
-            "escuro" => Some(Self::Dark),
-            _ => None,
-        }
-    }
-}
-
-/// Largest accepted scale (device pixels per point). Whole pages are further capped by PdfCraft
-/// at 8192 px per side; deeper zoom goes through tiles.
-pub const MAX_SCALE: f32 = 64.0;
-
-/// Largest tile side in device pixels (PdfCraft's own clamp). A `bloco` larger than this at the
-/// requested scale is rejected rather than silently cropped; split it into smaller tiles.
-pub const MAX_TILE_SIDE: u32 = 4096;
-
-/// A raster request.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RenderReq {
-    /// 0-based page index.
-    pub page: usize,
-    /// Device pixels per point.
-    pub scale: f32,
-    /// Only this region `[x, y, w, h]`, in page points (view space). `None` = whole page.
-    pub tile: Option<Rect>,
-    pub theme: ReadingTheme,
-    /// Low-detail render for thumbnails (tiny images skipped).
-    pub preview: bool,
-}
-
-impl RenderReq {
-    pub fn page(page: usize, scale: f32) -> Self {
-        Self {
-            page,
-            scale,
-            tile: None,
-            theme: ReadingTheme::Light,
-            preview: false,
-        }
-    }
-
-    /// Builds a request from the query string of `pdf://localhost/render/{doc}/{page}?…`
-    /// (`escala`, `bloco=x,y,w,h` in points, `tema`, `previa=1`). Unknown keys are ignored.
-    pub fn from_query(page: usize, query: &str) -> Result<Self, PdfError> {
-        let bad = |m: &str| PdfError::InvalidRequest(m.to_owned());
-        let mut req = Self::page(page, 1.0);
-        for pair in query
-            .trim_start_matches('?')
-            .split('&')
-            .filter(|p| !p.is_empty())
-        {
-            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-            let value = value.replace("%2C", ",").replace("%2c", ",");
-            match key {
-                "escala" => {
-                    req.scale = value
-                        .parse()
-                        .map_err(|_| bad("escala precisa ser um número"))?
-                }
-                "bloco" => {
-                    let parts: Vec<f32> = value
-                        .split(',')
-                        .map(|v| v.trim().parse::<f32>())
-                        .collect::<Result<_, _>>()
-                        .map_err(|_| bad("bloco precisa ser x,y,w,h"))?;
-                    let [x, y, w, h] = parts[..] else {
-                        return Err(bad("bloco precisa ser x,y,w,h"));
-                    };
-                    req.tile = Some([x, y, w, h]);
-                }
-                "tema" => {
-                    req.theme = ReadingTheme::from_param(&value)
-                        .ok_or_else(|| bad("tema precisa ser claro, sepia ou escuro"))?
-                }
-                "previa" => req.preview = matches!(value.as_str(), "1" | "true" | "sim"),
-                _ => {}
-            }
-        }
-        Ok(req)
-    }
-}
-
-/// A raster: straight RGBA8, row-major, opaque.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Rendered {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
-    /// Render time in PdfCraft, without queue wait.
-    pub millis: u32,
-}
-
-impl Rendered {
-    pub fn to_png(&self) -> Result<Vec<u8>, PdfError> {
-        crate::encode::encode_rgba(self.width, self.height, &self.rgba)
-    }
-}
-
-/// A highlight or note to burn into an exported copy (spec 6.5; not implemented yet).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// How much of a sample of pages carries text (spec 6.6: "parece escaneado").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Annotation {
-    pub page: usize,
-    /// View-space rects, one per line.
-    pub rects: Vec<Rect>,
-    pub color: [u8; 3],
-    pub comment: Option<String>,
+pub struct TextStats {
+    pub pages_checked: usize,
+    /// Pages with more than [`TextStats::MIN_CHARS`] non-whitespace characters.
+    pub pages_with_text: usize,
 }
 
-/// A word recognised by OCR (spec 7.2; not implemented yet).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OcrWord {
-    pub text: String,
-    pub rect: Rect,
+impl TextStats {
+    /// A page "has text" above this many non-whitespace characters.
+    pub const MIN_CHARS: usize = 20;
+
+    /// Less than half of the checked pages have text.
+    pub fn looks_scanned(&self) -> bool {
+        self.pages_with_text * 2 < self.pages_checked
+    }
 }

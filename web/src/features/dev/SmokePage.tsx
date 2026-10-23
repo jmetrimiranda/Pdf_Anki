@@ -1,13 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
 import { RotateCw } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
-import { Badge, Button, Card, Checkbox, Notice, Skeleton, SkeletonLines } from '../../components/ui';
+import type { ReactNode } from 'react';
+import { Badge, Button, Card, Notice, Skeleton, SkeletonLines } from '../../components/ui';
 import { t } from '../../i18n';
 import { core, CoreError } from '../../lib/core/client';
 import { q } from '../../lib/core/queries';
 import { formatNumber } from '../../lib/format';
-import { DeckTable, studiedTodayText } from '../anki/DeckList';
-import { PageView } from '../reader/PageView';
 
 function Info({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -18,14 +16,9 @@ function Info({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-const PREVIEW_WIDTH = 520;
-
 export function SmokePage() {
   const smoke = useQuery(q.smoke());
-  const [debug, setDebug] = useState(false);
   const r = smoke.data;
-  const page = r?.doc.pages[0];
-  const zoom = page ? PREVIEW_WIDTH / page.width : 1;
 
   return (
     <div className="h-full overflow-auto">
@@ -56,20 +49,10 @@ export function SmokePage() {
                   <Badge tone="lime">{t('dev.smoke.ankiMs', { ms: formatNumber(r.millis.anki, 0) })}</Badge>
                   <Badge tone="lime">{t('dev.smoke.pdfOpenMs', { ms: formatNumber(r.millis.pdfOpen, 0) })}</Badge>
                   <Badge tone="lime">{t('dev.smoke.pdfTextMs', { ms: formatNumber(r.millis.pdfText, 0) })}</Badge>
+                  <Badge tone="lime">{t('dev.smoke.coverMs', { ms: formatNumber(r.millis.cover, 0) })}</Badge>
                 </div>
               ) : (
                 <Skeleton className="h-5 w-2/3" />
-              )}
-            </Card>
-            <Card title={t('dev.smoke.collection')}>
-              {r ? (
-                <>
-                  <p className="mb-3 font-mono text-xs break-all text-muted">{r.collectionPath}</p>
-                  <DeckTable decks={r.deckTree.decks} compact />
-                  <p className="mt-3 text-center text-xs text-muted">{studiedTodayText(r.deckTree.studiedToday)}</p>
-                </>
-              ) : (
-                <SkeletonLines lines={6} />
               )}
             </Card>
             <Card title={t('dev.smoke.document')}>
@@ -77,18 +60,9 @@ export function SmokePage() {
                 <dl className="divide-y divide-line">
                   <Info label={t('dev.smoke.docTitle')}>{r.doc.title ?? '—'}</Info>
                   <Info label={t('dev.smoke.docAuthor')}>{r.doc.author ?? '—'}</Info>
-                  <Info label={t('dev.smoke.docId')}>
-                    <code className="text-xs">{r.doc.docId}</code>
-                  </Info>
                   <Info label={t('dev.smoke.pages')}>{r.doc.pageCount}</Info>
-                  <Info label={t('dev.smoke.page1Size')}>
-                    {page ? `${formatNumber(page.width)} × ${formatNumber(page.height)} pt` : '—'}
-                  </Info>
                   <Info label={t('dev.smoke.words')}>
                     <span data-testid="word-count">{r.words}</span>
-                  </Info>
-                  <Info label={t('dev.smoke.page1Url')}>
-                    <code className="line-clamp-2 text-xs break-all">{r.page1Url}</code>
                   </Info>
                 </dl>
               ) : (
@@ -97,21 +71,17 @@ export function SmokePage() {
             </Card>
           </div>
 
-          <Card
-            title={t('dev.smoke.page1')}
-            actions={
-              <Checkbox label={t('dev.smoke.showBoxes')} checked={debug} onChange={(e) => setDebug(e.target.checked)} />
-            }
-            className="w-fit max-w-full"
-          >
-            <div className="overflow-auto">
-              {r && page ? (
-                <PageView docId={r.doc.docId} index={0} size={page} zoom={zoom} debugWords={debug} eager />
-              ) : (
-                <Skeleton rounded="box" className="aspect-[612/792] w-[520px] max-w-full" />
-              )}
-            </div>
-            <p className="mt-2 text-xs text-muted">{t('dev.smoke.selectHint')}</p>
+          <Card title={t('dev.smoke.page1')} className="w-fit max-w-full">
+            {r ? (
+              <img
+                data-testid="page1"
+                src={r.page1DataUrl}
+                alt={t('dev.smoke.page1Alt')}
+                className="block w-[360px] max-w-full rounded-ctl border border-line"
+              />
+            ) : (
+              <Skeleton rounded="box" className="aspect-[3/4] w-[360px] max-w-full" />
+            )}
           </Card>
         </div>
       </div>

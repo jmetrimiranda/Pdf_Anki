@@ -1,80 +1,104 @@
-import { Outlet, useNavigate } from '@tanstack/react-router';
-import { useEffect, useMemo, useState } from 'react';
-import { getDocTabs } from '../../lib/tabs';
+import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { core } from '../../lib/core/client';
 import { useNarrow } from '../../lib/useMediaQuery';
+import { leitor, LeitorHost } from '../leitor';
+import { ReplaceVersionDialog } from '../library/BookDialogs';
+import { useBookImport } from '../library/useBookImport';
 import { ShellContext, type ShellApi } from './context';
-import { OpenFileDialog } from './OpenFileDialog';
-import { isTypingTarget } from './shortcuts';
+import { shellActionFor } from './shortcuts';
 import { ShortcutsDialog } from './ShortcutsDialog';
-import { activeTabFromPath, TopBar, useCloseTab } from './TopBar';
+import { TopBar } from './TopBar';
 
-type TabTarget = { to: '/biblioteca' } | { to: '/anki' } | { to: '/doc/$docId'; params: { docId: string } };
-
-function tabOrder(): TabTarget[] {
-  return [
-    { to: '/biblioteca' },
-    ...getDocTabs().map((tab) => ({ to: '/doc/$docId' as const, params: { docId: tab.docId } })),
-    { to: '/anki' },
-  ];
-}
+const isLeitorPath = (p: string) => p === '/leitor' || p.startsWith('/leitor/');
 
 export function AppShell() {
   const narrow = useNarrow();
   const navigate = useNavigate();
-  const closeTab = useCloseTab();
-  const [openFile, setOpenFile] = useState(false);
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [shortcuts, setShortcuts] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const { importPaths, addBooks, replacePrompt } = useBookImport();
 
   const api = useMemo<ShellApi>(
-    () => ({ openFile: () => setOpenFile(true), showShortcuts: () => setShortcuts(true) }),
-    [],
+    () => ({
+      addBooks: () => void addBooks(),
+      importPaths,
+      showShortcuts: () => setShortcuts(true),
+      dragging,
+    }),
+    [addBooks, importPaths, dragging],
   );
 
+  // Spec 5.1 shortcuts. Keys typed inside the PdfCraft iframe never reach this document, except the
+  // ones the reader forwards (Alt+1/2/3, Ctrl+Shift+P), so PdfCraft keeps all of its own shortcuts.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      const ctrl = e.ctrlKey || e.metaKey;
-      const key = e.key.toLowerCase();
-      const active = activeTabFromPath(window.location.pathname);
-      if (ctrl && e.key === 'Tab') {
-        e.preventDefault();
-        const order = tabOrder();
-        const current = order.findIndex((x) =>
-          x.to === '/doc/$docId'
-            ? active.kind === 'doc' && active.docId === x.params.docId
-            : x.to === `/${active.kind === 'library' ? 'biblioteca' : active.kind}`,
-        );
-        const next = order[(Math.max(current, 0) + (e.shiftKey ? -1 : 1) + order.length) % order.length];
-        if (next) void navigate(next);
-      } else if (ctrl && !e.shiftKey && key === 'w') {
-        if (active.kind === 'doc') {
-          e.preventDefault();
-          closeTab(active.docId);
-        }
-      } else if (ctrl && e.shiftKey && key === 'a') {
-        e.preventDefault();
-        void navigate({ to: '/anki' });
-      } else if (ctrl && !e.shiftKey && key === 'o') {
-        e.preventDefault();
-        setOpenFile(true);
-      } else if (e.key === '?' && !ctrl && !e.altKey && !isTypingTarget(e.target)) {
-        e.preventDefault();
-        setShortcuts(true);
+      const action = shellActionFor(e);
+      if (!action) return;
+      e.preventDefault();
+      switch (action.kind) {
+        case 'tab':
+          void navigate({ to: action.to });
+          break;
+        case 'togglePanel':
+          leitor.togglePanel();
+          break;
+        case 'addBooks':
+          void addBooks();
+          break;
+        case 'help':
+          setShortcuts(true);
+          break;
       }
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [navigate, closeTab]);
+  }, [navigate, addBooks]);
 
+  // Files dropped on the window: imported; when the Leitor is showing, the last one opens there.
+  const onLeitor = useRef(isLeitorPath(pathname));
+  onLeitor.current = isLeitorPath(pathname);
+  useEffect(
+    () =>
+      core.onDragDropPaths(
+        (paths) => void importPaths(paths, { openLast: onLeitor.current }),
+        (hovering) => setDragging(hovering),
+      ),
+    [importPaths],
+  );
+
+  // "Abrir com": files given at launch (consumed once, so never dropped by a StrictMode remount), then the
+  // ones forwarded by later launches.
+  const launchPathsTaken = useRef(false);
+  useEffect(() => {
+    if (!launchPathsTaken.current) {
+      launchPathsTaken.current = true;
+      core
+        .pendingOpenPaths()
+        .then((paths) => {
+          if (paths.length) void importPaths(paths, { openLast: true });
+        })
+        .catch(() => undefined);
+    }
+    return core.onOpenPaths((paths) => void importPaths(paths, { openLast: true }));
+  }, [importPaths]);
+
+  // Saving on tab switch and on window close belongs to the reader (LeitorHost handles both).
   return (
     <ShellContext.Provider value={api}>
       <div className="flex h-full flex-col bg-bg text-fg">
         <TopBar />
         <main className="relative min-h-0 flex-1 overflow-hidden">
+          {/* Mounted once for the whole app session, so PdfCraft keeps its tabs and state. */}
+          <LeitorHost />
           <Outlet />
         </main>
       </div>
-      <OpenFileDialog open={openFile} onOpenChange={setOpenFile} sheet={narrow} />
       <ShortcutsDialog open={shortcuts} onOpenChange={setShortcuts} sheet={narrow} />
+      {replacePrompt && (
+        <ReplaceVersionDialog book={replacePrompt.book} sheet={narrow} onAnswer={replacePrompt.answer} />
+      )}
     </ShellContext.Provider>
   );
 }

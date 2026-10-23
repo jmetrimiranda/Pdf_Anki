@@ -13,7 +13,7 @@ export function NotFound() {
       description={t('notFound.hint')}
       action={
         <Link to="/biblioteca" className={cn(buttonBase, 'h-8 border-line bg-neutral px-3 hover:bg-active')}>
-          {t('reader.backToLibrary')}
+          {t('notFound.back')}
         </Link>
       }
     />

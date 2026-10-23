@@ -14,7 +14,7 @@ export { SegmentedControl, type Segment } from './SegmentedControl';
 export { Skeleton, SkeletonLines } from './Skeleton';
 export { Spinner } from './Spinner';
 export { TabPanel, Tabs, type TabItem } from './Tabs';
-export { Notice, ToastProvider, useToast, type NoticeTone } from './Toast';
+export { Notice, ToastProvider, useToast, type NoticeTone, type ToastOptions } from './Toast';
 export { Toolbar, ToolbarSeparator } from './Toolbar';
 export { Tooltip, TooltipProvider, tooltipSurface } from './Tooltip';
 export { Tree, type TreeNode, type TreeRowState } from './Tree';

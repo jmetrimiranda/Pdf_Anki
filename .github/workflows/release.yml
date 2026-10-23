@@ -9,7 +9,8 @@ permissions:
 
 jobs:
   build:
-    # The full CI (tests included) builds the Linux and Windows bundles.
+    # The full CI (tests included) builds the PdfCraft web build (scripts/build-pdfcraft-web.sh) and then the Linux
+    # and Windows bundles, which embed it under /pdfcraft/.
     uses: ./.github/workflows/ci.yml
 
   draft:
