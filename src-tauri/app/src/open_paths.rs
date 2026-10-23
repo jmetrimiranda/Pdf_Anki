@@ -35,7 +35,8 @@ pub fn has_extension(path: &Path, ext: &str) -> bool {
 pub fn open_paths_from_args(args: impl IntoIterator<Item = String>, cwd: &Path) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for arg in args {
-        if arg.starts_with('-') {
+        // Flags, and `leitor://` links (they are not files: `crate::deep_link`).
+        if arg.starts_with('-') || crate::deep_link::is_deep_link_arg(&arg) {
             continue;
         }
         let arg = arg.strip_prefix("file://").unwrap_or(&arg);
@@ -58,17 +59,20 @@ pub fn open_paths_from_args(args: impl IntoIterator<Item = String>, cwd: &Path) 
     out
 }
 
-/// Called by the single-instance plugin in the running app with the second launch's arguments.
+/// Called by the single-instance plugin in the running app with the second launch's arguments (a lone `leitor://`
+/// URL was already forwarded to the deep-link plugin; other links are handled by
+/// [`AppState::second_instance_deep_links`](crate::AppState::second_instance_deep_links)).
 #[cfg(desktop)]
 pub fn second_instance<R: tauri::Runtime>(app: &tauri::AppHandle<R>, argv: Vec<String>, cwd: &str) {
     use std::sync::Arc;
 
     use tauri::{Emitter, Manager};
 
-    let paths = open_paths_from_args(argv.into_iter().skip(1), Path::new(cwd));
+    let paths = open_paths_from_args(argv.iter().skip(1).cloned(), Path::new(cwd));
     tracing::info!(count = paths.len(), "second launch");
     if let Some(state) = app.try_state::<Arc<crate::AppState>>() {
         state.grant_packages(&paths);
+        state.second_instance_deep_links(&argv);
     }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -111,6 +115,24 @@ mod tests {
             dir.path(),
         );
         assert_eq!(got, vec![a, abs("deck.APKG"), abs("col.colpkg")]);
+    }
+
+    #[test]
+    fn ignores_deep_links() {
+        let dir = tempfile::tempdir().unwrap();
+        // Even a file whose name looks like the end of a link is not taken from a `leitor:` argument.
+        std::fs::create_dir_all(dir.path().join("leitor:/livro")).unwrap();
+        std::fs::write(dir.path().join("leitor:/livro/x.pdf"), b"x").unwrap();
+        let uid = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let got = open_paths_from_args(
+            [
+                format!("leitor://livro/{uid}?pagina=1&q=a.pdf"),
+                "leitor:/livro/x.pdf".to_string(),
+                "LEITOR://livro/x.pdf".to_string(),
+            ],
+            dir.path(),
+        );
+        assert!(got.is_empty(), "{got:?}");
     }
 
     #[test]

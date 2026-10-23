@@ -13,7 +13,16 @@ const COUNT_CLASS: Record<StudyQueue, string> = {
   review: 'text-anki-review',
 };
 
-export function StudyCounts({ counts, queue }: { counts: QueueCounts; queue: StudyQueue | null }) {
+export function StudyCounts({
+  counts,
+  queue,
+  compact,
+}: {
+  counts: QueueCounts;
+  queue: StudyQueue | null;
+  /** The book panel's mini-review (smaller text). */
+  compact?: boolean;
+}) {
   const parts: [StudyQueue, number][] = [
     ['new', counts.new],
     ['learn', counts.learn],
@@ -22,7 +31,7 @@ export function StudyCounts({ counts, queue }: { counts: QueueCounts; queue: Stu
   // Screen readers get the sentence in a live region; the colored digits are visual only (aria-label is not
   // allowed on a plain paragraph and most readers ignore it there).
   return (
-    <div className="tabular text-base font-medium">
+    <div className={cn('tabular font-medium', compact ? 'text-sm' : 'text-base')}>
       <span className="sr-only" role="status" data-testid="study-counts-sr">
         {t('anki.study.counts', { n: counts.new, l: counts.learn, r: counts.review })}
       </span>
@@ -48,22 +57,27 @@ const ANSWERS: { rating: Rating; label: MessageKey }[] = [
 const barButton =
   'inline-flex h-10 min-w-0 select-none items-center justify-center gap-2 rounded-ctl border border-line bg-neutral px-4 text-base transition-colors hover:bg-active focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:pointer-events-none disabled:opacity-50 coarse:min-h-11';
 
-export const ShowAnswerButton = forwardRef<HTMLButtonElement, { onClick: () => void; disabled?: boolean }>(
-  function ShowAnswerButton({ onClick, disabled }, ref) {
-    return (
-      <button
-        ref={ref}
-        type="button"
-        onClick={onClick}
-        disabled={disabled}
-        aria-keyshortcuts="Space Enter"
-        className={cn(barButton, 'w-full max-w-sm font-semibold')}
-      >
-        {t('anki.study.showAnswer')}
-      </button>
-    );
-  },
-);
+/** The narrow bar of the book panel's mini-review (320 px): smaller buttons, always four in a row. */
+const compactButton =
+  'inline-flex h-8 min-w-0 select-none items-center justify-center rounded-ctl border border-line bg-neutral px-1 text-sm transition-colors hover:bg-active focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:pointer-events-none disabled:opacity-50 coarse:min-h-11';
+
+export const ShowAnswerButton = forwardRef<
+  HTMLButtonElement,
+  { onClick: () => void; disabled?: boolean; compact?: boolean }
+>(function ShowAnswerButton({ onClick, disabled, compact }, ref) {
+  return (
+    <button
+      ref={ref}
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-keyshortcuts="Space Enter"
+      className={cn(compact ? compactButton : barButton, 'w-full max-w-sm font-semibold')}
+    >
+      {t('anki.study.showAnswer')}
+    </button>
+  );
+});
 
 /** The four answer buttons; `goodRef` gets the default focus (Anki's "defease"). */
 export function AnswerButtons({
@@ -72,23 +86,26 @@ export function AnswerButtons({
   onAnswer,
   disabled,
   goodRef,
+  compact,
 }: {
   labels: [string, string, string, string];
   showIntervals: boolean;
   onAnswer: (rating: Rating) => void;
   disabled?: boolean;
   goodRef?: Ref<HTMLButtonElement>;
+  /** The book panel's mini-review: four narrow buttons in one row. */
+  compact?: boolean;
 }) {
   return (
     <div
       role="group"
       aria-label={t('anki.study.answerButtons')}
-      className="grid w-full max-w-2xl grid-cols-2 gap-2 sm:grid-cols-4"
+      className={cn('grid w-full', compact ? 'grid-cols-4 gap-1' : 'max-w-2xl grid-cols-2 gap-2 sm:grid-cols-4')}
     >
       {ANSWERS.map(({ rating, label }) => {
         const interval = labels[rating - 1] ?? '';
         return (
-          <div key={rating} className="flex min-w-0 flex-col items-stretch gap-1">
+          <div key={rating} className={cn('flex min-w-0 flex-col items-stretch', compact ? 'gap-0.5' : 'gap-1')}>
             <span
               className={cn('tabular h-4 truncate text-center text-xs text-muted', !showIntervals && 'invisible')}
               aria-hidden={!showIntervals}
@@ -104,7 +121,7 @@ export function AnswerButtons({
               aria-keyshortcuts={rating === 3 ? '3 Space Enter' : String(rating)}
               aria-label={showIntervals && interval ? `${t(label)} (${interval})` : t(label)}
               data-rating={rating}
-              className={cn(barButton, 'w-full', rating === 3 && 'font-semibold')}
+              className={cn(compact ? compactButton : barButton, 'w-full', rating === 3 && 'font-semibold')}
             >
               {t(label)}
             </button>

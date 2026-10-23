@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       xvfb xauth dbus-x11 at-spi2-core imagemagick fonts-noto-core fonts-dejavu \
       g++ clang clang-format python3 python3-venv \
       gnome-keyring libsecret-1-dev \
+      xdg-utils desktop-file-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # protoc pinned to the version Anki 26.09.3 uses.

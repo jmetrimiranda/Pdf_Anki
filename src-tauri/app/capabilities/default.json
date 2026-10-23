@@ -24,6 +24,12 @@
     "allow-anki-undo",
     "allow-anki-card-action",
     "allow-anki-study-close",
+    "allow-anki-mini-review-open",
+    "allow-anki-mini-review-close",
+    "allow-book-panel-info",
+    "allow-book-panel-set",
+    "allow-anki-book-cards",
+    "allow-vocab-define",
     "allow-anki-notetypes",
     "allow-anki-add-defaults",
     "allow-anki-note-get",
@@ -70,6 +76,7 @@
     "allow-reading-session-start",
     "allow-reading-session-heartbeat",
     "allow-reading-session-stop",
-    "allow-pending-open-paths"
+    "allow-pending-open-paths",
+    "allow-pending-deep-links"
   ]
 }

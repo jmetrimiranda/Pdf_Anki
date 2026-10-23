@@ -9,7 +9,7 @@ origem do app, e conversa com ele por mensagens. O app usa um fork mínimo
 ([`jmetrimiranda/pdfcraft`](https://github.com/jmetrimiranda/pdfcraft), branch `leitor-bridge`) que só estende essa
 ponte. Anotações e bookmarks são os do PdfCraft, gravados no próprio PDF com salvamento automático.
 
-Plataformas por enquanto: **Linux** e **Windows** (desktop). A especificação completa está em
+Plataformas: **Linux** (app desktop) e **Web** (interface e pacotes TS). Windows e macOS estão fora do escopo; iPad e iPhone ficam para a Fase 10. A especificação completa está em
 [docs/PROJETO.md](docs/PROJETO.md); decisões em [docs/decisoes.md](docs/decisoes.md); andamento em
 [docs/progresso.md](docs/progresso.md).
 
@@ -43,7 +43,7 @@ scripts/dev.sh pnpm install
 | E2E (núcleo simulado) | `pnpm --dir web e2e:mock` |
 | E2E da ponte com o PdfCraft | `pnpm --dir web e2e:bridge` (usa o build web do PdfCraft) · desempenho: `pnpm --dir web e2e:perf` (Chromium e WebKit) e `scripts/perf-real-app.sh` (app real, WebKitGTK) |
 | Lint | `cd src-tauri && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings` · `pnpm -r lint` |
-| Pacotes | `pnpm --dir web tauri build` (AppImage/.deb no Linux; .msi no CI do Windows) |
+| Pacotes | `pnpm --dir web tauri build` (AppImage e .deb no Linux) |
 | Release | criar a tag `v*` → `.github/workflows/release.yml` gera um rascunho de release com os pacotes |
 
 O Tauri CLI roda a partir de `web/`; se ele não achar o app, exporte `TAURI_APP_PATH=../src-tauri/app` (o CI faz isso).

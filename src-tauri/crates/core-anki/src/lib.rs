@@ -9,6 +9,7 @@
 //! desktop-only APIs here (the iOS door stays open).
 
 pub mod backup;
+pub mod book;
 pub mod bridge;
 pub mod browse;
 pub mod decks;

@@ -2,7 +2,7 @@
 // reviewer.html + card-bridge.js + reviewer.js, the real one when scripts/fetch-anki-web.sh ran, else a stub), the
 // answer flow, keys, undo, MathJax, type-in-the-answer, and the frame's isolation.
 import type { Frame, Page } from '@playwright/test';
-import { ankiLogs, expect, shot, stubPdfcraft, test } from './fixtures';
+import { ankiLogs, expect, fakePdfcraft, fakeReceived, shot, stubPdfcraft, test } from './fixtures';
 
 /** Like fixtures' setTheme, but only in the app's top window: the sandboxed card frame has no localStorage. */
 async function setAppTheme(page: Page, theme: 'light' | 'dark') {
@@ -191,13 +191,30 @@ test('Gramática::Cloze shows the cloze and its answer', async ({ page }) => {
   await expect(card(page).locator('.cloze').first()).not.toHaveText('[...]');
 });
 
-test('Abrir no livro opens the book of the Fonte link in the Leitor', async ({ page }) => {
+test('Abrir no livro opens the book of the Fonte link in the Leitor and finds the excerpt there', async ({ page }) => {
+  await fakePdfcraft(page);
   await page.goto(studyUrl('Livros::Animal Farm'));
   await shown(page, 'question');
   await page.keyboard.press('Space');
   await shown(page, 'answer');
-  await page.getByRole('button', { name: 'Abrir no livro' }).click();
+  const button = page.getByRole('button', { name: 'Abrir no livro' });
+  // "Abrir o livro em Animal Farm, p. N": the page of the Fonte link (1-based).
+  const pageN = Number(/p\. (\d+)/.exec((await button.getAttribute('title')) ?? '')?.[1]);
+  expect(pageN).toBeGreaterThan(0);
+  await button.click();
   await expect(page).toHaveURL(/\/leitor/);
+  // PdfCraft is asked for that page (0-based; the mock book has 10 pages) and to find the excerpt of the link.
+  await expect
+    .poll(async () =>
+      (await fakeReceived(page)).some(
+        (m) =>
+          (m.type === 'pdfcraft:goto' || m.type === 'pdfcraft:open') &&
+          m.page === Math.min(pageN - 1, 9) &&
+          typeof m.find === 'string' &&
+          m.find.length > 0,
+      ),
+    )
+    .toBe(true);
 });
 
 for (const theme of ['light', 'dark'] as const) {

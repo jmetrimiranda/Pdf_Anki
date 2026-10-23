@@ -18,6 +18,9 @@ describe('isForwardedShortcut', () => {
     ['Alt+3', k('3', 'Digit3', { altKey: true })],
     ['Ctrl+Shift+P', k('P', 'KeyP', { ctrlKey: true, shiftKey: true })],
     ['Cmd+Shift+P', k('p', 'KeyP', { metaKey: true, shiftKey: true })],
+    ['Alt+C', k('c', 'KeyC', { altKey: true })],
+    ['Alt+C (macOS ç)', k('ç', 'KeyC', { altKey: true })],
+    ['Alt+C (other layout, key c)', k('c', 'KeyJ', { altKey: true })],
   ])('forwards %s', (_n, e) => expect(isForwardedShortcut(e)).toBe(true));
 
   it.each([
@@ -29,7 +32,16 @@ describe('isForwardedShortcut', () => {
     ['Ctrl+O', k('o', 'KeyO', { ctrlKey: true })],
     ['Ctrl+S', k('s', 'KeyS', { ctrlKey: true })],
     ['Ctrl+F', k('f', 'KeyF', { ctrlKey: true })],
+    // "Go to page…" inside PdfCraft: never the app's "Card da seleção" there.
     ['Ctrl+Shift+N', k('N', 'KeyN', { ctrlKey: true, shiftKey: true })],
+    ['Cmd+Shift+N', k('n', 'KeyN', { metaKey: true, shiftKey: true })],
+    // The save prompt's "Don't save".
+    ['Alt+N', k('n', 'KeyN', { altKey: true })],
+    ['Alt+D', k('d', 'KeyD', { altKey: true })],
+    ['Ctrl+C', k('c', 'KeyC', { ctrlKey: true })],
+    ['Ctrl+Alt+C', k('c', 'KeyC', { ctrlKey: true, altKey: true })],
+    ['Alt+Shift+C', k('C', 'KeyC', { altKey: true, shiftKey: true })],
+    ['plain c', k('c', 'KeyC')],
     ['Alt+4', k('4', 'Digit4', { altKey: true })],
     ['Alt+Shift+1', k('!', 'Digit1', { altKey: true, shiftKey: true })],
     ['Ctrl+Alt+Shift+P', k('P', 'KeyP', { ctrlKey: true, shiftKey: true, altKey: true })],
@@ -65,9 +77,18 @@ describe('forwardShortcuts', () => {
     expect(inFrame).toHaveBeenCalledTimes(1);
     expect(inApp).toHaveBeenCalledTimes(1);
 
+    // Alt+C ("Card da seleção") is the app's from anywhere; Ctrl+Shift+N stays PdfCraft's "Go to page…".
+    expect(press({ key: 'c', code: 'KeyC', altKey: true }).defaultPrevented).toBe(true);
+    expect(inFrame).toHaveBeenCalledTimes(1);
+    expect(inApp).toHaveBeenLastCalledWith('c', true);
+    const ctrlShiftN = press({ key: 'N', code: 'KeyN', ctrlKey: true, shiftKey: true });
+    expect(ctrlShiftN.defaultPrevented).toBe(false);
+    expect(inFrame).toHaveBeenCalledTimes(2);
+    expect(inApp).toHaveBeenCalledTimes(2);
+
     detach();
     press({ key: '1', code: 'Digit1', altKey: true });
-    expect(inApp).toHaveBeenCalledTimes(1);
+    expect(inApp).toHaveBeenCalledTimes(2);
     document.removeEventListener('keydown', onApp);
     iframe.remove();
   });

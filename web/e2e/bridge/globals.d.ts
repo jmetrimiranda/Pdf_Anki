@@ -34,6 +34,10 @@ declare global {
       reset(): void;
       openPaths(paths: string[]): void;
       setNextExportPath(path: string | null): void;
+      /** Simulates the OS opening a `leitor://` URL while the app runs. */
+      deepLink(url: string): void;
+      setPendingDeepLinks(urls: string[]): void;
+      readonly anki: { readonly logs: ({ kind: string; at: number } & Record<string, unknown>)[] };
     };
     /** src/features/leitor/timings.ts (every mode). */
     readonly __leitorTimings?: {
@@ -43,9 +47,11 @@ declare global {
       wasmFetchedMs?: number | null;
     }[];
     __leitor?: {
-      openBook(uid: string): Promise<boolean>;
+      openBook(uid: string, opts?: { page?: number; find?: string | null }): Promise<boolean>;
       togglePanel(open?: boolean): void;
       flushSaves(reason?: string): Promise<boolean>;
+      requestCardFromSelection(via?: 'shortcut' | 'button'): void;
+      setReviewing(on: boolean): void;
       state(): {
         activeId: string | null;
         panelOpen: boolean;
@@ -53,6 +59,9 @@ declare global {
         unsavedIds: string[];
         page: number;
         pageCount: number;
+        selection: { id: string; page: number; text: string; rects: [number, number, number, number][] } | null;
+        found: { id: string; page: number; query: string; found: boolean } | null;
+        menuShown: { id: string | null; items: { key: string; rect: [number, number, number, number] }[] } | null;
       };
     };
   }

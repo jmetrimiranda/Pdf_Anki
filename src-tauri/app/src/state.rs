@@ -48,6 +48,8 @@ pub struct AppState {
     tracker: Mutex<ReadingTracker<Arc<dyn Clock>>>,
     /// PDF paths from the command line ("Abrir com"), handed to the UI once.
     open_paths: Mutex<Vec<String>>,
+    /// `leitor://` links of the launch, handed to the UI once (`pending_deep_links`).
+    pub(crate) deep_links: Mutex<Vec<crate::deep_link::DeepLink>>,
     shutting_down: AtomicBool,
     /// Anki sync: account, key store, scheduler state (spec 9).
     pub(crate) sync: SyncHub,
@@ -85,6 +87,7 @@ impl AppState {
             library_lock: Mutex::new(()),
             tracker: Mutex::new(ReadingTracker::new(clock)),
             open_paths: Mutex::new(Vec::new()),
+            deep_links: Mutex::new(Vec::new()),
             shutting_down: AtomicBool::new(false),
             sync: SyncHub::new(secrets),
         }

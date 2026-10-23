@@ -3,7 +3,8 @@ import type { ReactNode } from 'react';
 import { cn } from '../../lib/cn';
 import { usePortalContainer } from './portal';
 
-export const popoverSurface = 'z-50 rounded-box border border-line bg-card text-fg shadow-popover anim-pop';
+export const popoverSurface =
+  'z-50 rounded-box border border-line bg-card text-fg shadow-popover anim-pop focus:outline-none';
 
 export function Popover({
   trigger,

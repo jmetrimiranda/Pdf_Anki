@@ -10,7 +10,7 @@ permissions:
 jobs:
   build:
     # The full CI (tests included) builds the PdfCraft web build (scripts/build-pdfcraft-web.sh) and then the Linux
-    # and Windows bundles, which embed it under /pdfcraft/.
+    # bundles (.deb, AppImage), which embed it under /pdfcraft/. Windows is not released (docs/decisoes.md).
     uses: ./.github/workflows/ci.yml
 
   draft:
@@ -28,7 +28,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          mapfile -t files < <(find dist -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.msi' \))
+          mapfile -t files < <(find dist -type f \( -name '*.deb' -o -name '*.AppImage' \))
           printf '%s\n' "${files[@]}"
           gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
             --title "Leitor de Estudos $TAG" --generate-notes

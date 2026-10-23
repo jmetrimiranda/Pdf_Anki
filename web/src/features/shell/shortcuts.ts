@@ -5,7 +5,7 @@ import type { MessageKey } from '../../i18n';
  * PdfCraft owns Ctrl+1/2/3 (zoom) while it has focus, so the tab switch also answers to Alt+1/2/3,
  * which the reader forwards from inside the iframe.
  */
-export const SHORTCUTS: { combos: string[][]; label: MessageKey; ready: boolean }[] = [
+export const SHORTCUTS: { combos: string[][]; label: MessageKey; ready: boolean; note?: MessageKey }[] = [
   {
     combos: [
       ['Ctrl', '1'],
@@ -32,7 +32,16 @@ export const SHORTCUTS: { combos: string[][]; label: MessageKey; ready: boolean 
   },
   { combos: [['Ctrl', 'Shift', 'P']], label: 'shortcuts.panel', ready: true },
   { combos: [['Ctrl', 'O']], label: 'shortcuts.add', ready: true },
-  { combos: [['Ctrl', 'Shift', 'N']], label: 'shortcuts.cardFromSelection', ready: false },
+  {
+    // Inside PdfCraft Ctrl+Shift+N is its "Go to page…": there only Alt+C (free in PdfCraft, forwarded) applies.
+    combos: [
+      ['Ctrl', 'Shift', 'N'],
+      ['Alt', 'C'],
+    ],
+    label: 'shortcuts.cardFromSelection',
+    ready: true,
+    note: 'shortcuts.cardFromSelectionNote',
+  },
   { combos: [['?']], label: 'shortcuts.help', ready: true },
 ];
 
@@ -69,12 +78,17 @@ function tabDigit(e: KeyboardEvent): 1 | 2 | 3 | null {
 }
 
 export type ShellAction =
-  { kind: 'tab'; to: TabPath } | { kind: 'togglePanel' } | { kind: 'addBooks' } | { kind: 'help' };
+  | { kind: 'tab'; to: TabPath }
+  | { kind: 'togglePanel' }
+  | { kind: 'addBooks' }
+  | { kind: 'help' }
+  | { kind: 'cardFromSelection' };
 
 /**
  * Maps a keydown on the app document to a shell action. Never claims a key PdfCraft uses while it
- * has focus: when the PdfCraft iframe is the active element, only Alt+1/2/3 and Ctrl+Shift+P apply (those
- * also arrive re-dispatched by the reader from inside the iframe).
+ * has focus: when the PdfCraft iframe is the active element, only Alt+1/2/3, Alt+C and Ctrl+Shift+P apply (those
+ * also arrive re-dispatched by the reader from inside the iframe). Ctrl+Shift+N ("Card da seleção") is PdfCraft's
+ * "Go to page…" there, so the app only takes it with focus outside the iframe. Neither combo fires from a text field.
  */
 export function shellActionFor(
   e: KeyboardEvent,
@@ -90,7 +104,16 @@ export function shellActionFor(
   }
   const key = e.key.toLowerCase();
   if (ctrl && e.shiftKey && !e.altKey && (key === 'p' || e.code === 'KeyP')) return { kind: 'togglePanel' };
+  // "Card da seleção" never fires from a text field (Anki editor, searches, the card form itself): there the keys
+  // belong to the typing (Option+C is "ç" on macOS) and the user is busy with something else.
+  const typing = isTypingTarget(e.target);
+  if (e.altKey && !ctrl && !e.shiftKey && (e.code === 'KeyC' || key === 'c')) {
+    return typing ? null : { kind: 'cardFromSelection' };
+  }
   if (iframeFocused) return null;
+  if (ctrl && e.shiftKey && !e.altKey && (key === 'n' || e.code === 'KeyN')) {
+    return typing ? null : { kind: 'cardFromSelection' };
+  }
   if (ctrl && !e.shiftKey && !e.altKey && key === 'o') return { kind: 'addBooks' };
   if (e.key === '?' && !ctrl && !e.altKey && !isTypingTarget(e.target)) return { kind: 'help' };
   return null;

@@ -11,3 +11,4 @@ workspace = true
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
+unicode-segmentation.workspace = true

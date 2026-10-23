@@ -1,7 +1,7 @@
 //! The note's `Fonte` field → "Abrir no livro" (spec 8.2, 10.2): `leitor://livro/<book_uid>?pagina=N&q=…`.
 use std::sync::LazyLock;
 
-use percent_encoding::percent_decode_str;
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use regex::Regex;
 
 use super::types::SourceLink;
@@ -10,6 +10,69 @@ use super::types::SourceLink;
 pub const SOURCE_FIELD: &str = "Fonte";
 /// Longest search text kept from `q`, in chars.
 pub const MAX_QUERY_CHARS: usize = 500;
+/// Longest `q` the app writes into a new Fonte ([`source_query`]), in chars.
+pub const SOURCE_QUERY_CHARS: usize = 80;
+
+/// JavaScript's `encodeURIComponent` set: everything except `A-Z a-z 0-9 - _ . ! ~ * ' ( )` is escaped.
+const URI_COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'!')
+    .remove(b'~')
+    .remove(b'*')
+    .remove(b'\'')
+    .remove(b'(')
+    .remove(b')');
+
+/// The `q` of a new Fonte (spec 10.2): whitespace collapsed to single spaces, trimmed and cut at a word boundary to
+/// at most [`SOURCE_QUERY_CHARS`] chars (a first word longer than that is cut inside it). Never splits a char.
+pub fn source_query(text: &str) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= SOURCE_QUERY_CHARS {
+        return collapsed;
+    }
+    // Byte offset just past the SOURCE_QUERY_CHARS-th char.
+    let limit = collapsed
+        .char_indices()
+        .nth(SOURCE_QUERY_CHARS)
+        .map_or(collapsed.len(), |(i, _)| i);
+    let head = &collapsed[..limit];
+    // The char right after the cut is a space: the cut is already at a word boundary.
+    if collapsed[limit..].starts_with(' ') {
+        return head.trim_end().to_string();
+    }
+    match head.rfind(' ') {
+        Some(space) if space > 0 => head[..space].trim_end().to_string(),
+        _ => head.to_string(),
+    }
+}
+
+/// The Fonte field of a card created from a selection (spec 10.2), `page` 1-based:
+/// `<a href="leitor://livro/{uid}?pagina={page}&amp;q={query}">{title}, p. {page}</a>`, the query percent-encoded
+/// like `encodeURIComponent` and omitted when empty, the title HTML-escaped. The web app builds the same string.
+pub fn source_html(book_uid: &str, title: &str, page: u32, query: &str) -> String {
+    let mut href = format!("leitor://livro/{book_uid}?pagina={page}");
+    if !query.is_empty() {
+        href.push_str("&amp;q=");
+        href.push_str(&utf8_percent_encode(query, URI_COMPONENT).to_string());
+    }
+    format!("<a href=\"{href}\">{}, p. {page}</a>", escape_html(title))
+}
+
+fn escape_html(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
 
 static ANCHOR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?is)<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>(.*?)</a\s*>"#)
@@ -63,10 +126,14 @@ pub fn parse_link(url: &str, label_html: &str) -> Option<SourceLink> {
         }
     }
     let page = page?;
-    let label = anki::text::strip_html(label_html)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let label = if label_html.contains(['<', '&']) {
+        anki::text::strip_html(label_html)
+    } else {
+        label_html.into()
+    }
+    .split_whitespace()
+    .collect::<Vec<_>>()
+    .join(" ");
     Some(SourceLink {
         book_uid,
         page,
@@ -129,6 +196,82 @@ mod tests {
         assert_eq!(s.page, 5);
         assert_eq!(s.query.as_deref(), Some("a bç"));
         assert_eq!(s.label, "p. 5");
+    }
+
+    #[test]
+    fn source_html_literal() {
+        assert_eq!(
+            source_html(UID, "Animal Farm", 37, "the windmill"),
+            format!(
+                r#"<a href="leitor://livro/{UID}?pagina=37&amp;q=the%20windmill">Animal Farm, p. 37</a>"#
+            )
+        );
+        assert_eq!(
+            source_html(UID, "Animal Farm", 1, ""),
+            format!(r#"<a href="leitor://livro/{UID}?pagina=1">Animal Farm, p. 1</a>"#)
+        );
+        assert_eq!(
+            source_html(UID, r#"Tom & "Jerry" <1>"#, 2, "a&b=c?d#e+f/g"),
+            format!(
+                r#"<a href="leitor://livro/{UID}?pagina=2&amp;q=a%26b%3Dc%3Fd%23e%2Bf%2Fg">Tom &amp; &quot;Jerry&quot; &lt;1&gt;, p. 2</a>"#
+            )
+        );
+        // encodeURIComponent keeps these as they are.
+        assert!(
+            source_html(UID, "x", 3, "it's (fine)! ~*_.-")
+                .ends_with("q=it's%20(fine)!%20~*_.-\">x, p. 3</a>")
+        );
+        assert!(source_html(UID, "x", 3, "é ç").contains("q=%C3%A9%20%C3%A7\""));
+    }
+
+    #[test]
+    fn source_html_round_trips() {
+        for (title, page, query) in [
+            ("Animal Farm", 37, "the windmill"),
+            ("Tom & \"Jerry\" <1>", 2, "café, ação e 🐷"),
+            (
+                "O’Brien's \"quotes\"",
+                120,
+                "\"Four legs good\" — it's 'odd' & <b>",
+            ),
+            ("Sem consulta", 9, ""),
+            ("Plus", 4, "a + b = c%"),
+        ] {
+            let html = source_html(UID, title, page, query);
+            let link = parse_source(&html).unwrap_or_else(|| panic!("{html}"));
+            assert_eq!(link.book_uid, UID);
+            assert_eq!(link.page, page);
+            assert_eq!(link.query.as_deref(), (!query.is_empty()).then_some(query));
+            assert_eq!(link.label, format!("{title}, p. {page}"));
+        }
+    }
+
+    #[test]
+    fn source_query_collapses_and_cuts_at_words() {
+        assert_eq!(
+            source_query("  the\n\twindmill   was  "),
+            "the windmill was"
+        );
+        assert_eq!(source_query(""), "");
+        assert_eq!(source_query(" \n "), "");
+        let words = "word ".repeat(30);
+        let q = source_query(&words);
+        assert!(q.chars().count() <= SOURCE_QUERY_CHARS, "{q}");
+        assert_eq!(q, "word ".repeat(16).trim_end());
+        // Exactly 80 chars followed by a space: kept whole.
+        let exact = format!("{} tail", "a".repeat(80));
+        assert_eq!(source_query(&exact), "a".repeat(80));
+        // 79 chars + space + long word: cut before the word.
+        let before = format!("{} {}", "b".repeat(79), "c".repeat(10));
+        assert_eq!(source_query(&before), "b".repeat(79));
+        // A first word longer than 80 chars is cut inside it, on a char boundary.
+        let long = "é".repeat(100);
+        assert_eq!(source_query(&long), "é".repeat(80));
+        let emoji = format!("{} fim", "🐷".repeat(90));
+        assert_eq!(source_query(&emoji), "🐷".repeat(80));
+        // Multi-byte chars count as one char each.
+        let accents = format!("{} {}", "ç".repeat(70), "ãããããããããããã");
+        assert_eq!(source_query(&accents), "ç".repeat(70));
     }
 
     #[test]

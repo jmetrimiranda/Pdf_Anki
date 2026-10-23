@@ -117,7 +117,8 @@ mod tests {
         let mut offenders = Vec::new();
         let mut ankiweb = Vec::new();
         visit(std::path::Path::new(src), &mut |path, text| {
-            let name = path.to_string_lossy().into_owned();
+            // Forward slashes on every OS, so the suffix checks below also work on Windows.
+            let name = path.to_string_lossy().replace('\\', "/");
             let is_client = name.ends_with("sync/client.rs");
             for needle in [
                 "SyncAuth {",

@@ -22,6 +22,7 @@ pub const MARKED_TAG: &str = "marked";
 
 pub(crate) struct Session {
     pub deck_id: i64,
+    pub owner: super::StudyOwner,
     /// Key of `setSchedulingStates` (`reviewer.py:162`): a random u64 in decimal. Unlike the desktop it is renewed
     /// for every card shown, so a late `setSchedulingStates` from the previous card's custom JS can never replace the
     /// states of the card now on screen.
@@ -30,9 +31,10 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    pub fn new(deck_id: i64) -> Self {
+    pub fn new(deck_id: i64, owner: super::StudyOwner) -> Self {
         Self {
             deck_id,
+            owner,
             key: new_key(),
             current: None,
         }

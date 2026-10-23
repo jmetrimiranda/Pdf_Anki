@@ -353,6 +353,99 @@ export type AnkiPageEvent =
 /** File type of the "save as" dialog opened by `pickExportPath`. */
 export type ExportKind = 'pdf' | 'apkg';
 
+// ---------------------------------------------------------------- Book panel (spec 10, 12.7)
+
+/** Who studies: the Anki tab or the book panel's mini-review ("Revisar aqui"). Only one at a time (spec 10.1). */
+export type StudyOwner = 'tab' | 'panel';
+
+/** Payload of the `anki://study-owner` event: the study session changed hands. */
+export interface StudyOwnerChange {
+  /** Who studies now (`null`: nobody). */
+  owner: StudyOwner | null;
+  /** The owner whose open session was just taken over (show a notice there), or `null`. */
+  preempted: StudyOwner | null;
+}
+
+export interface MiniReviewOpened {
+  /** The collection's current deck before the mini-review switched it (restored on close). */
+  previousDeckId: number;
+  preempted: StudyOwner | null;
+  next: StudyNext;
+}
+
+export interface MiniReviewClosed {
+  /** The deck restored as current, or `null` when nothing was restored (e.g. the Anki tab took over). */
+  restoredDeckId: number | null;
+}
+
+/** Card types of "＋ Card da seleção" (spec 10.2). */
+export type BookCardKind = 'basic' | 'cloze' | 'codeCommand' | 'codeProgram' | 'vocab';
+
+export interface BookDeckInfo {
+  role: 'vocab' | 'content';
+  /** `null` when the deck does not exist (yet). */
+  deckId: number | null;
+  /** Full name with `::`. */
+  name: string;
+  exists: boolean;
+  counts: QueueCounts | null;
+}
+
+export interface BookPanelInfo {
+  bookUid: string;
+  title: string;
+  /** The vocabulary folder (setting `vocab_root_deck_id`), when chosen and still there. */
+  vocabRootDeckId: number | null;
+  vocabRootName: string | null;
+  /** `<vocab root>::Livros::<Título>`, or `Livros::<Título>` while no vocabulary folder is chosen. */
+  vocabDeck: BookDeckInfo;
+  /** The book's content deck (`book.content_deck_id`), `null` when not set. */
+  contentDeck: BookDeckInfo | null;
+  /** Deck last used to add a card from this book (`null` when unset or deleted). */
+  lastDeckId: number | null;
+  lastKind: BookCardKind | null;
+  /** Deck last reviewed with "Revisar aqui" (`null` when unset or deleted). */
+  reviewDeckId: number | null;
+}
+
+/** Fields absent = unchanged; `null` = clear. */
+export interface BookPanelPatch {
+  contentDeckId?: number | null;
+  lastDeckId?: number | null;
+  lastKind?: BookCardKind | null;
+  reviewDeckId?: number | null;
+}
+
+/** A note whose Fonte links to this book ("Cards desta página"). */
+export interface BookCard {
+  noteId: number;
+  cardIds: number[];
+  deckId: number;
+  notetype: string;
+  /** 1-based, as in the link. */
+  page: number;
+  query: string | null;
+  /** Plain text of the first field (short). */
+  preview: string;
+}
+
+/** "Definir palavra" (spec 12.7): the lemma and, when a note exists in the vocabulary folder, its definition. */
+export interface WordDefinition {
+  word: string;
+  lemma: string;
+  vocabRootDeckId: number | null;
+  vocabRootName: string | null;
+  note: { noteId: number; deckName: string; notetype: string; definition: string | null; preview: string } | null;
+}
+
+/** A parsed `leitor://livro/<uid>?pagina=N&q=…` link opened by the system (spec 10.2). */
+export interface DeepLink {
+  bookUid: string;
+  /** 1-based. */
+  page: number;
+  query: string | null;
+}
+
 // ---------------------------------------------------------------- Anki sync (spec 9)
 
 /**
@@ -442,13 +535,29 @@ export interface CoreClient {
   ankiPrepareCollection(): Promise<PrepareReport>;
 
   // Anki · study
-  ankiStudyNext(deckId: number): Promise<StudyNext>;
+  /** `owner` defaults to `'tab'`; starting in one place preempts the other's session (`anki://study-owner`). */
+  ankiStudyNext(deckId: number, owner?: StudyOwner): Promise<StudyNext>;
   ankiShowAnswer(cardId: number, typed: string | null): Promise<AnswerSide>;
   /** `rating`: 1 Again, 2 Hard, 3 Good, 4 Easy; `ms`: time on the card. */
   ankiAnswer(cardId: number, rating: number, ms: number): Promise<StudyNext>;
   ankiUndo(): Promise<StudyNext>;
   ankiCardAction(cardId: number, action: CardAction, flag?: number): Promise<CardActionResult>;
-  ankiStudyClose(): Promise<void>;
+  /** Closes `owner`'s session only (default `'tab'`); a no-op when the other owner studies. */
+  ankiStudyClose(owner?: StudyOwner): Promise<void>;
+  /** "Revisar aqui": remembers the current deck, switches to `deckId` and studies it as the panel. */
+  ankiMiniReviewOpen(deckId: number): Promise<MiniReviewOpened>;
+  /** Closes the mini-review and restores the previous deck (unless the Anki tab took over). */
+  ankiMiniReviewClose(): Promise<MiniReviewClosed>;
+  /** `anki://study-owner`. */
+  onStudyOwner(cb: (c: StudyOwnerChange) => void): Unlisten;
+
+  // Book panel (spec 10, 12.7)
+  bookPanelInfo(uid: string): Promise<BookPanelInfo>;
+  bookPanelSet(uid: string, patch: BookPanelPatch): Promise<BookPanelInfo>;
+  /** Notes whose Fonte links to this book. */
+  ankiBookCards(uid: string): Promise<BookCard[]>;
+  /** One word only (`invalid_input` otherwise). `bookUid` is context for later phases. */
+  vocabDefine(word: string, bookUid: string | null): Promise<WordDefinition>;
 
   // Anki · notes
   ankiNotetypes(): Promise<NotetypeInfo[]>;
@@ -548,6 +657,10 @@ export interface CoreClient {
   // Platform
   /** Paths the app was launched with ("Abrir com"), consumed once. */
   pendingOpenPaths(): Promise<string[]>;
+  /** `leitor://` links the app was launched with, consumed once. */
+  pendingDeepLinks(): Promise<DeepLink[]>;
+  /** `leitor://deep-link`: a `leitor://` link opened while the app runs (second instance, OS handler). */
+  onDeepLink(cb: (l: DeepLink) => void): Unlisten;
   devSmoke(): Promise<SmokeReport>;
   /** Forwards a UI log line to the core's log (no-op in the mock). */
   devLog(level: LogLevel, message: string): Promise<void>;

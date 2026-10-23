@@ -16,7 +16,14 @@ import {
 } from './mock/ankiData';
 import { createAnkiDecksMock, mockDailyBackup } from './mock/ankiDecks';
 import { ankiNotesMock } from './mock/ankiNotes';
-import { ankiStudyMock } from './mock/ankiStudy';
+import { ankiStudyMock, mockStudyOwner, resetStudyMock } from './mock/ankiStudy';
+import {
+  createBookPanelMock,
+  mockDeepLink,
+  mockSetPendingDeepLinks,
+  mockSetVocabRoot,
+  resetBookPanel,
+} from './mock/bookPanel';
 import { ankiSyncMock, mockSyncHandle, resetSync, syncCollectionReplaced, type MockSyncHandle } from './mock/ankiSync';
 import {
   CoreError,
@@ -35,6 +42,7 @@ import {
   type ReadingPosition,
   type SavedVersion,
   type StopReason,
+  type StudyOwner,
 } from './types';
 
 // ---------------------------------------------------------------- decks
@@ -279,12 +287,22 @@ let state: MockState = loadState();
 // e2e hook: options injected before the app starts (`mockInit` in e2e/fixtures.ts).
 {
   const holder = globalThis as {
-    __leitorMockInit?: { pendingOpen?: string[]; nextPick?: string[]; nextPackagePick?: string | null };
+    __leitorMockInit?: {
+      pendingOpen?: string[];
+      nextPick?: string[];
+      nextPackagePick?: string | null;
+      /** `leitor://` URLs the app is "launched with" (`pendingDeepLinks()`). */
+      pendingDeepLinks?: string[];
+      /** Vocabulary folder (deck id) set before the app starts. */
+      vocabRootDeckId?: number | null;
+    };
   };
   const init = holder.__leitorMockInit;
   if (init) {
     if (init.pendingOpen) state.pendingOpen = init.pendingOpen;
     if (init.nextPick) state.nextPick = init.nextPick;
+    if (init.pendingDeepLinks) mockSetPendingDeepLinks(init.pendingDeepLinks);
+    if (init.vocabRootDeckId !== undefined) mockSetVocabRoot(init.vocabRootDeckId);
     if (init.nextPackagePick !== undefined) {
       ankiState().nextPackagePick = init.nextPackagePick;
       persistAnki();
@@ -669,6 +687,15 @@ export const mockClient: CoreClient = {
   ...ankiStudyMock,
   ...ankiNotesMock,
   ...ankiSyncMock,
+  ...createBookPanelMock({
+    book: (uid) => {
+      const b = liveRec(uid).book;
+      return { title: b.title, contentDeckId: b.contentDeckId };
+    },
+    setContentDeckId: (uid, deckId) => {
+      update(uid, { contentDeckId: deckId });
+    },
+  }),
 };
 
 // ---------------------------------------------------------------- e2e handle
@@ -694,6 +721,12 @@ export interface LeitorMockHandle extends MockSyncHandle {
   dropPaths(paths: string[]): void;
   /** The mock Anki collection. */
   readonly anki: MockAnkiHandle;
+  /** Sets the vocabulary folder (setting `vocab_root_deck_id`; chosen in the UI from Phase 6). */
+  setVocabRoot(deckId: number | null): void;
+  /** Simulates the OS opening a `leitor://` URL while the app runs (`onDeepLink`); invalid URLs are ignored. */
+  deepLink(url: string): void;
+  /** URLs returned (parsed) by the next `pendingDeepLinks()` (launch by URL). */
+  setPendingDeepLinks(urls: string[]): void;
 }
 
 /** `window.__leitorMock.anki`: inspects and drives the mock Anki collection. */
@@ -715,6 +748,10 @@ export interface MockAnkiHandle {
   firePageEvent(e: AnkiPageEvent): void;
   /** Runs the daily backup like the core's ticker (null when today's already exists). */
   dailyBackup(): BackupInfo | null;
+  /** The collection's current deck. */
+  readonly currentDeckId: number;
+  /** Who studies now (`anki://study-owner`). */
+  readonly studyOwner: StudyOwner | null;
 }
 
 const ankiHandle: MockAnkiHandle = {
@@ -750,6 +787,12 @@ const ankiHandle: MockAnkiHandle = {
     emitAnkiPageEvent(e);
   },
   dailyBackup: () => mockDailyBackup(),
+  get currentDeckId() {
+    return ankiState().currentDeckId;
+  },
+  get studyOwner() {
+    return mockStudyOwner();
+  },
 };
 
 export const mockHandle: LeitorMockHandle = {
@@ -779,7 +822,12 @@ export const mockHandle: LeitorMockHandle = {
     persist();
     resetAnki();
     resetSync();
+    resetStudyMock();
+    resetBookPanel();
   },
+  setVocabRoot: (deckId) => mockSetVocabRoot(deckId),
+  deepLink: (url) => mockDeepLink(url),
+  setPendingDeepLinks: (urls) => mockSetPendingDeepLinks(urls),
   setNextPick(paths) {
     state.nextPick = paths;
     persist();

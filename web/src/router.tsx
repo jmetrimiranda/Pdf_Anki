@@ -209,6 +209,12 @@ const settingsAnkiRoute = createRoute({
   component: lazyRouteComponent(() => import('./features/settings/AnkiSyncSettings'), 'AnkiSyncSettings'),
 });
 
+const settingsAiRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: 'ia',
+  component: lazyRouteComponent(() => import('./features/settings/AiSettings'), 'AiSettings'),
+});
+
 const devUiRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/dev/ui',
@@ -234,7 +240,7 @@ const routeTree = rootRoute.addChildren([
     ankiInfoRoute,
     ankiGenericPageRoute,
   ]),
-  settingsRoute.addChildren([settingsIndexRoute, settingsAnkiRoute]),
+  settingsRoute.addChildren([settingsIndexRoute, settingsAnkiRoute, settingsAiRoute]),
   ...(devRoutesEnabled ? [devUiRoute, devSmokeRoute] : []),
 ]);
 

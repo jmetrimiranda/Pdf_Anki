@@ -1,7 +1,11 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useToast } from '../../components/ui';
+import { t } from '../../i18n';
 import { core } from '../../lib/core/client';
+import { q } from '../../lib/core/queries';
+import type { DeepLink } from '../../lib/core/types';
 import { AnkiImportProvider, useAnkiImport } from '../anki/import/AnkiImportProvider';
 import { useNarrow } from '../../lib/useMediaQuery';
 import { leitor, LeitorHost } from '../leitor';
@@ -32,6 +36,7 @@ function Shell() {
   const { importPaths: importBooks, addBooks, replacePrompt } = useBookImport();
   const ankiImport = useAnkiImport();
   const queryClient = useQueryClient();
+  const toast = useToast();
 
   // Opened or dropped files (spec 8.5): PDFs go to the library, .apkg/.colpkg to the Anki import flows, in order.
   const importPaths = useCallback(
@@ -73,6 +78,9 @@ function Shell() {
         case 'help':
           setShortcuts(true);
           break;
+        case 'cardFromSelection':
+          leitor.requestCardFromSelection('shortcut');
+          break;
       }
     }
     window.addEventListener('keydown', onKeyDown);
@@ -106,6 +114,42 @@ function Shell() {
     }
     return core.onOpenPaths((paths) => void importPaths(paths, { openLast: true }));
   }, [importPaths]);
+
+  // `leitor://livro/<uid>?pagina=N&q=…` links (spec 10.2) given at launch (consumed once) and forwarded later by the
+  // OS handler / second instance: open the book at the page and find the passage, if this computer has it.
+  const openDeepLink = useCallback(
+    async (link: DeepLink) => {
+      let known: boolean;
+      try {
+        const books = await queryClient.fetchQuery({ ...q.library(), staleTime: 0 });
+        known = books.some((b) => b.bookUid === link.bookUid);
+      } catch {
+        toast.show(t('leitor.deepLinkFailed'), { tone: 'error' });
+        return;
+      }
+      if (!known) {
+        toast.show(t('leitor.deepLinkUnknownBook'), { tone: 'info' });
+        return;
+      }
+      await leitor.openBook(link.bookUid, { page: Math.max(0, link.page - 1), find: link.query });
+    },
+    [queryClient, toast],
+  );
+  const launchLinksTaken = useRef(false);
+  useEffect(() => {
+    if (!launchLinksTaken.current) {
+      launchLinksTaken.current = true;
+      core
+        .pendingDeepLinks()
+        .then(async (links) => {
+          // Several links at once (unusual): the last one wins, as each would replace the previous.
+          const last = links.at(-1);
+          if (last) await openDeepLink(last);
+        })
+        .catch(() => undefined);
+    }
+    return core.onDeepLink((link) => void openDeepLink(link));
+  }, [openDeepLink]);
 
   // Saving on tab switch and on window close belongs to the reader (LeitorHost handles both).
   return (

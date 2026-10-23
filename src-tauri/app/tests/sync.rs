@@ -558,7 +558,7 @@ fn answer_one(app: &App) -> i64 {
         .find(DECK_WORDS)
         .expect("words deck")
         .id;
-    let StudyNext::Card { card } = block_on(app.state.anki_study_next(deck)).unwrap() else {
+    let StudyNext::Card { card } = block_on(app.state.anki_study_next(deck, None)).unwrap() else {
         panic!("no card to study");
     };
     block_on(app.state.anki_answer(card.card_id, 3, 4_000)).unwrap();

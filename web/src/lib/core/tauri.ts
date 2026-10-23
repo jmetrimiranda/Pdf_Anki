@@ -11,6 +11,8 @@ import {
   type AnkiPageEvent,
   type AnkiSyncStatus,
   type CoreClient,
+  type DeepLink,
+  type StudyOwnerChange,
   type Unlisten,
 } from './types';
 
@@ -67,13 +69,26 @@ export const tauriClient: CoreClient = {
   ankiSetCurrentDeck: (deckId) => call('anki_set_current_deck', { deckId }),
   ankiPrepareCollection: () => call('anki_prepare_collection'),
 
-  ankiStudyNext: (deckId) => call('anki_study_next', { deckId }),
+  ankiStudyNext: (deckId, owner) => call('anki_study_next', { deckId, owner: owner ?? null }),
   ankiShowAnswer: (cardId, typed) => call('anki_show_answer', { cardId, typed }),
   ankiAnswer: (cardId, rating, ms) => call('anki_answer', { cardId, rating, ms: Math.max(0, Math.round(ms)) }),
   ankiUndo: () => call('anki_undo'),
   ankiCardAction: (cardId, action, flag) =>
     call('anki_card_action', { cardId, action, ...(flag !== undefined ? { flag } : {}) }),
-  ankiStudyClose: () => call('anki_study_close'),
+  ankiStudyClose: (owner) => call('anki_study_close', { owner: owner ?? null }),
+  ankiMiniReviewOpen: (deckId) => call('anki_mini_review_open', { deckId }),
+  ankiMiniReviewClose: () => call('anki_mini_review_close'),
+  onStudyOwner: (cb) =>
+    subscription(() =>
+      listen<StudyOwnerChange>('anki://study-owner', (e) => {
+        if (e.payload && typeof e.payload === 'object' && 'owner' in e.payload) cb(e.payload);
+      }),
+    ),
+
+  bookPanelInfo: (uid) => call('book_panel_info', { uid }),
+  bookPanelSet: (uid, patch) => call('book_panel_set', { uid, patch }),
+  ankiBookCards: (uid) => call('anki_book_cards', { uid }),
+  vocabDefine: (word, bookUid) => call('vocab_define', { word, bookUid }),
 
   ankiNotetypes: () => call('anki_notetypes'),
   ankiAddDefaults: (deckId) => call('anki_add_defaults', { deckId }),
@@ -160,6 +175,13 @@ export const tauriClient: CoreClient = {
   readingSessionStop: (uid, reason) => call('reading_session_stop', { uid, reason }),
 
   pendingOpenPaths: () => call('pending_open_paths'),
+  pendingDeepLinks: () => call('pending_deep_links'),
+  onDeepLink: (cb) =>
+    subscription(() =>
+      listen<DeepLink>('leitor://deep-link', (e) => {
+        if (e.payload && typeof e.payload === 'object' && typeof e.payload.bookUid === 'string') cb(e.payload);
+      }),
+    ),
   devSmoke: () => call('dev_smoke'),
   devLog: (level, message) => call<void>('dev_log', { level, message }).catch(() => undefined),
   coverUrl: (uid, fileVersion) => protocolUrl('pdf', `cover/${encodeURIComponent(uid)}?v=${fileVersion}`),

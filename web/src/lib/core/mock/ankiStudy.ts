@@ -9,17 +9,24 @@ import {
   type CardAction,
   type CardActionResult,
   type CoreClient,
+  type DeepLink,
+  type MiniReviewClosed,
+  type MiniReviewOpened,
   type QueueCounts,
   type SourceLink,
   type StudyCard,
   type StudyNext,
+  type StudyOwner,
+  type StudyOwnerChange,
   type StudyQueue,
 } from '../types';
 import {
+  ankiChangedListeners,
   ankiState,
   DAY_MS,
   deckById,
   later,
+  listenTo,
   logAnki,
   NT_BASIC_TYPE,
   NT_CLOZE,
@@ -70,12 +77,52 @@ interface UndoEntry {
 
 interface Session {
   deckId: number;
+  /** Who studies (spec 10.1: one place at a time). */
+  owner: StudyOwner;
   current: Current | null;
   /** Set by an answer, cleared by any other operation (Ctrl+Z only undoes answers, spec 10.1). */
   undo: UndoEntry | null;
 }
 
 let session: Session | null = null;
+
+/** The open mini-review ("Revisar aqui"): the deck to restore on close. Dropped when the Anki tab takes over. */
+let mini: { previousDeckId: number } | null = null;
+
+const ownerListeners = new Set<(c: StudyOwnerChange) => void>();
+
+function emitOwner(owner: StudyOwner | null, preempted: StudyOwner | null): void {
+  const change: StudyOwnerChange = { owner, preempted };
+  logAnki('studyOwner', { owner, preempted });
+  for (const cb of [...ownerListeners]) cb(change);
+}
+
+/**
+ * Starts (or continues) `owner`'s session on `deckId`, like `Study::start` in the core: another owner's open session
+ * is preempted (returned), and the deck becomes the collection's current deck.
+ */
+function startSession(deckId: number, owner: StudyOwner): StudyOwner | null {
+  const preempted = session && session.owner !== owner ? session.owner : null;
+  if (!session || session.owner !== owner || session.deckId !== deckId) {
+    session = { deckId, owner, current: null, undo: null };
+  }
+  if (preempted === 'panel') mini = null;
+  ankiState().currentDeckId = deckId;
+  persistAnki();
+  return preempted;
+}
+
+/** The collection was replaced (full sync, .colpkg): sessions are gone, like `Study::reset` in the core. */
+function collectionReplaced(): void {
+  const had = session !== null;
+  session = null;
+  mini = null;
+  if (had) emitOwner(null, null);
+}
+
+ankiChangedListeners.add((e) => {
+  if (e.reason === 'syncFull' || e.reason === 'colpkg') collectionReplaced();
+});
 
 function requireSession(): Session {
   if (!session) throw new CoreError('anki.noStudySession', 'Nenhuma sessão de estudo aberta.');
@@ -319,6 +366,16 @@ export function parseSourceLink(html: string): SourceLink | null {
   return null;
 }
 
+/** A `leitor://livro/…` URL opened by the system, with the core's `parse_deep_link` rules; null when invalid. */
+export function parseDeepLink(url: string): DeepLink | null {
+  if (typeof url !== 'string' || url.length > 4096) return null;
+  const trimmed = url.trim();
+  const prefix = 'leitor://livro/';
+  if (trimmed.slice(0, prefix.length).toLowerCase() !== prefix) return null;
+  const link = parseLink(prefix + trimmed.slice(prefix.length), '');
+  return link ? { bookUid: link.bookUid, page: link.page, query: link.query } : null;
+}
+
 function parseLink(url: string, labelHtml: string): SourceLink | null {
   const m = /^leitor:\/\/livro\/([0-9a-f]{64})(?:\?([^#]*))?(?:#.*)?$/.exec(url);
   if (!m) return null;
@@ -496,15 +553,14 @@ function cardById(id: number): MockCard {
 // ---------------------------------------------------------------- commands
 
 export const ankiStudyMock: Pick<CoreClient, AnkiStudyMockKeys> = {
-  ankiStudyNext: (deckId) =>
+  ankiStudyNext: (deckId, owner = 'tab') =>
     later(() => {
+      if (owner !== 'tab' && owner !== 'panel') throw new CoreError('invalid_input', 'Dono do estudo inválido.');
       if (!deckById(deckId)) throw new CoreError('anki.notFound', 'Deck não encontrado.');
-      if (!session) session = { deckId, current: null, undo: null };
-      else if (session.deckId !== deckId) session = { deckId, current: null, undo: null };
-      const st = ankiState();
-      st.currentDeckId = deckId;
-      persistAnki();
-      return nextFor(session);
+      const before = session?.owner ?? null;
+      const preempted = startSession(deckId, owner);
+      if (before !== owner) emitOwner(owner, preempted);
+      return nextFor(session!);
     }),
 
   ankiShowAnswer: (cardId, typed) =>
@@ -608,10 +664,51 @@ export const ankiStudyMock: Pick<CoreClient, AnkiStudyMockKeys> = {
       }
     }),
 
-  ankiStudyClose: () =>
+  ankiStudyClose: (owner = 'tab') =>
     later(() => {
+      if (!session || session.owner !== owner) return;
       session = null;
+      if (owner === 'panel') mini = null;
+      logAnki('studyClose', { owner });
+      emitOwner(null, null);
     }),
+
+  ankiMiniReviewOpen: (deckId) =>
+    later((): MiniReviewOpened => {
+      if (!deckById(deckId)) throw new CoreError('anki.notFound', 'Deck não encontrado.');
+      const st = ankiState();
+      // Reopening (another deck) while the panel still studies keeps the deck from before the first opening.
+      const previousDeckId = mini && session?.owner === 'panel' ? mini.previousDeckId : st.currentDeckId;
+      const before = session?.owner ?? null;
+      // Switching decks is an undoable operation in Anki, not an answer: Ctrl+Z has nothing to undo after it.
+      if (session) session.undo = null;
+      const preempted = startSession(deckId, 'panel');
+      session!.undo = null;
+      mini = { previousDeckId };
+      logAnki('miniReviewOpen', { deckId, previousDeckId, preempted });
+      if (before !== 'panel') emitOwner('panel', preempted);
+      return { previousDeckId, preempted, next: nextFor(session!) };
+    }),
+
+  ankiMiniReviewClose: () =>
+    later((): MiniReviewClosed => {
+      let restoredDeckId: number | null = null;
+      if (session?.owner === 'panel') {
+        // Like the core: only a deck that still exists and is not already the current one is restored.
+        if (mini && deckById(mini.previousDeckId) && ankiState().currentDeckId !== mini.previousDeckId) {
+          ankiState().currentDeckId = mini.previousDeckId;
+          restoredDeckId = mini.previousDeckId;
+          persistAnki();
+        }
+        session = null;
+        emitOwner(null, null);
+      }
+      mini = null;
+      logAnki('miniReviewClose', { restoredDeckId });
+      return { restoredDeckId };
+    }),
+
+  onStudyOwner: (cb) => listenTo(ownerListeners, cb),
 
   cardFrameUrl: () => `${MOCK_CARD_BASE}_leitor/reviewer.html`,
   cardMediaUrl: (name) => `${MOCK_CARD_BASE}${encodeURIComponent(name)}`,
@@ -620,4 +717,10 @@ export const ankiStudyMock: Pick<CoreClient, AnkiStudyMockKeys> = {
 /** Tests: forget the session (the mock collection is reset separately). */
 export function resetStudyMock(): void {
   session = null;
+  mini = null;
+}
+
+/** Who studies now (`__leitorMock.anki.studyOwner`). */
+export function mockStudyOwner(): StudyOwner | null {
+  return session?.owner ?? null;
 }

@@ -62,8 +62,15 @@ export type AnkiStudyMockKeys =
   | 'ankiUndo'
   | 'ankiCardAction'
   | 'ankiStudyClose'
+  | 'ankiMiniReviewOpen'
+  | 'ankiMiniReviewClose'
+  | 'onStudyOwner'
   | 'cardFrameUrl'
   | 'cardMediaUrl';
+
+/** Implemented by mock/bookPanel.ts (book panel, "Definir palavra", deep links). */
+export type BookPanelMockKeys =
+  'bookPanelInfo' | 'bookPanelSet' | 'ankiBookCards' | 'vocabDefine' | 'pendingDeepLinks' | 'onDeepLink';
 
 /** Implemented by mock/ankiNotes.ts (notes/browse/editor package). */
 export type AnkiNotesMockKeys =
@@ -98,7 +105,9 @@ export type AnkiSyncMockKeys =
 
 /** Implemented by mock/ankiDecks.ts (this shell): every other `anki*` method, the page URL and the events. */
 export type AnkiDecksMockKeys =
-  Exclude<AnkiMethods, AnkiStudyMockKeys | AnkiNotesMockKeys | AnkiSyncMockKeys> | 'onAnkiChanged' | 'onAnkiPageEvent';
+  | Exclude<AnkiMethods, AnkiStudyMockKeys | AnkiNotesMockKeys | AnkiSyncMockKeys | BookPanelMockKeys>
+  | 'onAnkiChanged'
+  | 'onAnkiPageEvent';
 
 // ---------------------------------------------------------------- model
 
@@ -522,12 +531,18 @@ export function seedAnki(): AnkiState {
     [{}, {}],
   );
 
-  // Livros::Animal Farm: Fonte link back to the book.
+  // Livros::Animal Farm: Fonte links back to the book (p. 37 like the core's fixture; p. 1 so the mock book's first
+  // page has a card in "Cards desta página").
   const uid = animalFarmUid();
   b.note(farm, NT_BASIC_LEITOR, [
     'What did the animals build on the knoll?',
     'A windmill',
     `<a href="leitor://livro/${uid}?pagina=37&amp;q=windmill">Animal Farm, p. 37</a>`,
+  ]);
+  b.note(farm, NT_BASIC_LEITOR, [
+    'Where does the story of Animal Farm begin?',
+    'At Manor Farm',
+    `<a href="leitor://livro/${uid}?pagina=1&amp;q=Manor%20Farm">Animal Farm, p. 1</a>`,
   ]);
 
   s.currentDeckId = words;

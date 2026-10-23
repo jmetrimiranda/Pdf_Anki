@@ -37,6 +37,33 @@
     "path",
     "size"
   ],
+  "BookCard": [
+    "cardIds",
+    "deckId",
+    "noteId",
+    "notetype",
+    "page",
+    "preview",
+    "query"
+  ],
+  "BookDeckInfo": [
+    "counts",
+    "deckId",
+    "exists",
+    "name",
+    "role"
+  ],
+  "BookPanelInfo": [
+    "bookUid",
+    "contentDeck",
+    "lastDeckId",
+    "lastKind",
+    "reviewDeckId",
+    "title",
+    "vocabDeck",
+    "vocabRootDeckId",
+    "vocabRootName"
+  ],
   "BrowseRow": [
     "buried",
     "cardId",
@@ -67,6 +94,11 @@
     "decks",
     "studiedToday"
   ],
+  "DeepLink": [
+    "bookUid",
+    "page",
+    "query"
+  ],
   "FieldInfo": [
     "fontName",
     "fontSize",
@@ -81,6 +113,14 @@
   "FullSyncResult": [
     "backup",
     "status"
+  ],
+  "MiniReviewClosed": [
+    "restoredDeckId"
+  ],
+  "MiniReviewOpened": [
+    "next",
+    "preempted",
+    "previousDeckId"
   ],
   "NotetypeInfo": [
     "appType",
@@ -143,6 +183,10 @@
     "deckName",
     "kind"
   ],
+  "StudyOwnerChange": [
+    "owner",
+    "preempted"
+  ],
   "SyncErrorInfo": [
     "code",
     "message"
@@ -170,5 +214,19 @@
   ],
   "Values.newCardButtons": [
     "<⁨1⁩min(s)|<⁨6⁩min(s)|<⁨10⁩min(s)"
+  ],
+  "WordDefinition": [
+    "lemma",
+    "note",
+    "vocabRootDeckId",
+    "vocabRootName",
+    "word"
+  ],
+  "WordDefinition.note": [
+    "deckName",
+    "definition",
+    "noteId",
+    "notetype",
+    "preview"
   ]
 }

@@ -4,6 +4,9 @@ import { ankiNotesMessages } from './pt-BR/ankiNotes';
 import { ankiShellMessages } from './pt-BR/ankiShell';
 import { ankiStudyMessages } from './pt-BR/ankiStudy';
 import { ankiSyncMessages } from './pt-BR/ankiSync';
+import { bookPanelMessages } from './pt-BR/bookPanel';
+import { leitorBridgeMessages } from './pt-BR/leitorBridge';
+import { miniReviewMessages } from './pt-BR/miniReview';
 
 export const baseMessages = {
   'app.name': 'Leitor de Estudos',
@@ -148,7 +151,6 @@ export const baseMessages = {
   'panel.title': 'Anki',
   'panel.label': 'Painel Anki do livro',
   'panel.noBook': 'Abra um livro pela Biblioteca.',
-  'panel.soon': 'Em breve: deck do livro, card da seleção e revisão rápida.',
   'panel.show': 'Mostrar painel Anki (Ctrl+Shift+P)',
   'panel.hide': 'Ocultar painel Anki (Ctrl+Shift+P)',
 
@@ -278,6 +280,9 @@ export const messageSections = {
   ankiStudy: ankiStudyMessages,
   ankiNotes: ankiNotesMessages,
   ankiSync: ankiSyncMessages,
+  bookPanel: bookPanelMessages,
+  miniReview: miniReviewMessages,
+  leitorBridge: leitorBridgeMessages,
 } as const;
 
 export const ptBR = {
@@ -286,6 +291,9 @@ export const ptBR = {
   ...ankiStudyMessages,
   ...ankiNotesMessages,
   ...ankiSyncMessages,
+  ...bookPanelMessages,
+  ...miniReviewMessages,
+  ...leitorBridgeMessages,
 } as const;
 
 export type Messages = typeof ptBR;

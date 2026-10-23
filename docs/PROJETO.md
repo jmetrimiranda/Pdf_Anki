@@ -2,7 +2,7 @@
 
 > **Para quem é este documento:** Claude Opus 5.5 (esforço xhigh), que vai implementar o app do zero.
 > **Dono do produto:** Jorge — usuário único.
-> **Versão:** 1.1 · 22/10/2026 · fuso America/Sao_Paulo. **Mudança da 1.1:** a tela de leitura é a interface do próprio PdfCraft, embutida (seção 6).
+> **Versão:** 1.1 · 22/10/2026 · fuso America/Sao_Paulo. **Mudança da 1.1:** a tela de leitura é a interface do próprio PdfCraft, embutida (seção 6). **Ajuste de 23/10/2026:** o alvo passa a ser só Linux (app desktop) e Web (interface e pacotes TS); o Windows sai do escopo (`docs/decisoes.md`).
 > **Nome provisório:** "Leitor de Estudos" (repositório `leitor-estudos`).
 > **Projeto irmão:** "Painel de Estudos" (produtividade: trilhas, pomodoro, painel). São dois apps separados que conversam por um contrato pequeno (Apêndice A, idêntico nos dois documentos).
 
@@ -123,7 +123,8 @@ Lições do protótipo, que valem para o projeto:
 
 | Plataforma | Como | Observações |
 |---|---|---|
-| Linux, Windows, macOS | Tauri 2 desktop | **Prioridade agora** (decisão do usuário): Linux e Windows primeiro. O usuário usa Linux. |
+| Linux | Tauri 2 desktop | **Único alvo desktop agora** (decisão do usuário de 23/10/2026: foco e custo). O usuário usa Linux. |
+| Windows, macOS | Tauri 2 desktop | **Fora do escopo.** O código não deve impedir esses sistemas de propósito (caminhos com `Path`, nada de shell exclusivo sem motivo), mas não há CI, build nem instalador para eles. |
 | iPad e iPhone | Tauri 2 iOS, **adiado para a Fase 10** | **Exige compilar num Mac com Xcode** (ou num runner macOS de CI). Para instalar nos próprios aparelhos sem expirar em 7 dias, precisa da Apple Developer Program (US$ 99/ano) e do TestFlight. Com um Apple ID gratuito, o app expira a cada 7 dias e precisa ser reinstalado pelo Xcode. |
 | Android | Tauri 2 Android | Sai quase de graça. Não é prioridade. |
 
@@ -988,7 +989,7 @@ Opcional, configurada em Configurações → Integração com o Painel (URL e to
 
 ## 19. Build, distribuição e custos
 
-- **Desktop:** pacotes do Tauri (Linux: AppImage e .deb; macOS: .dmg; Windows: .msi). Atualização automática opcional pelo updater do Tauri, a partir de um release no GitHub.
+- **Desktop:** pacotes do Tauri para Linux (AppImage e .deb). Windows e macOS fora do escopo (seção 2.3). Atualização automática opcional pelo updater do Tauri, a partir de um release no GitHub.
 - **iPad e iPhone:**
   - É preciso um **Mac com Xcode** para compilar, ou um runner macOS de CI (GitHub Actions tem runners macOS; em repositório privado, os minutos de macOS custam mais).
   - Para instalar nos próprios aparelhos sem reinstalar a cada 7 dias: **Apple Developer Program (US$ 99/ano)** e distribuição pelo **TestFlight**.
@@ -996,7 +997,7 @@ Opcional, configurada em Configurações → Integração com o Painel (URL e to
 - **Tamanho e pacotes de dados:**
   - **Sempre no instalador:** o MathJax e as páginas do Anki (precisam funcionar offline desde a Fase 2).
   - **No instalador do desktop; baixados no primeiro uso no iPad e no iPhone:** Pyodide, WordNet com as frequências, e os modelos de OCR. Os pacotes ficam em `https://leitor.<domínio>/assets/<versão>/`, servidos pelo `library-sync`, com hash conferido no download. Antes do `library-sync` existir (Fase 9), o build de iOS inclui os pacotes no instalador.
-- **CI:** `cargo fmt`, `clippy -D warnings`, `cargo test` (com `-j 2` e tempo limite, porque compilar o Anki e o PdfCraft é pesado), build do PdfCraft web (`trunk`, alvo `wasm32-unknown-unknown`), testes do frontend e da ponte, build desktop Linux e Windows em todo PR, build iOS no runner macOS no merge (quando chegar a Fase 10).
+- **CI:** dois jobs que precisam ficar verdes, **Linux** e **Web**: `cargo fmt`, `clippy -D warnings`, `cargo test` (com `-j 2` e tempo limite, porque compilar o Anki e o PdfCraft é pesado), build do PdfCraft web (`trunk`, alvo `wasm32-unknown-unknown`), testes do frontend e da ponte, build desktop Linux em todo PR. Sem job de Windows nos pushes e PRs (só execução manual, não suportada). Build iOS no runner macOS no merge quando chegar a Fase 10.
 - **Custos:**
 
   | Item | Custo |
@@ -1037,7 +1038,7 @@ Entregas: workspace Tauri 2 com as crates `core-*`, o `rust-toolchain.toml`, o `
 
 Aceite:
 
-- [ ] **O app compila e roda no Linux e no Windows** com o `rslib` (com `rustls`) e as crates do PdfCraft linkadas. macOS é opcional. **iOS adiado para a Fase 10** (decisão do usuário: desktop primeiro), sem usar nada que feche essa porta.
+- [ ] **O app compila e roda no Linux** com o `rslib` (com `rustls`) e as crates do PdfCraft linkadas. Windows e macOS fora do escopo (decisão de 23/10/2026). **iOS adiado para a Fase 10** (decisão do usuário: desktop primeiro), sem usar nada que feche essa porta.
 - [ ] O `rslib` faz login e sincroniza por HTTPS com um servidor de sync de teste (local, com certificado de desenvolvimento), provando que o TLS funciona.
 - [ ] Um comando de teste no app abre uma coleção, mostra a árvore de decks, abre um PDF e mostra a página 1 (a repetição do protótipo dentro do Tauri).
 - [ ] `/dev/ui` com todos os componentes nos temas claro e escuro, aprovado visualmente pelo usuário.
@@ -1171,9 +1172,9 @@ Aceite:
 
 - Dois apps separados: este (leitor + Anki) e o Painel de Estudos (produtividade), ligados pelo contrato do Apêndice A.
 - Juntar o núcleo do Anki (`rslib`), as páginas web do Anki e o PdfCraft num app Tauri 2. **A tela de leitura é a interface do próprio PdfCraft** (versão WebAssembly, embutida, com um fork mínimo só na ponte), com o visual e todas as funções dele. A interface Qt do Anki não é usada.
-- Desktop primeiro (Linux e Windows); iPad e iPhone na Fase 10.
+- Desktop primeiro, só Linux (Windows fora do escopo desde 23/10/2026); iPad e iPhone na Fase 10.
 - O Anki fica numa aba própria e também no painel lateral do leitor.
-- Plataformas: Linux, Windows e macOS agora; iPad e iPhone depois. Sem versão para navegador.
+- Plataformas: Linux agora; iPad e iPhone depois (Fase 10). Windows e macOS fora do escopo. Sem versão para navegador.
 - Sincronização do Anki pelo servidor próprio no VPS do Painel. AnkiWeb não.
 - Livros em PDF e EPUB, com OCR em inglês.
 - Cards de código: Python, C++ e ROS 2/shell.

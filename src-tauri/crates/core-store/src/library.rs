@@ -46,7 +46,7 @@ fn check_hash(hash: &str) -> Result<()> {
     }
 }
 
-fn check_uid(uid: &str) -> Result<()> {
+pub(crate) fn check_uid(uid: &str) -> Result<()> {
     if is_valid_book_uid(uid) {
         Ok(())
     } else {
@@ -196,7 +196,7 @@ pub struct BookPatch {
     pub ocr_status: Option<OcrStatus>,
 }
 
-fn double_option<'de, T, D>(d: D) -> std::result::Result<Option<Option<T>>, D::Error>
+pub(crate) fn double_option<'de, T, D>(d: D) -> std::result::Result<Option<Option<T>>, D::Error>
 where
     T: Deserialize<'de>,
     D: Deserializer<'de>,
@@ -498,8 +498,8 @@ impl Store {
         Ok(book)
     }
 
-    /// Soft-deletes a book and tombstones its EPUB annotations and reading position (section 16).
-    /// Removing an already removed book is a no-op. The local file is left to the caller.
+    /// Soft-deletes a book, tombstones its EPUB annotations and reading position (section 16) and deletes its
+    /// device-local preferences. Removing an already removed book is a no-op. The local file is left to the caller.
     pub fn remove_book(&mut self, book_uid: &str) -> Result<()> {
         check_uid(book_uid)?;
         let tx = self.conn.transaction()?;
@@ -518,6 +518,11 @@ impl Store {
         ] {
             tx.execute(sql, params![book_uid, now])?;
         }
+        // Device-local, no tombstone needed.
+        tx.execute(
+            "DELETE FROM book_prefs WHERE book_uid = ?1",
+            params![book_uid],
+        )?;
         tx.commit()?;
         Ok(())
     }

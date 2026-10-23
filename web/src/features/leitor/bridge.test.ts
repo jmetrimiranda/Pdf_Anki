@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BridgeClient, INFO_KEY, MAX_BYTES, parseMessage, type BridgeIn } from './bridge';
+import {
+  BridgeClient,
+  INFO_KEY,
+  MAX_BYTES,
+  MAX_RECTS,
+  MAX_TEXT,
+  normalizeFind,
+  parseMessage,
+  type BridgeIn,
+} from './bridge';
 import { fakeFrame, fakeHost, ORIGIN, UID_A, UID_B } from './testing';
 
 const known = (id: string) => id === UID_A;
@@ -102,6 +111,104 @@ describe('parseMessage', () => {
   });
 });
 
+const KEYS = new Set(['card', 'ai', 'define']);
+const parse = (data: unknown) => parseMessage(data, known, KEYS);
+
+describe('parseMessage · bridge v2', () => {
+  const sel = { type: 'pdfcraft:selection', id: UID_A, page: 2, text: 'the windmill', rects: [[10, 20, 30.5, 12]] };
+  const menu = { ...sel, type: 'pdfcraft:menu', key: 'card', anchor: [100, 200, 120, 24] };
+
+  it('accepts a selection, an empty one (cleared) and one without rects', () => {
+    expect(parse(sel)).toEqual({ ok: true, msg: sel });
+    expect(parse({ ...sel, text: '', rects: [] })).toEqual({ ok: true, msg: { ...sel, text: '', rects: [] } });
+    expect(parse({ type: 'pdfcraft:selection', id: UID_A, page: 0 })).toEqual({
+      ok: true,
+      msg: { type: 'pdfcraft:selection', id: UID_A, page: 0, text: '', rects: [] },
+    });
+    // A document PdfCraft opened by itself: parsed (the controller ignores it).
+    expect(parse({ ...sel, id: null }).ok).toBe(true);
+    expect(parse({ ...sel, text: 'x'.repeat(MAX_TEXT) }).ok).toBe(true);
+    expect(parse({ ...sel, rects: Array.from({ length: MAX_RECTS }, () => [0, 0, 1, 1]) }).ok).toBe(true);
+  });
+
+  it.each([
+    ['huge text', { ...sel, text: 'x'.repeat(MAX_TEXT + 1) }],
+    ['text not a string', { ...sel, text: 42 }],
+    ['NaN in a rect', { ...sel, rects: [[0, NaN, 1, 1]] }],
+    ['Infinity in a rect', { ...sel, rects: [[0, 0, Infinity, 1]] }],
+    ['negative width', { ...sel, rects: [[0, 0, -1, 1]] }],
+    ['short rect', { ...sel, rects: [[0, 0, 1]] }],
+    ['string in a rect', { ...sel, rects: [['0', 0, 1, 1]] }],
+    ['rects not an array', { ...sel, rects: { 0: [0, 0, 1, 1] } }],
+    ['too many rects', { ...sel, rects: Array.from({ length: MAX_RECTS + 1 }, () => [0, 0, 1, 1]) }],
+    ['negative page', { ...sel, page: -1 }],
+    ['fractional page', { ...sel, page: 1.5 }],
+    ['unknown id', { ...sel, id: UID_B }],
+    ['malformed id', { ...sel, id: 'abc' }],
+  ])('rejects a selection with %s', (_n, data) => expect(parse(data).ok).toBe(false));
+
+  it('accepts a menu click with or without an anchor', () => {
+    expect(parse(menu)).toEqual({ ok: true, msg: menu });
+    const { anchor: _a, ...noAnchor } = menu;
+    expect(parse(noAnchor)).toEqual({ ok: true, msg: { ...noAnchor, anchor: null } });
+    expect(parse({ ...menu, id: null }).ok).toBe(true);
+  });
+
+  it.each([
+    ['an unknown key', { ...menu, key: 'evil' }],
+    ['a key the app did not register', { ...menu, key: 'copy' }],
+    ['no key', { ...menu, key: undefined }],
+    ['huge text', { ...menu, text: 'x'.repeat(MAX_TEXT + 1) }],
+    ['NaN rects', { ...menu, rects: [[NaN, 0, 1, 1]] }],
+    ['a bad anchor', { ...menu, anchor: [0, 0, -5, 1] }],
+    ['an unknown id', { ...menu, id: UID_B }],
+  ])('rejects a menu click with %s', (_n, data) => expect(parse(data).ok).toBe(false));
+
+  it('rejects every menu key when the app registered none', () => {
+    expect(parseMessage(menu, known).ok).toBe(false);
+  });
+
+  it('accepts menu-shown with registered keys only', () => {
+    const shown = { type: 'pdfcraft:menu-shown', id: UID_A, items: [{ key: 'card', rect: [1, 2, 3, 4] }] };
+    expect(parse(shown)).toEqual({ ok: true, msg: shown });
+    expect(parse({ ...shown, items: [] }).ok).toBe(true);
+    expect(parse({ ...shown, items: [{ key: 'evil', rect: [1, 2, 3, 4] }] }).ok).toBe(false);
+    expect(parse({ ...shown, items: [{ key: 'card', rect: [1, 2, NaN, 4] }] }).ok).toBe(false);
+    expect(parse({ ...shown, items: 'card' }).ok).toBe(false);
+    expect(parse({ ...shown, items: Array.from({ length: 17 }, () => shown.items[0]) }).ok).toBe(false);
+  });
+
+  it('accepts found results and rejects malformed ones', () => {
+    const found = { type: 'pdfcraft:found', id: UID_A, page: 0, query: 'the windmill', found: true };
+    expect(parse(found)).toEqual({ ok: true, msg: found });
+    expect(parse({ ...found, found: 'yes' }).ok).toBe(false);
+    expect(parse({ ...found, query: 7 }).ok).toBe(false);
+    expect(parse({ ...found, query: 'x'.repeat(501) }).ok).toBe(false);
+    expect(parse({ ...found, page: -2 }).ok).toBe(false);
+    expect(parse({ ...found, id: UID_B }).ok).toBe(false);
+  });
+
+  it('accepts selection-sent with a whole seq or none', () => {
+    expect(parse({ type: 'pdfcraft:selection-sent', seq: 3 })).toEqual({
+      ok: true,
+      msg: { type: 'pdfcraft:selection-sent', seq: 3 },
+    });
+    expect(parse({ type: 'pdfcraft:selection-sent', seq: null })).toMatchObject({ ok: true, msg: { seq: null } });
+    expect(parse({ type: 'pdfcraft:selection-sent' })).toMatchObject({ ok: true, msg: { seq: null } });
+    for (const seq of [-1, 1.5, '3', NaN]) expect(parse({ type: 'pdfcraft:selection-sent', seq }).ok).toBe(false);
+  });
+});
+
+describe('normalizeFind', () => {
+  it('collapses whitespace and drops empty text', () => {
+    expect(normalizeFind('  the\n windmill\t ')).toBe('the windmill');
+    expect(normalizeFind('   ')).toBeNull();
+    expect(normalizeFind(null)).toBeNull();
+    expect(normalizeFind(undefined)).toBeNull();
+    expect(normalizeFind('x'.repeat(900))).toHaveLength(500);
+  });
+});
+
 describe('BridgeClient', () => {
   it('only hears its iframe on its own origin', () => {
     const { client, got, warn, send } = setup();
@@ -200,5 +307,38 @@ describe('BridgeClient', () => {
     client.detach();
     send({ type: 'pdfcraft:ready', bridge: 1 });
     expect(got).toEqual([]);
+  });
+
+  it('registers menu items (validating keys) and drops clicks on other keys', () => {
+    const { client, frame, got, send } = setup();
+    client.open({ id: UID_A, name: 'a.pdf', bytes: new ArrayBuffer(1), page: 0 });
+    expect(
+      client.setMenuItems([
+        { key: 'card', label: 'Criar card' },
+        { key: 'Bad Key', label: 'x' },
+      ]),
+    ).toBe(true);
+    expect(frame.posted.at(-1)!.msg).toEqual({
+      type: 'pdfcraft:menu-items',
+      items: [{ key: 'card', label: 'Criar card' }],
+    });
+    const click = { type: 'pdfcraft:menu', id: UID_A, page: 0, text: 'x', rects: [] };
+    send({ ...click, key: 'card' });
+    send({ ...click, key: 'ai' });
+    expect(got.map((m) => m.type)).toEqual(['pdfcraft:menu']);
+  });
+
+  it('posts goto with a normalized find, or without find', () => {
+    const { client, frame } = setup();
+    client.goto(UID_A, 3.7, '  the\nwindmill ');
+    expect(frame.posted.at(-1)!.msg).toEqual({ type: 'pdfcraft:goto', id: UID_A, page: 3, find: 'the windmill' });
+    client.goto(UID_A, -2, '   ');
+    expect(frame.posted.at(-1)!.msg).toEqual({ type: 'pdfcraft:goto', id: UID_A, page: 0 });
+  });
+
+  it('posts selection-now with its seq', () => {
+    const { client, frame } = setup();
+    expect(client.selectionNow(4)).toBe(true);
+    expect(frame.posted.at(-1)!.msg).toEqual({ type: 'pdfcraft:selection-now', seq: 4 });
   });
 });

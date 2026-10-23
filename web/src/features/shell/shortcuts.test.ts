@@ -71,7 +71,34 @@ describe('shellActionFor', () => {
     expect(shellActionFor(key({ key: 'w', code: 'KeyW', ctrlKey: true }), body())).toBeNull();
     expect(shellActionFor(key({ key: 'Tab', code: 'Tab', ctrlKey: true }), body())).toBeNull();
     expect(shellActionFor(key({ key: 'A', code: 'KeyA', ctrlKey: true, shiftKey: true }), body())).toBeNull();
-    expect(shellActionFor(key({ key: 'N', code: 'KeyN', ctrlKey: true, shiftKey: true }), body())).toBeNull();
+  });
+
+  it('Ctrl+Shift+N is "Card da seleção" only outside PdfCraft (inside it is its "Go to page…")', () => {
+    const card = { kind: 'cardFromSelection' };
+    expect(shellActionFor(key({ key: 'N', code: 'KeyN', ctrlKey: true, shiftKey: true }), body())).toEqual(card);
+    expect(shellActionFor(key({ key: 'n', code: 'KeyN', metaKey: true, shiftKey: true }), body())).toEqual(card);
+    const input = document.createElement('input');
+    // Typing in a text field: not taken.
+    expect(shellActionFor(key({ key: 'N', code: 'KeyN', ctrlKey: true, shiftKey: true }, input), input)).toBeNull();
+    const area = document.createElement('textarea');
+    expect(shellActionFor(key({ key: 'c', code: 'KeyC', altKey: true }, area), area)).toBeNull();
+    expect(shellActionFor(key({ key: 'c', code: 'KeyC', altKey: true }, input), input)).toBeNull();
+    expect(shellActionFor(key({ key: 'N', code: 'KeyN', ctrlKey: true, shiftKey: true }), iframe())).toBeNull();
+    expect(shellActionFor(key({ key: 'n', code: 'KeyN', ctrlKey: true }), body())).toBeNull();
+    expect(
+      shellActionFor(key({ key: 'N', code: 'KeyN', ctrlKey: true, shiftKey: true, altKey: true }), body()),
+    ).toBeNull();
+  });
+
+  it('Alt+C is "Card da seleção" from anywhere, also forwarded from inside PdfCraft', () => {
+    const card = { kind: 'cardFromSelection' };
+    expect(shellActionFor(key({ key: 'c', code: 'KeyC', altKey: true }), body())).toEqual(card);
+    expect(shellActionFor(key({ key: 'c', code: 'KeyC', altKey: true }), iframe())).toEqual(card);
+    expect(shellActionFor(key({ key: 'ç', code: 'KeyC', altKey: true }), body())).toEqual(card);
+    expect(shellActionFor(key({ key: 'c', code: 'KeyC', ctrlKey: true }), body())).toBeNull();
+    expect(shellActionFor(key({ key: 'C', code: 'KeyC', altKey: true, shiftKey: true }), body())).toBeNull();
+    // Alt+N is PdfCraft's "Don't save" in its save prompt: never ours.
+    expect(shellActionFor(key({ key: 'n', code: 'KeyN', altKey: true }), body())).toBeNull();
   });
 
   it('only the PdfCraft frame keeps Ctrl+1/2/3: the card and Anki page frames let them through', () => {

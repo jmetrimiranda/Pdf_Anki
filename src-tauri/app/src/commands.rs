@@ -5,9 +5,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use core_anki::book::BookCard;
 use core_anki::browse::{BrowseOrder, BrowseRow, ForgetOptions};
 use core_anki::notes::{AddDefaults, NewNote, NoteAdded, NoteCheck, NoteData, NotetypeInfo};
-use core_anki::study::{AnswerSide, CardAction, CardActionResult, StudyNext};
+use core_anki::study::{
+    AnswerSide, CardAction, CardActionResult, MiniReviewClosed, MiniReviewOpened, StudyNext,
+    StudyOwner,
+};
 use core_anki::{
     BackupInfo, DeckName, DeckTree, ExportOptions, ExportResult, FullSyncDirection, ImportSummary,
     PrepareReport,
@@ -18,6 +22,8 @@ use tauri::State;
 use tauri::ipc::{InvokeBody, Request, Response};
 
 use crate::anki::{ChangeNotetypePrepared, DeckDeleted};
+use crate::book_panel::{BookPanelInfo, BookPanelPatch, WordDefinition};
+use crate::deep_link::DeepLink;
 use crate::error::AppError;
 use crate::library::{AddedBook, BookOpen, LibraryPatch, SavedVersion};
 use crate::reading::{SessionStarted, StopReasonArg};
@@ -117,9 +123,13 @@ pub async fn anki_prepare_collection(state: Shared<'_>) -> Result<PrepareReport,
 }
 
 #[tauri::command]
-pub async fn anki_study_next(state: Shared<'_>, deck_id: i64) -> Result<StudyNext, AppError> {
+pub async fn anki_study_next(
+    state: Shared<'_>,
+    deck_id: i64,
+    owner: Option<StudyOwner>,
+) -> Result<StudyNext, AppError> {
     anki_ready(&state).await?;
-    state.anki_study_next(deck_id).await
+    state.anki_study_next(deck_id, owner).await
 }
 
 #[tauri::command]
@@ -161,8 +171,58 @@ pub async fn anki_card_action(
 }
 
 #[tauri::command]
-pub async fn anki_study_close(state: Shared<'_>) -> Result<(), AppError> {
-    blocking(&state, AppState::anki_study_close).await
+pub async fn anki_study_close(
+    state: Shared<'_>,
+    owner: Option<StudyOwner>,
+) -> Result<(), AppError> {
+    blocking(&state, move |s| s.anki_study_close(owner)).await
+}
+
+#[tauri::command]
+pub async fn anki_mini_review_open(
+    state: Shared<'_>,
+    deck_id: i64,
+) -> Result<MiniReviewOpened, AppError> {
+    anki_ready(&state).await?;
+    state.anki_mini_review_open(deck_id).await
+}
+
+#[tauri::command]
+pub async fn anki_mini_review_close(state: Shared<'_>) -> Result<MiniReviewClosed, AppError> {
+    anki_ready(&state).await?;
+    state.anki_mini_review_close().await
+}
+
+#[tauri::command]
+pub async fn book_panel_info(state: Shared<'_>, uid: String) -> Result<BookPanelInfo, AppError> {
+    anki_ready(&state).await?;
+    state.book_panel_info(&uid).await
+}
+
+#[tauri::command]
+pub async fn book_panel_set(
+    state: Shared<'_>,
+    uid: String,
+    patch: BookPanelPatch,
+) -> Result<BookPanelInfo, AppError> {
+    anki_ready(&state).await?;
+    state.book_panel_set(&uid, patch).await
+}
+
+#[tauri::command]
+pub async fn anki_book_cards(state: Shared<'_>, uid: String) -> Result<Vec<BookCard>, AppError> {
+    anki_ready(&state).await?;
+    state.anki_book_cards(uid).await
+}
+
+#[tauri::command]
+pub async fn vocab_define(
+    state: Shared<'_>,
+    word: String,
+    book_uid: Option<String>,
+) -> Result<WordDefinition, AppError> {
+    anki_ready(&state).await?;
+    state.vocab_define(&word, book_uid.as_deref()).await
 }
 
 #[tauri::command]
@@ -726,6 +786,12 @@ pub async fn reading_session_stop(
 #[tauri::command]
 pub fn pending_open_paths(state: Shared<'_>) -> Vec<String> {
     state.take_open_paths()
+}
+
+/// `leitor://` links the app was launched with, each returned once.
+#[tauri::command]
+pub fn pending_deep_links(state: Shared<'_>) -> Vec<DeepLink> {
+    state.take_deep_links()
 }
 
 #[cfg(debug_assertions)]

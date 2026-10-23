@@ -91,6 +91,32 @@ describe('mock core vs the Rust contract snapshot', () => {
     collect(out, 'AnkiSyncStatus', full.status);
     collect(out, 'BackupInfo', full.backup);
 
+    // Book panel (spec 10): the Animal Farm book with a content deck, the cards of the book, the mini-review, the study
+    // owner event, "Definir palavra" with a vocabulary folder and a deep link.
+    const farmBook = (await mockClient.libraryList()).find((b) => b.title === 'Animal Farm')!;
+    const farmDeck = (await mockClient.ankiDeckNames()).find((d) => d.name === 'Livros::Animal Farm')!.id;
+    const panel = await mockClient.bookPanelSet(farmBook.bookUid, { contentDeckId: farmDeck });
+    collect(out, 'BookPanelInfo', panel);
+    collect(out, 'BookDeckInfo', panel.vocabDeck);
+    collect(out, 'BookDeckInfo', panel.contentDeck);
+    collect(out, 'QueueCounts', panel.vocabDeck.counts);
+    for (const c of await mockClient.ankiBookCards(farmBook.bookUid)) collect(out, 'BookCard', c);
+    const changes: unknown[] = [];
+    const stop = mockClient.onStudyOwner((c) => changes.push(c));
+    collect(out, 'MiniReviewOpened', await mockClient.ankiMiniReviewOpen(farmDeck));
+    collect(out, 'MiniReviewClosed', await mockClient.ankiMiniReviewClose());
+    stop();
+    for (const c of changes) collect(out, 'StudyOwnerChange', c);
+    mockHandle.setVocabRoot((await mockClient.ankiDeckNames()).find((d) => d.name === '5000 palavras')!.id);
+    const def = await mockClient.vocabDefine('windmills', farmBook.bookUid);
+    collect(out, 'WordDefinition', def);
+    collect(out, 'WordDefinition.note', def.note);
+    const links: unknown[] = [];
+    const stopLinks = mockClient.onDeepLink((l) => links.push(l));
+    mockHandle.deepLink(`leitor://livro/${farmBook.bookUid}?pagina=3&q=windmill`);
+    stopLinks();
+    for (const l of links) collect(out, 'DeepLink', l);
+
     const expected = contract as Shapes;
     for (const required of [
       'StudyNext.card',
@@ -107,6 +133,15 @@ describe('mock core vs the Rust contract snapshot', () => {
       'SyncErrorInfo',
       'FullSyncChoice',
       'FullSyncResult',
+      'BookPanelInfo',
+      'BookDeckInfo',
+      'BookCard',
+      'MiniReviewOpened',
+      'MiniReviewClosed',
+      'StudyOwnerChange',
+      'WordDefinition',
+      'WordDefinition.note',
+      'DeepLink',
     ]) {
       expect(out[required], `the mock produced no ${required}`).toBeDefined();
     }

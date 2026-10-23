@@ -16,10 +16,17 @@ use std::sync::Arc;
 use core_anki::anki::prelude::I18n;
 use core_anki::anki::scheduler::timespan::{answer_button_time, answer_button_time_collapsible};
 use core_anki::fixture::{self, FixtureOptions};
+use core_anki::study::StudyOwner;
 use core_anki::study::{AvTag, StudyNext};
+use core_store::setting_keys as keys;
 use leitor_app::secrets::MemoryStore;
-use leitor_app::{AnkiSyncStatus, AppState, FullSyncResult, SyncErrorInfo, SyncState};
+use leitor_app::{
+    AnkiSyncStatus, AppState, BookPanelPatch, DeepLink, FullSyncResult, StudyOwnerChange,
+    SyncErrorInfo, SyncState,
+};
 use serde_json::Value;
+
+mod common;
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tauri::async_runtime::block_on(f)
@@ -134,7 +141,7 @@ fn serde_shapes_match_the_ts_contract() {
     let mut new_buttons: BTreeSet<String> = BTreeSet::new();
     // Study: the first card of every fixture deck, its answer side and the "done" state.
     for id in info.decks.values() {
-        let next = block_on(state.anki_study_next(*id)).unwrap();
+        let next = block_on(state.anki_study_next(*id, None)).unwrap();
         let card_id = next.card().map(|c| c.card_id);
         let v = serde_json::to_value(&next).unwrap();
         match &next {
@@ -170,9 +177,9 @@ fn serde_shapes_match_the_ts_contract() {
         }
     }
     let empty = block_on(state.anki_deck_create("Contrato vazio".into())).unwrap();
-    let done = serde_json::to_value(block_on(state.anki_study_next(empty)).unwrap()).unwrap();
+    let done = serde_json::to_value(block_on(state.anki_study_next(empty, None)).unwrap()).unwrap();
     record(&mut out, "StudyNext.done", &done);
-    state.anki_study_close().unwrap();
+    state.anki_study_close(None).unwrap();
     // The audio and TTS notes are not first cards of their decks: serialize tags directly.
     let tts = AvTag::Tts {
         text: "hello".into(),
@@ -284,6 +291,59 @@ fn serde_shapes_match_the_ts_contract() {
         "SyncErrorInfo",
         &serde_json::to_value(&error).unwrap(),
     );
+    // Book panel (spec 10): a library book titled like the fixture's "Livros::Animal Farm" deck, its content deck set,
+    // the Fonte note of the fixture, the mini-review and "Definir palavra" with a vocabulary folder.
+    let pdf = common::write(
+        dir.path(),
+        "Animal Farm.pdf",
+        &common::text_pdf(3, "Animal Farm"),
+    );
+    let added = state.library_add(&pdf, false).unwrap();
+    let uid = added.book.book.book_uid.clone();
+    let farm = info.decks[fixture::DECK_ANIMAL_FARM];
+    let patch = BookPanelPatch {
+        content_deck_id: Some(Some(farm)),
+        ..BookPanelPatch::default()
+    };
+    let panel = serde_json::to_value(block_on(state.book_panel_set(&uid, patch)).unwrap()).unwrap();
+    record(&mut out, "BookPanelInfo", &panel);
+    record(&mut out, "BookDeckInfo", &panel["vocabDeck"]);
+    record(&mut out, "BookDeckInfo", &panel["contentDeck"]);
+    record(&mut out, "QueueCounts", &panel["vocabDeck"]["counts"]);
+    let cards = block_on(state.anki_book_cards(fixture::BOOK_UID.into())).unwrap();
+    assert!(!cards.is_empty());
+    for c in &cards {
+        record(&mut out, "BookCard", &serde_json::to_value(c).unwrap());
+    }
+    let words = info.decks[fixture::DECK_WORDS];
+    let opened = block_on(state.anki_mini_review_open(farm)).unwrap();
+    let opened = serde_json::to_value(&opened).unwrap();
+    record(&mut out, "MiniReviewOpened", &opened);
+    let closed = serde_json::to_value(block_on(state.anki_mini_review_close()).unwrap()).unwrap();
+    record(&mut out, "MiniReviewClosed", &closed);
+    let change = StudyOwnerChange {
+        owner: Some(StudyOwner::Panel),
+        preempted: Some(StudyOwner::Tab),
+    };
+    record(
+        &mut out,
+        "StudyOwnerChange",
+        &serde_json::to_value(change).unwrap(),
+    );
+    state
+        .with_store(|s| s.set_setting(keys::VOCAB_ROOT_DECK_ID, words.into()))
+        .unwrap();
+    let def = block_on(state.vocab_define("windmills", Some(&uid))).unwrap();
+    assert!(def.note.is_some(), "the fixture has a windmill note");
+    let def = serde_json::to_value(&def).unwrap();
+    record(&mut out, "WordDefinition", &def);
+    record(&mut out, "WordDefinition.note", &def["note"]);
+    let link = DeepLink {
+        book_uid: fixture::BOOK_UID.into(),
+        page: 37,
+        query: Some("windmill".into()),
+    };
+    record(&mut out, "DeepLink", &serde_json::to_value(link).unwrap());
     state.shutdown();
 
     for required in [
@@ -301,6 +361,15 @@ fn serde_shapes_match_the_ts_contract() {
         "SyncErrorInfo",
         "FullSyncChoice",
         "FullSyncResult",
+        "BookPanelInfo",
+        "BookDeckInfo",
+        "BookCard",
+        "MiniReviewOpened",
+        "MiniReviewClosed",
+        "StudyOwnerChange",
+        "WordDefinition",
+        "WordDefinition.note",
+        "DeepLink",
     ] {
         assert!(
             out.contains_key(required),

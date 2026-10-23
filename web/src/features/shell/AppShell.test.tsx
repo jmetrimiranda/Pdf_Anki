@@ -9,9 +9,12 @@ import { installDomStubs } from '../../lib/testing/dom';
 import { createAppRouter, queryClient } from '../../router';
 
 const leitorMock = vi.hoisted(() => ({
-  openBook: vi.fn(async (_uid: string) => true),
+  openBook: vi.fn(async (_uid: string, _opts?: unknown) => true),
   togglePanel: vi.fn(),
   flushSaves: vi.fn(async () => true),
+  requestCardFromSelection: vi.fn(),
+  onPanelRequest: vi.fn(() => () => {}),
+  setReviewing: vi.fn(),
 }));
 vi.mock('../leitor', () => ({
   leitor: leitorMock,
@@ -25,6 +28,7 @@ beforeEach(() => {
   queryClient.clear();
   leitorMock.openBook.mockClear();
   leitorMock.togglePanel.mockClear();
+  leitorMock.requestCardFromSelection.mockClear();
 });
 
 let router: ReturnType<typeof createAppRouter>;
@@ -224,5 +228,58 @@ describe('AppShell', () => {
     act(() => mockHandle.anki.fireChanged('page'));
     await waitFor(() => expect(spy).toHaveBeenCalled());
     spy.mockRestore();
+  });
+
+  it('"Card da seleção": Ctrl+Shift+N outside PdfCraft, Alt+C from anywhere', async () => {
+    await renderApp('/leitor');
+    fireEvent.keyDown(window, { key: 'N', code: 'KeyN', ctrlKey: true, shiftKey: true });
+    expect(leitorMock.requestCardFromSelection).toHaveBeenCalledWith('shortcut');
+
+    const frame = document.createElement('iframe');
+    frame.title = 'PdfCraft';
+    frame.tabIndex = 0;
+    document.body.appendChild(frame);
+    frame.focus();
+    const e = new KeyboardEvent('keydown', { key: 'N', code: 'KeyN', ctrlKey: true, shiftKey: true, cancelable: true });
+    window.dispatchEvent(e);
+    // PdfCraft's "Go to page…": not taken, not prevented.
+    expect(e.defaultPrevented).toBe(false);
+    expect(leitorMock.requestCardFromSelection).toHaveBeenCalledTimes(1);
+    // Alt+C forwarded from inside the iframe.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', code: 'KeyC', altKey: true, bubbles: true }));
+    expect(leitorMock.requestCardFromSelection).toHaveBeenCalledTimes(2);
+    frame.remove();
+  });
+
+  it('lists "Card da seleção" as ready with the note about PdfCraft\'s Ctrl+Shift+N', async () => {
+    await renderApp();
+    fireEvent.keyDown(document.body, { key: '?' });
+    const dialog = await screen.findByRole('dialog', { name: 'Atalhos do teclado' });
+    const row = within(dialog).getByText('Card da seleção').closest('li')!;
+    expect(row.textContent).not.toContain('em breve');
+    expect(row.textContent).toContain('Alt');
+    expect(dialog.textContent).toContain('Ctrl+Shift+N é o “Ir para a página” do PdfCraft');
+  });
+
+  it('opens a leitor:// link given at launch at its page, finding the passage', async () => {
+    const farm = mockHandle.books.find((b) => b.title === 'Animal Farm')!;
+    mockHandle.setPendingDeepLinks([`leitor://livro/${farm.bookUid}?pagina=3&q=the%20windmill`]);
+    await renderApp();
+    await waitFor(() => expect(leitorMock.openBook).toHaveBeenCalledTimes(1));
+    expect(leitorMock.openBook).toHaveBeenCalledWith(farm.bookUid, { page: 2, find: 'the windmill' });
+  });
+
+  it('opens a leitor:// link forwarded while running; an unknown book shows a notice', async () => {
+    await renderApp();
+    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(3));
+    const farm = mockHandle.books.find((b) => b.title === 'Animal Farm')!;
+    act(() => mockHandle.deepLink(`leitor://livro/${farm.bookUid}?pagina=1`));
+    await waitFor(() => expect(leitorMock.openBook).toHaveBeenCalledWith(farm.bookUid, { page: 0, find: null }));
+
+    act(() => mockHandle.deepLink(`leitor://livro/${'f'.repeat(64)}?pagina=2&q=x`));
+    expect(await screen.findByText('Este livro não está na Biblioteca deste computador.')).toBeTruthy();
+    // Invalid links never reach the app.
+    act(() => mockHandle.deepLink('leitor://evil/../x'));
+    expect(leitorMock.openBook).toHaveBeenCalledTimes(1);
   });
 });

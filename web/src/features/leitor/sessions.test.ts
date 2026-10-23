@@ -100,4 +100,29 @@ describe('SessionWiring', () => {
     s.active(UID_A, 3);
     expect(log).toEqual(['start a 1']);
   });
+
+  it('stops with "review" while the mini-review is open and restarts after it if still reading', () => {
+    const { s, log } = setup();
+    s.setTabVisible(true);
+    s.active(UID_A, 4);
+    s.setReviewing(true);
+    s.setReviewing(true);
+    // Activity during the review (scrolling behind the panel) doesn't start a session.
+    s.activity(UID_A, 5);
+    expect(log).toEqual(['start a 4', 'stop a review']);
+    s.setReviewing(false);
+    expect(log).toEqual(['start a 4', 'stop a review', 'start a 5']);
+  });
+
+  it('a review closed after leaving the Leitor tab does not restart reading', () => {
+    const { s, log } = setup();
+    s.setTabVisible(true);
+    s.active(UID_A, 4);
+    s.setReviewing(true);
+    s.setTabVisible(false);
+    s.setReviewing(false);
+    expect(log).toEqual(['start a 4', 'stop a review']);
+    s.setTabVisible(true);
+    expect(log.at(-1)).toBe('start a 4');
+  });
 });

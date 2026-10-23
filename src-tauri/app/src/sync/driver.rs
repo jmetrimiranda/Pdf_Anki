@@ -213,7 +213,8 @@ fn record_success(
     if let Some(reason) = changed {
         if reason == ChangeReason::SyncFull {
             // The collection was closed and reopened: the study session is gone.
-            handles.study.reset();
+            let had_owner = handles.study.owner().is_some();
+            state.study_reset(&handles.study, had_owner);
             handles.bridge.reset();
         }
         state.emit(UiEvent::AnkiChanged(reason));

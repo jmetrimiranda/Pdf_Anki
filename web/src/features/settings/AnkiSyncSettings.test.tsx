@@ -35,14 +35,18 @@ const type = (label: string, value: string) => fireEvent.change(field(label), { 
 const submit = () => fireEvent.click(screen.getByRole('button', { name: 'Entrar' }));
 
 describe('Configurações → Anki e sincronização', () => {
-  it('lists the sections of spec 5.2, only this one active', async () => {
-    await open();
+  it('lists the sections of spec 5.2: Anki e sincronização and the IA placeholder are active', async () => {
+    const router = await open();
     const nav = screen.getByRole('navigation', { name: 'Seções das configurações' });
     expect(within(nav).getByRole('link', { name: 'Anki e sincronização' }).getAttribute('aria-current')).toBe('page');
-    for (const name of ['Geral', 'Leitura', 'Vocabulário', 'Código', 'IA', 'Integração com o Painel']) {
+    for (const name of ['Geral', 'Leitura', 'Vocabulário', 'Código', 'Integração com o Painel']) {
       expect(within(nav).getByText(name).closest('[aria-disabled="true"]')).toBeTruthy();
     }
-    expect(within(nav).getAllByText('em breve')).toHaveLength(6);
+    expect(within(nav).getAllByText('em breve')).toHaveLength(5);
+    // "Criar cards com IA" (book panel) links here until the AI arrives (Phase 8).
+    fireEvent.click(within(nav).getByRole('link', { name: 'IA' }));
+    await screen.findByText('Provedor de IA: em breve…');
+    expect(router.state.location.pathname).toBe('/configuracoes/ia');
   });
 
   it('validates the empty fields before calling the core', async () => {

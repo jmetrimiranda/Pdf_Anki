@@ -1,10 +1,11 @@
 // UI side of the reading sessions (spec 6.4). The Rust core owns the sessions (heartbeat every 30 s, 2 min idle,
 // crash recovery, <1 min discard, >12 h split); this only tells it when reading starts, continues and stops.
 // Reading counts while: the Leitor tab is visible AND the page is visible (desktop "segundo plano" = minimized or
-// on another workspace, i.e. document.visibilityState === 'hidden') AND the message is about the book in front.
+// on another workspace, i.e. document.visibilityState === 'hidden') AND the message is about the book in front AND
+// the panel's mini-review ("Revisar aqui", spec 10.1) is not open.
 
 /** Subset of the core's `StopReason` the UI reports ('idle' comes from the core's own ticker). */
-export type StopReason = 'tab' | 'doc' | 'background' | 'close';
+export type StopReason = 'tab' | 'doc' | 'background' | 'close' | 'review';
 
 export interface SessionDeps {
   start(uid: string, page: number): void;
@@ -24,6 +25,7 @@ export class SessionWiring {
   /** Book whose session the app started and hasn't stopped. */
   private running: string | null = null;
   private closed = false;
+  private reviewing = false;
   private lastSignal = 0;
 
   constructor(private readonly deps: SessionDeps) {}
@@ -33,7 +35,7 @@ export class SessionWiring {
   }
 
   private get reading(): boolean {
-    return !this.closed && this.tabVisible && this.pageVisible && this.activeId !== null;
+    return !this.closed && !this.reviewing && this.tabVisible && this.pageVisible && this.activeId !== null;
   }
 
   private stopRunning(reason: StopReason) {
@@ -66,6 +68,14 @@ export class SessionWiring {
     this.pageVisible = visible;
     if (visible) this.startIfReading();
     else this.stopRunning('background');
+  }
+
+  /** The panel's mini-review opened (reading pauses, reason 'review') or closed (reading resumes if still reading). */
+  setReviewing(on: boolean) {
+    if (on === this.reviewing) return;
+    this.reviewing = on;
+    if (on) this.stopRunning('review');
+    else this.startIfReading();
   }
 
   /** `pdfcraft:active` (id null: no book of the library in front). */

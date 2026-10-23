@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { LeitorController, openTimeoutMs, READY_TIMEOUT_MS, type LeitorCore, type LeitorUi } from './controller';
+import {
+  GOTO_GRACE_MS,
+  LeitorController,
+  openTimeoutMs,
+  READY_TIMEOUT_MS,
+  SELECTION_NOW_TIMEOUT_MS,
+  type LeitorCore,
+  type LeitorUi,
+} from './controller';
 import { fakeCore, fakeFrame, fakeHost, ORIGIN, UID_A, UID_B, viTimers } from './testing';
 
 function setup(over: Partial<LeitorCore> = {}) {
@@ -20,7 +28,7 @@ function setup(over: Partial<LeitorCore> = {}) {
   c.mount();
   c.setFrameWindow(frame.win as unknown as Window);
   const send = (data: Record<string, unknown>) => deliver(data, frame.win);
-  const ready = () => send({ type: 'pdfcraft:ready', version: '0.9', bridge: 1 });
+  const ready = () => send({ type: 'pdfcraft:ready', version: '0.9', bridge: 2 });
   const lastPosted = () => frame.posted.at(-1)?.msg;
   return { c, core, ui, send, ready, frame, lastPosted, store };
 }
@@ -53,6 +61,11 @@ describe('LeitorController startup', () => {
     const b = setup();
     b.send({ type: 'pdfcraft:ready', version: '0.9' });
     expect(b.c.snapshot()).toMatchObject({ status: 'failed', startError: 'old-bridge' });
+    // The Phase 1 bridge has no selection, menu items or goto.
+    const v1 = setup();
+    v1.send({ type: 'pdfcraft:ready', version: '0.9', bridge: 1 });
+    expect(v1.c.snapshot()).toMatchObject({ status: 'failed', startError: 'old-bridge' });
+    expect(v1.frame.posted).toEqual([]);
   });
 
   it("keeps PdfCraft's startup error text", () => {
@@ -137,17 +150,17 @@ describe('LeitorController.openBook', () => {
     await expect(c.openBook(UID_A)).resolves.toBe(true);
     expect(frame.posted.length).toBe(sent);
 
-    // In front, page asked for: the fork goes to it and answers with pdfcraft:active.
+    // In front, page asked for: a goto (no bytes); the fork answers with pdfcraft:active.
     const going = c.openBook(UID_A, { page: 7 });
     await flush();
-    expect(lastPosted()).toMatchObject({ type: 'pdfcraft:open', id: UID_A, page: 7 });
+    expect(lastPosted()).toEqual({ type: 'pdfcraft:goto', id: UID_A, page: 7 });
     send({ type: 'pdfcraft:active', id: UID_A, page: 7, pageCount: 12 });
     await expect(going).resolves.toBe(true);
 
-    // Page 0 of an open book is sent explicitly too (otherwise the tab would stay where it is).
+    // Page 0 of an open book is sent too (otherwise the tab would stay where it is).
     const top = c.openBook(UID_A, { page: 0 });
     await flush();
-    expect(lastPosted()).toMatchObject({ type: 'pdfcraft:open', id: UID_A, page: 0 });
+    expect(lastPosted()).toEqual({ type: 'pdfcraft:goto', id: UID_A, page: 0 });
     send({ type: 'pdfcraft:active', id: UID_A, page: 0, pageCount: 12 });
     await expect(top).resolves.toBe(true);
   });
@@ -241,7 +254,8 @@ describe('LeitorController.openBook', () => {
     send({ type: 'pdfcraft:active', id: UID_A, page: 4, pageCount: 12 });
     await first;
     await expect(c.openBook(UID_A)).resolves.toBe(true);
-    expect(frame.posted).toHaveLength(1);
+    // menu-items (on ready) and the open: nothing more.
+    expect(frame.posted.map((p) => p.msg.type)).toEqual(['pdfcraft:menu-items', 'pdfcraft:open']);
   });
 
   it('returns false when PdfCraft cannot start', async () => {
@@ -414,5 +428,296 @@ describe('LeitorController progress, autosave and sessions', () => {
     expect(store.get('leitor.panelOpen')).toBeUndefined();
     c.setPanelCompact(false);
     expect(c.snapshot()).toMatchObject({ panelCompact: false, panelOpen: true });
+  });
+});
+
+describe('LeitorController · bridge v2 (selection, menu, goto)', () => {
+  const MENU = {
+    type: 'pdfcraft:menu-items',
+    items: [
+      { key: 'card', label: 'Criar card' },
+      { key: 'ai', label: 'Criar cards com IA' },
+      { key: 'define', label: 'Definir palavra' },
+    ],
+  };
+
+  async function opened(uid = UID_A) {
+    const s = setup();
+    s.ready();
+    const p = s.c.openBook(uid);
+    await flush();
+    s.send({ type: 'pdfcraft:active', id: uid, page: 4, pageCount: 12 });
+    await p;
+    return s;
+  }
+
+  const selection = (over: Record<string, unknown> = {}) => ({
+    type: 'pdfcraft:selection',
+    id: UID_A,
+    page: 4,
+    text: 'the windmill',
+    rects: [[10, 20, 100, 12]],
+    ...over,
+  });
+
+  it('sends the menu items after every ready, also after a reload', () => {
+    const { c, ready, frame } = setup();
+    ready();
+    expect(frame.posted.map((p) => p.msg)).toEqual([MENU]);
+    c.frameReloaded();
+    ready();
+    expect(frame.posted.map((p) => p.msg)).toEqual([MENU, MENU]);
+  });
+
+  it('keeps the selection of the book in front and clears it on empty selection', async () => {
+    const { c, send } = await opened();
+    send(selection());
+    expect(c.snapshot().selection).toEqual({ id: UID_A, page: 4, text: 'the windmill', rects: [[10, 20, 100, 12]] });
+    send(selection({ text: '', rects: [] }));
+    expect(c.snapshot().selection).toBeNull();
+    // Whitespace only is no selection either.
+    send(selection());
+    send(selection({ text: '  \n ' }));
+    expect(c.snapshot().selection).toBeNull();
+  });
+
+  it('ignores selections of documents not in front or opened by PdfCraft itself', async () => {
+    const { c, send } = await opened();
+    send(selection({ id: null }));
+    expect(c.snapshot().selection).toBeNull();
+    const b = c.openBook(UID_B);
+    await flush();
+    // UID_B is known now but not in front yet.
+    send(selection({ id: UID_B }));
+    expect(c.snapshot().selection).toBeNull();
+    send({ type: 'pdfcraft:active', id: UID_B, page: 0, pageCount: 3 });
+    await b;
+  });
+
+  it('clears the selection when the document in front changes and on a reload', async () => {
+    const { c, send } = await opened();
+    send(selection());
+    // Same document again (a goto answer): kept.
+    send({ type: 'pdfcraft:active', id: UID_A, page: 5, pageCount: 12 });
+    expect(c.snapshot().selection).not.toBeNull();
+    send({ type: 'pdfcraft:active', id: null, page: 0, pageCount: 0 });
+    expect(c.snapshot().selection).toBeNull();
+    send({ type: 'pdfcraft:active', id: UID_A, page: 4, pageCount: 12 });
+    send(selection());
+    c.frameReloaded();
+    expect(c.snapshot().selection).toBeNull();
+  });
+
+  it('selection messages notify subscribers but no page work happens', async () => {
+    const { c, send, core } = await opened();
+    const calls = core.calls.length;
+    const fn = vi.fn();
+    c.subscribe(fn);
+    send(selection());
+    expect(fn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(core.calls.length).toBe(calls);
+  });
+
+  it('turns a menu click into a panel request with a viewport anchor and opens the panel for a card', async () => {
+    const { c, send, ui } = await opened();
+    c.togglePanel(false);
+    c.setFrameElement({ getBoundingClientRect: () => ({ left: 40, top: 56 }) });
+    const got: unknown[] = [];
+    c.onPanelRequest((r) => got.push(r));
+    vi.mocked(ui.navigateToLeitor).mockClear();
+    send({ ...selection(), type: 'pdfcraft:menu', key: 'card', anchor: [100, 200, 120, 24] });
+    expect(got).toEqual([
+      {
+        kind: 'card',
+        via: 'menu',
+        selection: { id: UID_A, page: 4, text: 'the windmill', rects: [[10, 20, 100, 12]] },
+        anchor: { x: 140, y: 256, width: 120, height: 24 },
+      },
+    ]);
+    expect(c.snapshot().panelOpen).toBe(true);
+    expect(ui.navigateToLeitor).toHaveBeenCalled();
+    // The click carries the selection even before the debounced pdfcraft:selection.
+    expect(c.snapshot().selection?.text).toBe('the windmill');
+
+    // "Definir palavra" / "Criar cards com IA": a request, the panel stays as it is.
+    c.togglePanel(false);
+    send({ ...selection({ text: 'windmill' }), type: 'pdfcraft:menu', key: 'define' });
+    expect(got.at(-1)).toMatchObject({ kind: 'define', via: 'menu', anchor: null });
+    expect(c.snapshot().panelOpen).toBe(false);
+    expect(got).toHaveLength(2);
+
+    // A document PdfCraft opened by itself (no id): define and the AI notice still come; a card only explains.
+    send({ ...selection({ text: 'windmill' }), type: 'pdfcraft:menu', key: 'define', id: null });
+    expect(got.at(-1)).toMatchObject({ kind: 'define', selection: { id: null, text: 'windmill', page: 4 } });
+    send({ ...selection(), type: 'pdfcraft:menu', key: 'ai', id: null });
+    expect(got.at(-1)).toMatchObject({ kind: 'ai', selection: { id: null } });
+    expect(got).toHaveLength(4);
+    expect(c.snapshot().selection?.id).toBe(UID_A);
+    vi.mocked(ui.navigateToLeitor).mockClear();
+    send({ ...selection(), type: 'pdfcraft:menu', key: 'card', id: null });
+    expect(got).toHaveLength(4);
+    expect(ui.toast).toHaveBeenCalledWith('bookPanel.notInLibrary', 'info');
+    expect(ui.navigateToLeitor).not.toHaveBeenCalled();
+    expect(c.snapshot().panelOpen).toBe(false);
+  });
+
+  it('requestCardFromSelection opens the panel with the current selection; without one only a notice, in place', async () => {
+    const { c, send, ui } = await opened();
+    c.togglePanel(false);
+    const got: { kind: string; via: string; selection: unknown }[] = [];
+    const off = c.onPanelRequest((r) => got.push(r));
+    vi.mocked(ui.navigateToLeitor).mockClear();
+    await c.requestCardFromSelection('shortcut');
+    expect(got).toEqual([]);
+    expect(ui.toast).toHaveBeenCalledWith('bookPanel.selectFirst', 'info');
+    expect(ui.navigateToLeitor).not.toHaveBeenCalled();
+    expect(c.snapshot().panelOpen).toBe(false);
+    send(selection());
+    await c.requestCardFromSelection('button');
+    expect(got.at(-1)).toMatchObject({ kind: 'card', via: 'button', selection: { text: 'the windmill', page: 4 } });
+    expect(c.snapshot().panelOpen).toBe(true);
+    expect(ui.navigateToLeitor).toHaveBeenCalled();
+
+    // Nobody listening (the panel not mounted yet): the request waits for the first listener.
+    off();
+    await c.requestCardFromSelection();
+    const late = vi.fn();
+    c.onPanelRequest(late);
+    await flush();
+    expect(late).toHaveBeenCalledTimes(1);
+    expect(late.mock.calls[0]![0]).toMatchObject({ kind: 'card', via: 'shortcut' });
+  });
+
+  it('requestCardFromSelection first asks PdfCraft for a selection still in its debounce', async () => {
+    const { c, send, frame } = await opened();
+    c.setVisible(true);
+    send(selection({ text: 'old text', page: 2 }));
+    const got: { selection: unknown }[] = [];
+    c.onPanelRequest((r) => got.push(r));
+    // The user selected new text and pressed Alt+C before the 300 ms debounce sent it.
+    const asking = c.requestCardFromSelection('shortcut');
+    await flush();
+    expect(frame.posted.at(-1)!.msg).toEqual({ type: 'pdfcraft:selection-now', seq: 1 });
+    expect(got).toEqual([]);
+    send(selection({ text: 'the new text', page: 5 }));
+    send({ type: 'pdfcraft:selection-sent', seq: 1 });
+    await asking;
+    expect(got).toEqual([
+      expect.objectContaining({ selection: expect.objectContaining({ text: 'the new text', page: 5 }) }),
+    ]);
+
+    // A selection cleared in the meantime: only the notice.
+    const clearing = c.requestCardFromSelection('shortcut');
+    send(selection({ text: '', rects: [] }));
+    send({ type: 'pdfcraft:selection-sent', seq: 2 });
+    await clearing;
+    expect(got).toHaveLength(1);
+
+    // No answer (an older build, a frame that draws nothing): the last selection after a short wait.
+    send(selection({ text: 'kept' }));
+    const silent = c.requestCardFromSelection('button');
+    await vi.advanceTimersByTimeAsync(SELECTION_NOW_TIMEOUT_MS - 1);
+    expect(got).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await silent;
+    expect(got.at(-1)).toMatchObject({ selection: { text: 'kept' } });
+    // A late or stray answer is harmless.
+    send({ type: 'pdfcraft:selection-sent', seq: 3 });
+    send({ type: 'pdfcraft:selection-sent', seq: null });
+
+    // Off screen nothing is asked: there is no fresh selection to wait for.
+    c.setVisible(false);
+    const posted = frame.posted.length;
+    await c.requestCardFromSelection('shortcut');
+    expect(frame.posted).toHaveLength(posted);
+    expect(got).toHaveLength(3);
+  });
+
+  it('opens a closed book at the page, then sends the goto with find after active', async () => {
+    const { c, ready, send, frame } = setup();
+    ready();
+    const opening = c.openBook(UID_A, { page: 2, find: ' the\nwindmill ' });
+    await flush();
+    expect(frame.posted.at(-1)!.msg).toMatchObject({ type: 'pdfcraft:open', id: UID_A, page: 2 });
+    expect(frame.posted.some((p) => p.msg.type === 'pdfcraft:goto')).toBe(false);
+    send({ type: 'pdfcraft:active', id: UID_A, page: 2, pageCount: 12 });
+    await expect(opening).resolves.toBe(true);
+    expect(frame.posted.at(-1)!.msg).toEqual({ type: 'pdfcraft:goto', id: UID_A, page: 2, find: 'the windmill' });
+    send({ type: 'pdfcraft:found', id: UID_A, page: 2, query: 'the windmill', found: true });
+    expect(c.snapshot().found).toEqual({ id: UID_A, page: 2, query: 'the windmill', found: true });
+  });
+
+  it('sends only a goto (no bytes) for a book PdfCraft already has', async () => {
+    const { c, core, send, frame } = await opened();
+    vi.mocked(core.bytes).mockClear();
+    const going = c.openBook(UID_A, { page: 0, find: 'the windmill' });
+    await flush();
+    expect(frame.posted.at(-1)!.msg).toEqual({ type: 'pdfcraft:goto', id: UID_A, page: 0, find: 'the windmill' });
+    expect(core.bytes).not.toHaveBeenCalled();
+    expect(c.snapshot().found).toBeNull();
+    send({ type: 'pdfcraft:active', id: UID_A, page: 0, pageCount: 12 });
+    await expect(going).resolves.toBe(true);
+    // Find without a page: the page the reader is on.
+    void c.openBook(UID_A, { find: 'autumn' });
+    await flush();
+    expect(frame.posted.at(-1)!.msg).toEqual({ type: 'pdfcraft:goto', id: UID_A, page: 0, find: 'autumn' });
+  });
+
+  it('a goto for a tab PdfCraft no longer has opens the book again', async () => {
+    const { c, send, frame, ui } = await opened();
+    const going = c.openBook(UID_A, { page: 3, find: 'x' });
+    await flush();
+    expect(frame.posted.at(-1)!.msg.type).toBe('pdfcraft:goto');
+    // PdfCraft answers a goto for a tag it doesn't have with found: false only (no active).
+    send({ type: 'pdfcraft:found', id: UID_A, page: 3, query: 'x', found: false });
+    await vi.advanceTimersByTimeAsync(GOTO_GRACE_MS);
+    expect(ui.toast).not.toHaveBeenCalled();
+    expect(frame.posted.at(-1)!.msg).toMatchObject({ type: 'pdfcraft:open', id: UID_A, page: 3 });
+    send({ type: 'pdfcraft:active', id: UID_A, page: 3, pageCount: 12 });
+    await expect(going).resolves.toBe(true);
+    expect(frame.posted.at(-1)!.msg).toEqual({ type: 'pdfcraft:goto', id: UID_A, page: 3, find: 'x' });
+  });
+
+  it('a found that beats the active of its goto is applied with the active (same PdfCraft frame)', async () => {
+    const { c, send, ui } = await opened();
+    const going = c.openBook(UID_A, { page: 6, find: 'nothing here' });
+    await flush();
+    send({ type: 'pdfcraft:found', id: UID_A, page: 6, query: 'nothing here', found: false });
+    expect(c.snapshot().found).toBeNull();
+    send({ type: 'pdfcraft:active', id: UID_A, page: 6, pageCount: 12 });
+    await expect(going).resolves.toBe(true);
+    expect(c.snapshot().found).toMatchObject({ page: 6, found: false });
+    expect(ui.toast).toHaveBeenCalledWith('leitor.gotoNotFound', 'info', { pagina: '7' });
+    // No late reopen.
+    await vi.advanceTimersByTimeAsync(GOTO_GRACE_MS * 2);
+    expect(c.snapshot().openError).toBeNull();
+  });
+
+  it('toasts when the passage is not found on the page', async () => {
+    const { c, send, ui } = await opened();
+    send({ type: 'pdfcraft:found', id: UID_A, page: 6, query: 'nothing here', found: false });
+    expect(c.snapshot().found).toMatchObject({ found: false, page: 6 });
+    expect(ui.toast).toHaveBeenCalledWith('leitor.gotoNotFound', 'info', { pagina: '7' });
+    vi.mocked(ui.toast).mockClear();
+    send({ type: 'pdfcraft:found', id: UID_A, page: 6, query: 'x', found: true });
+    expect(ui.toast).not.toHaveBeenCalled();
+  });
+
+  it('keeps the last menu shown (for tests)', async () => {
+    const { c, send } = await opened();
+    send({ type: 'pdfcraft:menu-shown', id: UID_A, items: [{ key: 'card', rect: [1, 2, 3, 4] }] });
+    expect(c.snapshot().menuShown).toEqual({ id: UID_A, items: [{ key: 'card', rect: [1, 2, 3, 4] }] });
+  });
+
+  it('pauses the reading session while the mini-review is open', async () => {
+    const { c, core } = await opened();
+    c.setVisible(true);
+    await flush();
+    expect(core.calls.filter((x) => x.startsWith('start'))).toHaveLength(1);
+    c.setReviewing(true);
+    expect(core.calls.at(-1)).toBe(`stop(${UID_A},review)`);
+    c.setReviewing(false);
+    expect(core.calls.at(-1)).toBe(`start(${UID_A},4)`);
   });
 });

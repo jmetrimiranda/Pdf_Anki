@@ -178,3 +178,155 @@ export const syncMock = {
     return page.evaluate(() => (window as unknown as MockWindow).__leitorMock.syncStatus());
   },
 };
+
+// ---------------------------------------------------------------- scripted fake PdfCraft (bridge v2)
+
+/** Rect in page view space: [x, y, w, h] points, y down (as the bridge sends them). */
+export type FakeRect = [number, number, number, number];
+
+/**
+ * A tiny HTML page speaking bridge v2 for the mocked suites (no WASM). It posts `pdfcraft:ready {bridge: 2}`; on
+ * `pdfcraft:open` it posts `pdfcraft:active` (10 pages); on `pdfcraft:goto` it posts `active` + `page` and
+ * `pdfcraft:found {found: true}`; `pdfcraft:selection-now` gets its `pdfcraft:selection-sent`. Everything the app
+ * sends is kept in `window.__received` (bytes summarized).
+ */
+const FAKE_PDFCRAFT_HTML = `<!doctype html>
+<html><head><meta charset="utf-8"><title>PdfCraft (fake)</title>
+<style>html,body{margin:0;height:100%;font:13px sans-serif;background:#f3f3f5;color:#555}
+body{display:flex;align-items:center;justify-content:center}</style></head>
+<body><p id="status">PdfCraft (fake)</p>
+<script>
+(function () {
+  var PAGES = 10;
+  var origin = location.origin;
+  var state = { active: null, page: 0 };
+  window.__received = [];
+  function post(msg) { parent.postMessage(msg, origin); }
+  function clamp(p) { p = Math.floor(Number(p) || 0); return Math.max(0, Math.min(PAGES - 1, p)); }
+  function show(id, page) {
+    state.active = id; state.page = page;
+    document.getElementById('status').textContent = 'PdfCraft (fake) · p. ' + (page + 1);
+    post({ type: 'pdfcraft:active', id: id, page: page, pageCount: PAGES });
+  }
+  window.addEventListener('message', function (e) {
+    if (e.origin !== origin || e.source !== parent) return;
+    var m = e.data;
+    if (!m || typeof m !== 'object' || typeof m.type !== 'string') return;
+    var copy = {};
+    for (var k in m) {
+      if (k === 'bytes') copy.size = m.bytes && m.bytes.byteLength;
+      else copy[k] = m[k];
+    }
+    window.__received.push(copy);
+    if (m.type === 'pdfcraft:open') show(m.id, clamp(m.page));
+    else if (m.type === 'pdfcraft:goto') {
+      var page = clamp(m.page);
+      show(m.id, page);
+      post({ type: 'pdfcraft:page', id: m.id, page: page, pageCount: PAGES });
+      if (typeof m.find === 'string' && m.find)
+        post({ type: 'pdfcraft:found', id: m.id, page: page, query: m.find, found: true });
+    }
+    else if (m.type === 'pdfcraft:selection-now') post({ type: 'pdfcraft:selection-sent', seq: m.seq });
+  });
+  window.__fake = {
+    state: state,
+    select: function (s) {
+      post({ type: 'pdfcraft:selection', id: state.active, page: s.page, text: s.text, rects: s.rects });
+    },
+    clear: function () {
+      post({ type: 'pdfcraft:selection', id: state.active, page: state.page, text: '', rects: [] });
+    },
+    menu: function (key, s) {
+      var msg = { type: 'pdfcraft:menu', key: key, id: state.active, page: s.page, text: s.text, rects: s.rects };
+      if (s.anchor) msg.anchor = s.anchor;
+      post(msg);
+    },
+    turn: function (page) {
+      state.page = clamp(page);
+      document.getElementById('status').textContent = 'PdfCraft (fake) · p. ' + (state.page + 1);
+      post({ type: 'pdfcraft:page', id: state.active, page: state.page, pageCount: PAGES });
+    }
+  };
+  post({ type: 'pdfcraft:ready', version: 'fake', bridge: 2 });
+})();
+</script></body></html>`;
+
+/** Routes /pdfcraft/** to the scripted fake PdfCraft (bridge v2). Use instead of `stubPdfcraft`. */
+export async function fakePdfcraft(page: Page) {
+  await page.route('**/pdfcraft/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/html', body: FAKE_PDFCRAFT_HTML }),
+  );
+}
+
+type FakeFrameWindow = {
+  __received: Record<string, unknown>[];
+  __fake: {
+    state: { active: string | null; page: number };
+    select(s: { page: number; text: string; rects: FakeRect[] }): void;
+    clear(): void;
+    menu(key: string, s: { page: number; text: string; rects: FakeRect[]; anchor?: FakeRect }): void;
+    turn(page: number): void;
+  };
+};
+
+/** The fake PdfCraft's frame, once its script ran and a book is in front. */
+export async function fakeFrame(page: Page) {
+  await expect
+    .poll(
+      async () => {
+        const frame = page.frames().find((f) => f.url().includes('/pdfcraft/'));
+        if (!frame) return false;
+        return frame
+          .evaluate(() => !!(window as unknown as Partial<FakeFrameWindow>).__fake?.state.active)
+          .catch(() => false);
+      },
+      { timeout: 15_000 },
+    )
+    .toBe(true);
+  return page.frames().find((f) => f.url().includes('/pdfcraft/'))!;
+}
+
+const DEFAULT_RECTS: FakeRect[] = [[72, 120, 220, 14]];
+
+/** PdfCraft reports a text selection (`pdfcraft:selection`); `page` is 0-based, as in the bridge. */
+export async function fakeSelect(page: Page, sel: { page: number; text: string; rects?: FakeRect[] }) {
+  const frame = await fakeFrame(page);
+  await frame.evaluate((s) => (window as unknown as FakeFrameWindow).__fake.select(s), {
+    page: sel.page,
+    text: sel.text,
+    rects: sel.rects ?? DEFAULT_RECTS,
+  });
+}
+
+/** PdfCraft reports an empty selection (cleared). */
+export async function fakeClearSelection(page: Page) {
+  const frame = await fakeFrame(page);
+  await frame.evaluate(() => (window as unknown as FakeFrameWindow).__fake.clear());
+}
+
+/** The user clicked one of the app's items in PdfCraft's selection menu (`pdfcraft:menu`). */
+export async function fakeMenu(
+  page: Page,
+  key: string,
+  sel: { page: number; text: string; rects?: FakeRect[]; anchor?: FakeRect },
+) {
+  const frame = await fakeFrame(page);
+  await frame.evaluate(({ k, s }) => (window as unknown as FakeFrameWindow).__fake.menu(k, s), {
+    k: key,
+    s: { page: sel.page, text: sel.text, rects: sel.rects ?? DEFAULT_RECTS, ...(sel.anchor && { anchor: sel.anchor }) },
+  });
+}
+
+/** Every message the app sent to the fake PdfCraft (bytes summarized as `size`). */
+export async function fakeReceived(page: Page): Promise<({ type: string } & Record<string, unknown>)[]> {
+  const frame = await fakeFrame(page);
+  return frame.evaluate(
+    () => (window as unknown as FakeFrameWindow).__received as ({ type: string } & Record<string, unknown>)[],
+  );
+}
+
+/** The reader turned to `pageIndex` (0-based) in the fake PdfCraft (`pdfcraft:page`). */
+export async function fakeTurn(page: Page, pageIndex: number) {
+  const frame = await fakeFrame(page);
+  await frame.evaluate((p) => (window as unknown as FakeFrameWindow).__fake.turn(p), pageIndex);
+}

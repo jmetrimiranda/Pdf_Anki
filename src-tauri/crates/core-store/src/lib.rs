@@ -1,7 +1,7 @@
 //! The app's own SQLite database (docs/PROJETO.md 14). The Anki collection lives in its own file and
 //! is owned by `core-anki`; this crate keeps everything else: library and file versions, reading
 //! positions and sessions ([`ReadingTracker`], spec 6.4), EPUB annotations (PDF annotations live
-//! inside the PDF, spec 6.5), settings, vocabulary caches, AI usage and the outbox.
+//! inside the PDF, spec 6.5), per-book preferences of this device, settings, vocabulary caches, AI usage and the outbox.
 //!
 //! Conventions:
 //! - **Timestamps** (`added_at`, `updated_at`, `started_at`, …) are `INTEGER` Unix epoch
@@ -17,6 +17,7 @@
 
 mod error;
 mod library;
+mod prefs;
 mod schema;
 mod sessions;
 mod settings;
@@ -31,6 +32,7 @@ pub use library::{
     AddOutcome, AddedBook, Book, BookFormat, BookPatch, FileVersion, LibraryEntry, NewBook,
     OcrStatus, ReadingPosition, book_uid_of, book_uid_of_reader, is_valid_book_uid,
 };
+pub use prefs::{BookPrefs, BookPrefsPatch, CARD_KINDS};
 pub use schema::SCHEMA_VERSION;
 pub use sessions::{
     Clock, ClosedSession, ManualClock, OpenSessionInfo, ReadingSessionRow, ReadingTracker,

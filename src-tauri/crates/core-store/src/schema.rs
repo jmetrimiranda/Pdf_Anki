@@ -5,7 +5,7 @@ use rusqlite::Connection;
 
 use crate::{Result, StoreError};
 
-const MIGRATIONS: &[&str] = &[V1, V2];
+const MIGRATIONS: &[&str] = &[V1, V2, V3];
 
 /// Schema version this build creates and understands.
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -256,6 +256,20 @@ CREATE INDEX epub_annotation_book ON epub_annotation (book_uid);
 CREATE INDEX epub_annotation_updated_at ON epub_annotation (updated_at);
 "#;
 
+/// Phase 4 (spec 10.1, 10.2): per-book preferences of this device — the deck and type last used for a card from
+/// the selection and the deck of "Revisar aqui". Doesn't sync (device-local, section 16).
+const V3: &str = r#"
+-- Doesn't sync: device-local preferences.
+CREATE TABLE book_prefs (
+    book_uid          TEXT PRIMARY KEY NOT NULL REFERENCES book (book_uid) ON DELETE CASCADE,
+    last_card_deck_id INTEGER NULL,
+    last_card_kind    TEXT NULL CHECK (last_card_kind IS NULL OR last_card_kind IN
+                          ('basic', 'cloze', 'codeCommand', 'codeProgram', 'vocab')),
+    review_deck_id    INTEGER NULL,
+    updated_at        INTEGER NOT NULL
+) STRICT;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,7 +335,8 @@ mod tests {
         let version: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .expect("version");
-        assert_eq!(version, 2);
+        // Later migrations run too; the V2 changes are checked below.
+        assert_eq!(version, SCHEMA_VERSION);
 
         let book_cols = columns(&conn, "book");
         assert!(!book_cols.iter().any(|c| c == "renderer"), "{book_cols:?}");
@@ -412,6 +427,99 @@ mod tests {
         )
         .expect("epub annotation");
         // Running the migrations again changes nothing.
+        migrate(&mut conn).expect("idempotent");
+    }
+
+    /// A real V2 file with books is upgraded to V3: rows kept, `book_prefs` usable and constrained.
+    #[test]
+    fn v2_database_with_data_migrates_to_v3() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("app.sqlite");
+        {
+            let mut conn = Connection::open(&path).expect("open");
+            conn.pragma_update(None, "foreign_keys", "ON").expect("fk");
+            for (i, sql) in [V1, V2].iter().enumerate() {
+                let tx = conn.transaction().expect("tx");
+                tx.execute_batch(sql).expect("migration");
+                tx.execute_batch(&format!("PRAGMA user_version = {}", i + 1))
+                    .expect("version");
+                tx.commit().expect("commit");
+            }
+            conn.execute_batch(&format!(
+                r#"
+                INSERT INTO book (book_uid, title, format, file_name, pages, content_deck_id, file_hash, added_at, updated_at)
+                    VALUES ('{UID_A}', 'Livro A', 'pdf', 'a.pdf', 10, 42, '{UID_A}', 1, 2),
+                           ('{UID_B}', 'Livro B', 'epub', 'b.epub', 0, NULL, '{UID_B}', 3, 4);
+                INSERT INTO reading_position (book_uid, page, progress, updated_at)
+                    VALUES ('{UID_A}', 7, 0.7, 5);
+                "#
+            ))
+            .expect("v2 rows");
+        }
+
+        let mut conn = Connection::open(&path).expect("reopen");
+        conn.pragma_update(None, "foreign_keys", "ON").expect("fk");
+        migrate(&mut conn).expect("migrate");
+        let version: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        const { assert!(SCHEMA_VERSION >= 3) };
+        assert!(tables(&conn).iter().any(|t| t == "book_prefs"));
+        assert_eq!(
+            columns(&conn, "book_prefs"),
+            [
+                "book_uid",
+                "last_card_deck_id",
+                "last_card_kind",
+                "review_deck_id",
+                "updated_at"
+            ]
+        );
+        let (books, deck, page): (i64, i64, i64) = conn
+            .query_row(
+                &format!(
+                    "SELECT (SELECT count(*) FROM book),
+                            (SELECT content_deck_id FROM book WHERE book_uid = '{UID_A}'),
+                            (SELECT page FROM reading_position)"
+                ),
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("rows");
+        assert_eq!(
+            (books, deck, page),
+            (2, 42, 7),
+            "data survives the migration"
+        );
+
+        conn.execute(
+            &format!(
+                "INSERT INTO book_prefs (book_uid, last_card_deck_id, last_card_kind, updated_at)
+                 VALUES ('{UID_A}', 5, 'cloze', 1)"
+            ),
+            [],
+        )
+        .expect("prefs row");
+        assert!(
+            conn.execute(
+                &format!(
+                    "INSERT INTO book_prefs (book_uid, last_card_kind, updated_at) VALUES ('{UID_B}', 'essay', 1)"
+                ),
+                []
+            )
+            .is_err(),
+            "unknown card kind"
+        );
+        let unknown = "c".repeat(64);
+        assert!(
+            conn.execute(
+                &format!("INSERT INTO book_prefs (book_uid, updated_at) VALUES ('{unknown}', 1)"),
+                []
+            )
+            .is_err(),
+            "foreign key"
+        );
         migrate(&mut conn).expect("idempotent");
     }
 }

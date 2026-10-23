@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ToastProvider, TooltipProvider } from '../../../components/ui';
@@ -12,7 +12,8 @@ import type { HostToCard } from './CardFrame';
 import { cardBodyClass, platformClass, StudyPage } from './StudyPage';
 
 const leitorMock = vi.hoisted(() => ({
-  openBook: vi.fn(async (_uid: string, _opts?: { page?: number }) => true),
+  openBook: vi.fn(async (_uid: string, _opts?: { page?: number; find?: string }) => true),
+  setReviewing: vi.fn(),
   togglePanel: vi.fn(),
   flushSaves: vi.fn(async () => true),
 }));
@@ -268,17 +269,76 @@ describe('StudyPage', () => {
     expect(Number(dialog.dataset.note)).toBeGreaterThan(0);
   });
 
-  it('"Abrir no livro" opens the book at the page of the Fonte link (0-based)', async () => {
+  it('"Abrir no livro" opens the book at the page of the Fonte link (0-based) and finds the excerpt', async () => {
     const user = userEvent.setup();
     renderStudy({ deckName: 'Livros::Animal Farm' });
     const f = await cardFrame();
     await f.send({ t: 'ready' });
     await user.click(await screen.findByRole('button', { name: 'Abrir no livro' }));
-    await waitFor(() => expect(leitorMock.openBook).toHaveBeenCalledWith(animalFarmUid(), { page: 36 }));
+    await waitFor(() =>
+      expect(leitorMock.openBook).toHaveBeenCalledWith(animalFarmUid(), { page: 36, find: 'windmill' }),
+    );
     // The same link clicked inside the card.
     leitorMock.openBook.mockClear();
     await f.send({ t: 'link', href: `leitor://livro/${animalFarmUid()}?pagina=5` });
-    await waitFor(() => expect(leitorMock.openBook).toHaveBeenCalledWith(animalFarmUid(), { page: 4 }));
+    await waitFor(() =>
+      expect(leitorMock.openBook).toHaveBeenCalledWith(animalFarmUid(), { page: 4, find: undefined }),
+    );
+  });
+
+  it('studies as the Anki tab and closes only its own session on unmount', async () => {
+    const next = vi.spyOn(core, 'ankiStudyNext');
+    const close = vi.spyOn(core, 'ankiStudyClose');
+    const view = renderStudy({ deckId: deckId('Oxford::Oxford 3000') });
+    const f = await cardFrame();
+    await f.send({ t: 'ready' });
+    await waitFor(() => expect(f.last('showQuestion')).toBeTruthy());
+    expect(next).toHaveBeenCalledWith(deckId('Oxford::Oxford 3000'), 'tab');
+    expect(mockHandle.anki.studyOwner).toBe('tab');
+    view.unmount();
+    await waitFor(() => expect(close).toHaveBeenCalledWith('tab'));
+    await waitFor(() => expect(mockHandle.anki.studyOwner).toBeNull());
+  });
+
+  it('pauses when the book panel takes the session over; "Continuar aqui" takes it back', async () => {
+    const user = userEvent.setup();
+    const oxford = deckId('Oxford::Oxford 3000');
+    renderStudy({ deckId: oxford });
+    const f = await cardFrame();
+    await f.send({ t: 'ready' });
+    await waitFor(() => expect(f.last('showQuestion')).toBeTruthy());
+
+    // The panel's "Revisar aqui" opens on another deck.
+    await act(async () => {
+      await core.ankiMiniReviewOpen(deckId('Livros::Animal Farm'));
+    });
+    expect(await screen.findByText('Estudo pausado: a revisão rápida do painel do livro está aberta.')).toBeTruthy();
+    expect(screen.getByTestId('study-paused')).toBeTruthy();
+    // Answer keys wait (from the app and from the card frame).
+    fireEvent.keyDown(window, { key: ' ' });
+    await f.send({ t: 'key', key: ' ', code: 'Space', ctrl: false, shift: false, alt: false, meta: false });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(f.last('showAnswer')).toBeUndefined();
+    expect((screen.getByRole('button', { name: 'Mostrar resposta' }) as HTMLButtonElement).disabled).toBe(true);
+    // "Editar" waits too: saving would take the session back from the panel.
+    await user.click(screen.getByRole('button', { name: 'Mais ações' }));
+    const menu = await screen.findByRole('menu');
+    expect(
+      within(menu)
+        .getByRole('menuitem', { name: /Editar/ })
+        .getAttribute('data-disabled'),
+    ).not.toBeNull();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+
+    const next = vi.spyOn(core, 'ankiStudyNext');
+    await user.click(screen.getByRole('button', { name: 'Continuar aqui' }));
+    await waitFor(() => expect(screen.queryByTestId('study-paused')).toBeNull());
+    expect(next).toHaveBeenCalledWith(oxford, 'tab');
+    expect(mockHandle.anki.studyOwner).toBe('tab');
+    expect(await screen.findByText('A revisão rápida do painel foi pausada.')).toBeTruthy();
+    fireEvent.keyDown(window, { key: ' ' });
+    await waitFor(() => expect(f.last('showAnswer')).toBeTruthy());
   });
 
   it('shows only the congrats page and one back action for an empty deck', async () => {

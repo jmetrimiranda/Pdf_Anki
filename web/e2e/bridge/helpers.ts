@@ -54,6 +54,15 @@ export interface Logged {
   titles?: string[];
   /** Literal `/Contents (…)` strings (annotation notes). */
   contents?: string[];
+  // Bridge v2 (Phase 4).
+  text?: string;
+  rects?: [number, number, number, number][];
+  key?: string;
+  anchor?: [number, number, number, number] | null;
+  items?: { key: string; rect: [number, number, number, number] }[] | { key: string; label: string }[];
+  query?: string;
+  found?: boolean;
+  find?: string;
 }
 
 /**
@@ -137,6 +146,16 @@ export { expect };
 
 export async function fromPdfcraft(page: Page): Promise<Logged[]> {
   return page.evaluate(() => (window as unknown as { __fromPdfcraft: Logged[] }).__fromPdfcraft);
+}
+
+/** What the app posted to PdfCraft (recorded inside the iframe; bytes summarized). */
+export async function fromHost(page: Page): Promise<Logged[]> {
+  return pdfcraftFrame(page).evaluate(() => (window as unknown as { __fromHost: Logged[] }).__fromHost);
+}
+
+/** Absolute time (timeOrigin + now) in the top page, comparable with `Logged.abs`. */
+export async function absNow(page: Page): Promise<number> {
+  return page.evaluate(() => performance.timeOrigin + performance.now());
 }
 
 export async function waitForMessage(

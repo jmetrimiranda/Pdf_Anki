@@ -1,8 +1,8 @@
 // The single LeitorController of the app, wired to the real (or mock) core.
-import { useSyncExternalStore } from 'react';
+import { useCallback, useRef, useSyncExternalStore } from 'react';
 import { core, type CoreClient } from '../../lib/core/client';
 import type { FlushReason } from './autosave';
-import { LeitorController, type LeitorCore, type LeitorSnapshot } from './controller';
+import { LeitorController, type LeitorCore, type LeitorSnapshot, type PanelRequest } from './controller';
 import type { LeitorTiming } from './timings';
 
 function exactBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -58,13 +58,42 @@ export function leitorController(): LeitorController {
 }
 
 export const leitor = {
-  openBook: (uid: string, opts?: { page?: number }): Promise<boolean> => controller.openBook(uid, opts),
+  /** `page` 0-based; `find`: text PdfCraft looks for on that page (`pdfcraft:goto`). */
+  openBook: (uid: string, opts?: { page?: number; find?: string | null }): Promise<boolean> =>
+    controller.openBook(uid, opts),
   togglePanel: (open?: boolean): void => controller.togglePanel(open),
   flushSaves: (reason: FlushReason = 'manual'): Promise<boolean> => controller.flushSaves(reason),
+  /** "Card da seleção" (Ctrl+Shift+N / Alt+C / the panel's button): opens the panel with the card form. */
+  requestCardFromSelection: (via: 'shortcut' | 'button' = 'shortcut'): void => {
+    void controller.requestCardFromSelection(via);
+  },
+  /** The panel's listener for menu items and shortcuts; returns the unsubscribe function. */
+  onPanelRequest: (cb: (r: PanelRequest) => void): (() => void) => controller.onPanelRequest(cb),
+  /** The panel's mini-review opened/closed: the reading session pauses while it is open (spec 6.4). */
+  setReviewing: (on: boolean): void => controller.setReviewing(on),
 };
 
 export function useLeitorState(): LeitorSnapshot {
   return useSyncExternalStore(controller.subscribe, controller.snapshot, controller.snapshot);
+}
+
+/**
+ * A slice of the snapshot: the component re-renders only when `equal(previous, next)` is false. The iframe host
+ * uses it so frequent fields it doesn't show (selection, find results) don't re-render it.
+ */
+export function useLeitorSelector<T>(select: (s: LeitorSnapshot) => T, equal: (a: T, b: T) => boolean = Object.is): T {
+  const cache = useRef<{ value: T } | null>(null);
+  const selectRef = useRef(select);
+  selectRef.current = select;
+  const equalRef = useRef(equal);
+  equalRef.current = equal;
+  const get = useCallback(() => {
+    const next = selectRef.current(controller.snapshot());
+    if (cache.current && equalRef.current(cache.current.value, next)) return cache.current.value;
+    cache.current = { value: next };
+    return next;
+  }, []);
+  return useSyncExternalStore(controller.subscribe, get, get);
 }
 
 declare global {

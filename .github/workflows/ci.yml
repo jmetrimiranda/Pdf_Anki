@@ -6,6 +6,14 @@ on:
   pull_request:
   # release.yml reuses these jobs, so a release is only drafted from a fully tested build.
   workflow_call:
+  # Manual runs only. The project targets Linux + Web (docs/decisoes.md, 2026-10-23); the Windows job
+  # never runs on push, PR or release — only when started by hand with "windows" ticked.
+  workflow_dispatch:
+    inputs:
+      windows:
+        description: Also run the (unsupported) Windows build
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -181,6 +189,8 @@ jobs:
           if-no-files-found: error
 
   windows:
+    # Not part of the supported CI (Linux + Web). Manual only; failures here are not fixed.
+    if: github.event_name == 'workflow_dispatch' && inputs.windows
     runs-on: windows-latest
     timeout-minutes: 180
     steps:

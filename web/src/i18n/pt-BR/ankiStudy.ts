@@ -59,4 +59,8 @@ export const ankiStudyMessages = {
   'anki.study.ttsUnavailable': 'A leitura em voz alta não está disponível neste sistema.',
   'anki.study.audioFailed': 'Não foi possível tocar “{arquivo}”.',
   'anki.study.closeVideo': 'Fechar vídeo',
+
+  'anki.study.pausedByPanel': 'Estudo pausado: a revisão rápida do painel do livro está aberta.',
+  'anki.study.resume': 'Continuar aqui',
+  'anki.study.panelPaused': 'A revisão rápida do painel foi pausada.',
 } as const;

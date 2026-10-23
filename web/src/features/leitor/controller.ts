@@ -1,7 +1,16 @@
 // The Leitor tab's brain (spec 6.4, 6.5): owns the bridge, opens books, records progress and reading sessions,
 // and saves PdfCraft's edits as new book versions. Framework-free; React reads it through `subscribe`/`snapshot`.
 import { Autosave, realTimers, type FlushReason, type Timers } from './autosave';
-import { BridgeClient, MIN_BRIDGE, type BridgeIn, type PdfcraftTheme } from './bridge';
+import { leitorBridgeMessages } from '../../i18n/pt-BR/leitorBridge';
+import {
+  BridgeClient,
+  MIN_BRIDGE,
+  normalizeFind,
+  type BridgeIn,
+  type MenuItem,
+  type PdfcraftTheme,
+  type Rect,
+} from './bridge';
 import { SessionWiring, type StopReason } from './sessions';
 import { frameLoad, LeitorTimings } from './timings';
 
@@ -41,10 +50,71 @@ export interface OpenInfo {
   fileVersion: number;
 }
 
+/** The text selected in the book in front (`pdfcraft:selection`). */
+export interface LeitorSelection {
+  id: string;
+  /** 0-based PdfCraft page. */
+  page: number;
+  text: string;
+  /** Page view space points, y down. */
+  rects: Rect[];
+}
+
+/** The selection a panel request carries; `id` is null for a document outside the library. */
+export type PanelSelection = Omit<LeitorSelection, 'id'> & { id: string | null };
+
+export type PanelRequestKind = 'card' | 'ai' | 'define';
+
+/** Something the "Painel Anki do livro" must show: the card form, the AI notice or the definition popover. */
+export interface PanelRequest {
+  kind: PanelRequestKind;
+  /** PdfCraft's selection menu, an app shortcut (Ctrl+Shift+N / Alt+C) or the panel's own button. */
+  via: 'menu' | 'shortcut' | 'button';
+  /**
+   * `id` is null for a document PdfCraft opened by itself (not in the library): "Definir palavra" and the AI notice
+   * still work; "Criar card" explains that the book must be added to the library first.
+   */
+  selection: PanelSelection | null;
+  /** The clicked menu item in viewport CSS px (iframe rect + PdfCraft's iframe-relative anchor); null otherwise. */
+  anchor: { x: number; y: number; width: number; height: number } | null;
+}
+
+/** Result of the last `pdfcraft:goto` with a find (`pdfcraft:found`). */
+export interface FoundResult {
+  id: string;
+  page: number;
+  query: string;
+  found: boolean;
+}
+
+/** The app's items PdfCraft last showed in a selection menu (iframe-relative CSS px rects; for tests). */
+export interface MenuShown {
+  id: string | null;
+  items: { key: string; rect: Rect }[];
+}
+
+/** Items added to PdfCraft's own selection menu (spec 6.2, 10.2, 10.3, 12.7); keys are the PanelRequest kinds. */
+export const MENU_ITEMS: readonly MenuItem[] = [
+  { key: 'card', label: leitorBridgeMessages['leitor.menu.card'] },
+  { key: 'ai', label: leitorBridgeMessages['leitor.menu.ai'] },
+  { key: 'define', label: leitorBridgeMessages['leitor.menu.define'] },
+];
+
+function isPanelKind(key: string): key is PanelRequestKind {
+  return key === 'card' || key === 'ai' || key === 'define';
+}
+
 export interface LeitorUi {
   navigateToLeitor(): void;
   toast(
-    key: 'reader.saveFailed' | 'reader.exported' | 'reader.keptNewer' | 'reader.openExternalFailed',
+    key:
+      | 'reader.saveFailed'
+      | 'reader.exported'
+      | 'reader.keptNewer'
+      | 'reader.openExternalFailed'
+      | 'leitor.gotoNotFound'
+      | 'bookPanel.selectFirst'
+      | 'bookPanel.notInLibrary',
     tone: 'error' | 'success' | 'info',
     vars?: Record<string, string>,
   ): void;
@@ -98,6 +168,12 @@ export interface LeitorSnapshot {
   ready: boolean;
   activeBookUid: string | null;
   openIds: string[];
+  /** Text selected in the book in front (null: none, or another document is in front). */
+  selection: LeitorSelection | null;
+  /** Result of the last goto with a find. */
+  found: FoundResult | null;
+  /** The app's items in the last selection menu PdfCraft showed. */
+  menuShown: MenuShown | null;
 }
 
 const PANEL_KEY = 'leitor.panelOpen';
@@ -124,6 +200,24 @@ function deferred<T>(): Deferred<T> {
   });
   return { promise, resolve, reject };
 }
+
+/** A wait for `pdfcraft:active`; `goto` when it answers a `pdfcraft:goto` (no bytes sent). */
+interface OpenWait {
+  d: Deferred<boolean>;
+  timer: unknown;
+  goto?: { held: FoundResult | null; grace: unknown };
+}
+
+/**
+ * How long "Card da seleção" waits for PdfCraft to hand over a selection still in its 300 ms debounce
+ * (`pdfcraft:selection-now` → `pdfcraft:selection-sent`, two frames normally) before using the last one it has.
+ */
+export const SELECTION_NOW_TIMEOUT_MS = 400;
+
+/** After a `found: false` without `active`, how long to wait before deciding PdfCraft no longer has the tab. */
+export const GOTO_GRACE_MS = 1_500;
+/** `openFailures` value for a goto PdfCraft answered as for a tab it doesn't have. */
+const MISSING_TAB = '\u0000missing-tab';
 
 export class StartFailed extends Error {
   constructor(readonly reason: StartError) {
@@ -161,11 +255,17 @@ export class LeitorController {
   private readonly knownPages = new Map<string, number>();
   /** The `fileVersion` each open PdfCraft tab holds (sent with its saves, spec 6.5). */
   private readonly baseVersions = new Map<string, number>();
-  private readonly openWaits = new Map<string, { d: Deferred<boolean>; timer: unknown }>();
+  private readonly openWaits = new Map<string, OpenWait>();
   private readonly positionTimers = new Map<string, { timer: unknown; page: number; pageCount: number }>();
   private closeResolver: ((ok: boolean) => void) | null = null;
   private readonly openFailures = new Map<string, string>();
-
+  private frameElement: { getBoundingClientRect(): { left: number; top: number } } | null = null;
+  private readonly panelListeners = new Set<(r: PanelRequest) => void>();
+  /** A request made while no panel was listening (e.g. the shortcut before the Leitor was ever shown). */
+  private pendingRequest: PanelRequest | null = null;
+  /** `pdfcraft:selection-now` requests waiting for their `pdfcraft:selection-sent`, by seq. */
+  private readonly selectionWaits = new Map<number, { resolve: () => void; timer: unknown }>();
+  private selectionSeq = 0;
   constructor(opts: ControllerOptions) {
     this.core = opts.core;
     this.timers = opts.timers ?? realTimers;
@@ -195,6 +295,9 @@ export class LeitorController {
       ready: false,
       activeBookUid: null,
       openIds: [],
+      selection: null,
+      found: null,
+      menuShown: null,
     };
     this.bridge = new BridgeClient({
       host,
@@ -314,6 +417,9 @@ export class LeitorController {
       activeTitle: null,
       openingId: null,
       openingTitle: null,
+      selection: null,
+      found: null,
+      menuShown: null,
     });
   }
 
@@ -323,12 +429,27 @@ export class LeitorController {
     this.bridge.reset();
     for (const id of [...this.openWaits.keys()]) this.resolveOpen(id, false);
     this.beginStart();
-    this.set({ activeId: null, activeTitle: null, openingId: null, openingTitle: null, page: 0, pageCount: 0 });
+    this.set({
+      activeId: null,
+      activeTitle: null,
+      openingId: null,
+      openingTitle: null,
+      page: 0,
+      pageCount: 0,
+      selection: null,
+      found: null,
+      menuShown: null,
+    });
   }
 
   /** The iframe's window (on its `load`), or null when it goes away. */
   setFrameWindow(win: Window | null) {
     this.frameWindow = win;
+  }
+
+  /** The iframe element (its position turns PdfCraft's iframe-relative menu anchors into viewport coordinates). */
+  setFrameElement(el: { getBoundingClientRect(): { left: number; top: number } } | null) {
+    this.frameElement = el;
   }
 
   setVisible(visible: boolean) {
@@ -386,6 +507,8 @@ export class LeitorController {
           return;
         }
         this.timings.ready(frameLoad(this.frameWindow));
+        // A new PdfCraft document (first start or a reload) knows none of the app's menu items.
+        this.bridge.setMenuItems(MENU_ITEMS);
         this.set({ status: 'ready', startError: null });
         this.readyWait?.resolve();
         return;
@@ -431,7 +554,97 @@ export class LeitorController {
       case 'pdfcraft:theme':
         this.set({ theme: m.theme });
         return;
+      case 'pdfcraft:selection':
+        this.onSelection(m.id, m.page, m.text, m.rects);
+        return;
+      case 'pdfcraft:menu': {
+        if (!isPanelKind(m.key)) return;
+        // PdfCraft shows our items for every document, also those it opened by itself (id null): the panel still
+        // defines the word or shows the AI notice; a card needs a library book (its Fonte links to it).
+        if (m.id === null && m.key === 'card') {
+          this.ui?.toast('bookPanel.notInLibrary', 'info');
+          return;
+        }
+        const selection = m.text.trim() ? { id: m.id, page: m.page, text: m.text, rects: m.rects } : null;
+        // The menu may beat the debounced `pdfcraft:selection`: the clicked selection is the current one.
+        if (m.id !== null && m.id === this.snap.activeId && selection)
+          this.set({ selection: { ...selection, id: m.id } });
+        this.emitPanelRequest({ kind: m.key, via: 'menu', selection, anchor: this.viewportAnchor(m.anchor) });
+        return;
+      }
+      case 'pdfcraft:menu-shown':
+        this.set({ menuShown: { id: m.id, items: m.items } });
+        return;
+      case 'pdfcraft:selection-sent':
+        // Messages arrive in order: every wait up to this seq has its selection by now.
+        for (const seq of [...this.selectionWaits.keys()]) {
+          if (m.seq === null || seq <= m.seq) this.endSelectionWait(seq);
+        }
+        return;
+      case 'pdfcraft:found': {
+        if (m.id === null) return;
+        const result: FoundResult = { id: m.id, page: m.page, query: m.query, found: m.found };
+        const goto = this.openWaits.get(m.id)?.goto;
+        if (goto) {
+          // No `active` yet for this goto: it may still come (same PdfCraft frame), or never, when PdfCraft no
+          // longer has the tab (it then answers only with found: false).
+          goto.held = result;
+          this.timers.clearTimeout(goto.grace);
+          if (!m.found) {
+            const id = m.id;
+            goto.grace = this.timers.setTimeout(() => {
+              this.openFailures.set(id, MISSING_TAB);
+              this.resolveOpen(id, false);
+            }, GOTO_GRACE_MS);
+          }
+          return;
+        }
+        this.applyFound(result);
+        return;
+      }
     }
+  }
+
+  private applyFound(result: FoundResult) {
+    this.set({ found: result });
+    if (!result.found) this.ui?.toast('leitor.gotoNotFound', 'info', { pagina: String(result.page + 1) });
+  }
+
+  private onSelection(id: string | null, page: number, text: string, rects: Rect[]) {
+    // Only the book in front has a selection the panel can use; id-less documents are not the library's.
+    if (id === null || id !== this.snap.activeId) return;
+    if (!text.trim()) {
+      if (this.snap.selection !== null) this.set({ selection: null });
+      return;
+    }
+    this.set({ selection: { id, page, text, rects } });
+  }
+
+  private viewportAnchor(anchor: Rect | null): PanelRequest['anchor'] {
+    if (!anchor) return null;
+    let left = 0;
+    let top = 0;
+    try {
+      const r = this.frameElement?.getBoundingClientRect();
+      left = r?.left ?? 0;
+      top = r?.top ?? 0;
+    } catch {
+      // Detached element: keep the iframe-relative position.
+    }
+    return { x: left + anchor[0], y: top + anchor[1], width: anchor[2], height: anchor[3] };
+  }
+
+  private emitPanelRequest(r: PanelRequest) {
+    if (r.kind === 'card') {
+      // The form lives in the panel: show it (an overlay in a compact window) on the Leitor tab.
+      this.ui?.navigateToLeitor();
+      if (!this.snap.panelOpen) this.togglePanel(true);
+    }
+    if (this.panelListeners.size === 0) {
+      this.pendingRequest = r;
+      return;
+    }
+    for (const fn of [...this.panelListeners]) fn(r);
   }
 
   private onActive(id: string | null, page: number, pageCount: number) {
@@ -448,6 +661,7 @@ export class LeitorController {
       activeTitle: id ? (this.titles.get(id) ?? null) : null,
       page,
       pageCount,
+      ...(previous !== id ? { selection: null, menuShown: null } : {}),
       ...(id !== null && this.snap.openError?.uid === id ? { openError: null } : {}),
     });
     this.sessions.active(id, page);
@@ -469,6 +683,10 @@ export class LeitorController {
     if (!w) return;
     this.openWaits.delete(id);
     this.timers.clearTimeout(w.timer);
+    if (w.goto) {
+      this.timers.clearTimeout(w.goto.grace);
+      if (ok && w.goto.held) this.applyFound(w.goto.held);
+    }
     w.d.resolve(ok);
   }
 
@@ -511,11 +729,14 @@ export class LeitorController {
 
   /**
    * Opens a library book in PdfCraft at its last page (spec 6.4), or at `opts.page` (0-based; "Abrir no livro" from a
-   * card's Fonte link, spec 8.2). Resolves true when PdfCraft reports it active; false when it failed or timed out
-   * (the overlay offers the system viewer and a retry). A book PdfCraft already has (in front or in another tab) is
-   * brought to front and, when `opts.page` is given, moved to that page; without it, it stays where the reader left it.
+   * card's Fonte link and `leitor://` deep links, spec 10.2). With `opts.find`, PdfCraft then runs its own find for
+   * that text on (or near) the page (`pdfcraft:goto`); the result arrives as `pdfcraft:found` (snapshot `found`, a
+   * toast when not found). A book PdfCraft already has gets only `pdfcraft:goto` (no bytes); a closed one is opened at
+   * the page and gets the goto after `pdfcraft:active`. Resolves true when PdfCraft reports the book active; false
+   * when it failed or timed out (the overlay offers the system viewer and a retry). Without page and find, a book
+   * PdfCraft already has is brought to front where the reader left it.
    */
-  async openBook(uid: string, opts?: { page?: number }): Promise<boolean> {
+  async openBook(uid: string, opts?: { page?: number; find?: string | null }): Promise<boolean> {
     this.ui?.navigateToLeitor();
     this.set({ openError: null, openingId: uid, openingTitle: this.titles.get(uid) ?? null });
     try {
@@ -524,10 +745,17 @@ export class LeitorController {
       this.set({ openingId: null, openingTitle: null });
       return false;
     }
+    const askedPage = opts?.page;
+    const hasPage = askedPage !== undefined && Number.isFinite(askedPage);
+    const find = normalizeFind(opts?.find);
+    const goto = hasPage || find !== null;
+    // A tab PdfCraft already has only needs a goto: don't read the file.
+    const gotoOnly = goto && this.bridge.isOpen(uid);
     let info: OpenInfo;
-    let bytes: ArrayBuffer | Uint8Array;
+    let bytes: ArrayBuffer | Uint8Array | null = null;
     try {
-      [info, bytes] = await Promise.all([this.core.openInfo(uid), this.core.bytes(uid)]);
+      if (gotoOnly) info = await this.core.openInfo(uid);
+      else [info, bytes] = await Promise.all([this.core.openInfo(uid), this.core.bytes(uid)]);
     } catch (e) {
       this.warn('book_open', e);
       this.set({
@@ -539,33 +767,37 @@ export class LeitorController {
     }
     this.titles.set(uid, info.title);
     this.knownPages.set(uid, info.pages);
-    const askedPage = opts?.page;
-    const goto = askedPage !== undefined && Number.isFinite(askedPage);
     if (this.snap.activeId === uid && !goto) {
       // Already in front and no page asked for: nothing to wait for.
       this.set({ openingId: null, openingTitle: null, activeTitle: info.title });
       return true;
     }
     if (this.snap.openingId === uid) this.set({ openingTitle: info.title });
-    const size = bytes.byteLength;
-    const d = deferred<boolean>();
-    const prev = this.openWaits.get(uid);
-    if (prev) {
-      this.timers.clearTimeout(prev.timer);
-      prev.d.resolve(false);
+    if (find !== null) this.set({ found: null });
+    const pages = this.snap.activeId === uid && this.snap.pageCount > 0 ? this.snap.pageCount : info.pages;
+    const wanted = hasPage ? Math.floor(askedPage) : this.snap.activeId === uid ? this.snap.page : info.page;
+    const page = pages > 0 ? Math.min(Math.max(0, wanted), pages - 1) : Math.max(0, wanted);
+
+    let ok: boolean;
+    if (gotoOnly) {
+      ok = await this.waitActive(uid, 0, () => this.bridge.goto(uid, page, find), true);
+      if (!ok && this.openFailures.has(uid)) {
+        // PdfCraft no longer has that tab (closed without the app noticing): open it again.
+        this.bridge.forget(uid);
+        this.baseVersions.delete(uid);
+        return this.openBook(uid, opts);
+      }
+    } else {
+      const data = bytes as ArrayBuffer | Uint8Array;
+      // A tab PdfCraft already has keeps the content it was opened from, even if the library got a newer version.
+      if (!this.bridge.isOpen(uid) || !this.baseVersions.has(uid)) this.baseVersions.set(uid, info.fileVersion);
+      // When the id is already open the fork ignores the bytes, brings the tab to front and answers `active`.
+      ok = await this.waitActive(uid, data.byteLength, () =>
+        this.bridge.open({ id: uid, name: info.name, bytes: data, page }),
+      );
+      // Freshly opened at the page: now find the text there.
+      if (ok && find !== null) this.bridge.goto(uid, page, find);
     }
-    const timer = this.timers.setTimeout(() => this.resolveOpen(uid, false), openTimeoutMs(size));
-    this.openWaits.set(uid, { d, timer });
-    this.openFailures.delete(uid);
-    // Always send the bytes: when the id is already open the fork ignores them, brings the tab to front, shows `page`
-    // if one was sent and answers with `pdfcraft:active`.
-    const wanted = goto ? Math.floor(askedPage) : info.page;
-    const page = info.pages > 0 ? Math.min(Math.max(0, wanted), info.pages - 1) : Math.max(0, wanted);
-    // A tab PdfCraft already has keeps the content it was opened from, even if the library got a newer version.
-    if (!this.bridge.isOpen(uid) || !this.baseVersions.has(uid)) this.baseVersions.set(uid, info.fileVersion);
-    if (!this.bridge.open({ id: uid, name: info.name, bytes, page, goto: goto && this.bridge.isOpen(uid) }))
-      this.resolveOpen(uid, false);
-    const ok = await d.promise;
     if (this.snap.openingId === uid) this.set({ openingId: null, openingTitle: null });
     if (!ok) {
       // Keep the id known: a slow PdfCraft may still open it, and its messages must not be dropped.
@@ -580,6 +812,83 @@ export class LeitorController {
       });
     }
     return ok;
+  }
+
+  /** Sends with `send()` and waits for `pdfcraft:active` of `uid` (false on failure or timeout). */
+  private async waitActive(uid: string, size: number, send: () => boolean, goto = false): Promise<boolean> {
+    const d = deferred<boolean>();
+    const prev = this.openWaits.get(uid);
+    if (prev) {
+      this.timers.clearTimeout(prev.timer);
+      if (prev.goto) this.timers.clearTimeout(prev.goto.grace);
+      prev.d.resolve(false);
+    }
+    const timer = this.timers.setTimeout(() => this.resolveOpen(uid, false), openTimeoutMs(size));
+    this.openWaits.set(uid, { d, timer, ...(goto ? { goto: { held: null, grace: undefined } } : {}) });
+    this.openFailures.delete(uid);
+    if (!send()) this.resolveOpen(uid, false);
+    return d.promise;
+  }
+
+  /**
+   * "Card da seleção" from a shortcut or the panel's button: the panel opens (overlay in a compact window) with the
+   * form for the current selection. With nothing selected only a notice shows, where the user is: no jump to the
+   * Leitor tab, the panel stays as it is.
+   */
+  async requestCardFromSelection(via: 'shortcut' | 'button' = 'shortcut'): Promise<void> {
+    // A selection made just before the shortcut may still be in PdfCraft's 300 ms debounce: ask for it first.
+    await this.selectionNow();
+    if (!this.snap.selection?.text.trim()) {
+      this.ui?.toast('bookPanel.selectFirst', 'info');
+      return;
+    }
+    this.emitPanelRequest({ kind: 'card', via, selection: this.snap.selection, anchor: null });
+  }
+
+  /**
+   * Resolves once PdfCraft has sent the selection it was still debouncing (or after `SELECTION_NOW_TIMEOUT_MS`).
+   * Nothing to wait for when PdfCraft isn't running, has no book in front or isn't on screen (no fresh selection).
+   */
+  private selectionNow(): Promise<void> {
+    if (this.snap.status !== 'ready' || this.snap.activeId === null || !this.snap.visible) return Promise.resolve();
+    const seq = ++this.selectionSeq;
+    return new Promise<void>((resolve) => {
+      const timer = this.timers.setTimeout(() => this.endSelectionWait(seq), SELECTION_NOW_TIMEOUT_MS);
+      this.selectionWaits.set(seq, { resolve, timer });
+      if (!this.bridge.selectionNow(seq)) this.endSelectionWait(seq);
+    });
+  }
+
+  private endSelectionWait(seq: number) {
+    const w = this.selectionWaits.get(seq);
+    if (!w) return;
+    this.selectionWaits.delete(seq);
+    this.timers.clearTimeout(w.timer);
+    w.resolve();
+  }
+
+  /**
+   * The panel listens for requests (menu items, shortcuts). A request made while nobody listened is delivered to the
+   * first listener, once.
+   */
+  onPanelRequest = (cb: (r: PanelRequest) => void): (() => void) => {
+    this.panelListeners.add(cb);
+    const pending = this.pendingRequest;
+    if (pending) {
+      this.pendingRequest = null;
+      queueMicrotask(() => {
+        if (this.panelListeners.has(cb)) cb(pending);
+        else this.pendingRequest ??= pending;
+      });
+    }
+    return () => {
+      this.panelListeners.delete(cb);
+    };
+  };
+
+  /** The panel's mini-review ("Revisar aqui", spec 6.4/10.1) opened or closed: the reading session pauses. */
+  setReviewing(on: boolean) {
+    this.sessions.setReviewing(on);
   }
 
   dismissOpenError() {

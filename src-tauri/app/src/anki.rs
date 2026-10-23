@@ -13,7 +13,10 @@ use chrono::{DateTime, Local};
 use core_anki::bridge::{Bridge, BridgeEvent, Caller, EventSink, PostReply, PostRequest};
 use core_anki::browse::{self, BrowseOrder, BrowseRow, ForgetOptions};
 use core_anki::notes::{self, AddDefaults, NewNote, NoteAdded, NoteCheck, NoteData, NotetypeInfo};
-use core_anki::study::{AnswerSide, CardAction, CardActionResult, Study, StudyNext};
+use core_anki::study::{
+    AnswerSide, CardAction, CardActionResult, MiniReviewClosed, MiniReviewOpened, Study, StudyNext,
+    StudyOwner,
+};
 use core_anki::{
     AnkiService, BackupInfo, BackupKind, DeckName, DeckTree, ExportOptions, ExportResult,
     ImportSummary, PrepareReport, backup, decks, import_export, media,
@@ -29,6 +32,8 @@ use crate::state::{AppState, lock};
 pub const ANKI_PAGE_EVENT: &str = "anki://page";
 /// Event `{ reason }` telling the screens to refetch Anki data.
 pub const ANKI_CHANGED_EVENT: &str = "anki://changed";
+/// Event [`StudyOwnerChange`]: the study session changed hands (spec 10.1, one place studies at a time).
+pub const STUDY_OWNER_EVENT: &str = "anki://study-owner";
 
 /// First daily-backup check after start, then every [`BACKUP_EVERY`].
 pub const BACKUP_FIRST_DELAY: Duration = Duration::from_secs(2 * 60);
@@ -53,6 +58,16 @@ pub struct AnkiChanged {
     pub reason: ChangeReason,
 }
 
+/// Payload of [`STUDY_OWNER_EVENT`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyOwnerChange {
+    /// Who studies now (`None`: nobody).
+    pub owner: Option<StudyOwner>,
+    /// The place whose open session was just taken over (it shows a notice), if any.
+    pub preempted: Option<StudyOwner>,
+}
+
 /// What the core asks the UI (or the OS) to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UiEvent {
@@ -64,6 +79,10 @@ pub enum UiEvent {
     OpenUrl(String),
     /// `anki://sync` with the new sync status.
     AnkiSync(crate::sync::AnkiSyncStatus),
+    /// `anki://study-owner`.
+    StudyOwner(StudyOwnerChange),
+    /// `leitor://deep-link` (a `leitor://livro/…` link opened by the OS).
+    DeepLink(crate::deep_link::DeepLink),
 }
 
 /// Receives [`UiEvent`]s: the app emits them to the main window; tests collect them.
@@ -227,8 +246,21 @@ impl AppState {
 
     // --- Study -----------------------------------------------------------------------------
 
-    pub async fn anki_study_next(&self, deck_id: i64) -> Result<StudyNext, AppError> {
-        Ok(self.anki_handles()?.study.next(deck_id).await?)
+    /// Studies `deck_id` in `owner` (default: the Anki tab). Taking the session from the other place emits
+    /// [`STUDY_OWNER_EVENT`] with `preempted` (spec 10.1: one place studies at a time).
+    pub async fn anki_study_next(
+        &self,
+        deck_id: i64,
+        owner: Option<StudyOwner>,
+    ) -> Result<StudyNext, AppError> {
+        let owner = owner.unwrap_or(StudyOwner::Tab);
+        let study = self.anki_handles()?.study;
+        let before = study.owner();
+        let started = study.start(deck_id, owner).await?;
+        if before != Some(owner) {
+            self.emit_study_owner(Some(owner), started.preempted);
+        }
+        Ok(started.next)
     }
 
     pub async fn anki_show_answer(
@@ -282,9 +314,68 @@ impl AppState {
             .await?)
     }
 
-    pub fn anki_study_close(&self) -> Result<(), AppError> {
-        self.anki_handles()?.study.close();
+    /// Closes `owner`'s session (default: the Anki tab) and nothing else: a preempted place leaving never ends the
+    /// other's session.
+    pub fn anki_study_close(&self, owner: Option<StudyOwner>) -> Result<(), AppError> {
+        let owner = owner.unwrap_or(StudyOwner::Tab);
+        if self.anki_handles()?.study.close_owner(owner) {
+            self.emit_study_owner(None, None);
+        }
         Ok(())
+    }
+
+    /// "Revisar aqui" (spec 10.1): remembers the current deck, switches to `deck_id` and studies it in the panel,
+    /// taking the session from the Anki tab if it had one.
+    pub async fn anki_mini_review_open(&self, deck_id: i64) -> Result<MiniReviewOpened, AppError> {
+        let study = self.anki_handles()?.study;
+        let before = study.owner();
+        let opened = study.mini_review_open(deck_id).await?;
+        if before != Some(StudyOwner::Panel) {
+            self.emit_study_owner(Some(StudyOwner::Panel), opened.preempted);
+        }
+        Ok(opened)
+    }
+
+    /// Closes the mini-review; the previous deck comes back unless the Anki tab took the session over.
+    pub async fn anki_mini_review_close(&self) -> Result<MiniReviewClosed, AppError> {
+        let study = self.anki_handles()?.study;
+        let before = study.owner();
+        let closed = study.mini_review_close().await?;
+        if before == Some(StudyOwner::Panel) && study.owner().is_none() {
+            self.emit_study_owner(None, None);
+        }
+        Ok(closed)
+    }
+
+    /// On exit: an open mini-review is closed first so the deck from before it is current again (best effort; the
+    /// collection is never opened just for this).
+    pub fn mini_review_close_on_exit(&self) {
+        let Some(h) = lock(&self.anki_handles).clone() else {
+            return;
+        };
+        if h.study.owner() != Some(StudyOwner::Panel) {
+            return;
+        }
+        match tauri::async_runtime::block_on(h.study.mini_review_close()) {
+            Ok(closed) => tracing::info!(
+                restored = closed.restored_deck_id.is_some(),
+                "mini-review closed on exit"
+            ),
+            Err(e) => tracing::warn!(%e, "could not close the mini-review on exit"),
+        }
+    }
+
+    /// The collection was closed and reopened (full sync, `.colpkg`): forgets the study session and tells the UI
+    /// nobody studies any more. `had_owner` is [`Study::owner`] from before the replacement.
+    pub(crate) fn study_reset(&self, study: &Study, had_owner: bool) {
+        study.reset();
+        if had_owner {
+            self.emit_study_owner(None, None);
+        }
+    }
+
+    fn emit_study_owner(&self, owner: Option<StudyOwner>, preempted: Option<StudyOwner>) {
+        self.emit(UiEvent::StudyOwner(StudyOwnerChange { owner, preempted }));
     }
 
     // --- Notes, browse, media --------------------------------------------------------------
@@ -425,10 +516,11 @@ impl AppState {
     pub async fn anki_import_colpkg(&self, path: &str) -> Result<BackupInfo, AppError> {
         let path = self.take_package_grant(path, "colpkg")?;
         let h = self.anki_handles()?;
+        let had_owner = h.study.owner().is_some();
         h.study.close();
         let result = h.svc.import_colpkg(&path).await;
         // Whatever happened, the collection was closed and reopened: nothing cached survives.
-        h.study.reset();
+        self.study_reset(&h.study, had_owner);
         h.bridge.reset();
         let backup = result?;
         tracing::info!(backup = %backup.file_name, "collection replaced by a .colpkg");

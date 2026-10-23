@@ -57,6 +57,13 @@
       ]
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["leitor"]
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

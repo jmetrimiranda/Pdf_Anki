@@ -5,7 +5,9 @@
 
 pub mod anki;
 pub mod anki_web;
+pub mod book_panel;
 mod commands;
+pub mod deep_link;
 mod error;
 mod files;
 pub mod grants;
@@ -25,7 +27,11 @@ use std::sync::Arc;
 
 use tauri::{App, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
-pub use anki::{AnkiChanged, AnkiHandles, ChangeReason, UiEvent, UiSink};
+pub use anki::{AnkiChanged, AnkiHandles, ChangeReason, StudyOwnerChange, UiEvent, UiSink};
+pub use book_panel::{
+    BookCardKind, BookDeckInfo, BookDeckRole, BookPanelInfo, BookPanelPatch, WordDefinition,
+};
+pub use deep_link::{DeepLink, deep_links_from_args, parse_deep_link};
 pub use error::AppError;
 pub use files::BookFiles;
 pub use library::{AddedBook, BookOpen, SavedVersion};
@@ -79,6 +85,8 @@ pub fn run() {
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
             let state = handle.state::<Arc<AppState>>();
+            // Before the shutdown closes the collection: the deck from before "Revisar aqui" comes back.
+            state.mini_review_close_on_exit();
             state.reading_stop_on_exit();
             state.shutdown();
         }
@@ -104,6 +112,8 @@ fn build(launch_paths: Vec<String>) -> Result<App, Box<dyn std::error::Error>> {
         }
     });
     let app = builder
+        // `leitor://` links (spec 10.2): registered with the OS, forwarded by the single-instance plugin.
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .register_asynchronous_uri_scheme_protocol(protocol::PDF_SCHEME, protocol::handle)
@@ -121,6 +131,8 @@ fn build(launch_paths: Vec<String>) -> Result<App, Box<dyn std::error::Error>> {
             let handle = app.handle().clone();
             state.set_ui_sink(Arc::new(move |event| emit_ui_event(&handle, event)));
             state.warm_up();
+            #[cfg(desktop)]
+            deep_link::setup(app, &state);
             reading::spawn_ticker(&state);
             anki::spawn_backup_ticker(&state);
             sync::driver::ensure_started(&state);
@@ -164,6 +176,8 @@ fn emit_ui_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: UiEvent) {
             app.emit_to("main", anki::ANKI_CHANGED_EVENT, AnkiChanged { reason })
         }
         UiEvent::AnkiSync(status) => app.emit_to("main", sync::ANKI_SYNC_EVENT, &status),
+        UiEvent::StudyOwner(change) => app.emit_to("main", anki::STUDY_OWNER_EVENT, change),
+        UiEvent::DeepLink(link) => app.emit_to("main", deep_link::DEEP_LINK_EVENT, &link),
         UiEvent::OpenUrl(url) => {
             open_url(app, &url);
             Ok(())
@@ -207,6 +221,12 @@ macro_rules! app_commands {
             commands::anki_undo,
             commands::anki_card_action,
             commands::anki_study_close,
+            commands::anki_mini_review_open,
+            commands::anki_mini_review_close,
+            commands::book_panel_info,
+            commands::book_panel_set,
+            commands::anki_book_cards,
+            commands::vocab_define,
             commands::anki_notetypes,
             commands::anki_add_defaults,
             commands::anki_note_get,
@@ -254,6 +274,7 @@ macro_rules! app_commands {
             commands::reading_session_heartbeat,
             commands::reading_session_stop,
             commands::pending_open_paths,
+            commands::pending_deep_links,
             $($extra),*
         ]
     };

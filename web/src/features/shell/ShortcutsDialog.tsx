@@ -55,7 +55,10 @@ export function ShortcutsDialog({
           </li>
         ))}
       </ul>
-      <p className="pt-3 pb-3 text-xs text-muted">{t('shortcuts.pdfcraftNote')}</p>
+      <div className="space-y-1.5 pt-3 pb-3 text-xs text-muted">
+        <p>{t('shortcuts.pdfcraftNote')}</p>
+        {SHORTCUTS.flatMap((s) => (s.note ? [<p key={s.note}>{t(s.note)}</p>] : []))}
+      </div>
     </Dialog>
   );
 }

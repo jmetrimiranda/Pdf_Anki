@@ -773,3 +773,55 @@ just those two (with `inspect` plus cos/annot/organize). Concretely:
   `fn _a() { fn s<T: Send>() {} fn ss<T: Send + Sync>() {} s::<RenderPool>(); s::<PageRenderer>(); s::<pdfcraft_cos::Document>(); s::<pdfcraft_engine::Session>(); ss::<PageText>(); ss::<DocInfo>(); ss::<RenderConfig>(); }`.
 - `PageInfo::view_rect_to_quad` on a rotated **and** cropped page has no direct PdfCraft test in render's `inspect.rs`.
   We must test it ourselves (spec 6.5).
+
+## 12. Ponte v2 (fork `leitor-bridge`, Fase 4)
+
+Nível `bridge: 2` no `pdfcraft:ready`. Tudo do nível 1 continua igual (mesmas mensagens, mesmos campos). Fonte da
+verdade do protocolo: o comentário do módulo `host` em `third_party/pdfcraft/apps/pdfcraft-web/src/main.rs`; ganchos em
+`crates/ui-egui/src/host.rs` (+ uma linha em cada menu de seleção de `canvas.rs`); validação/conversão/debounce puros em
+`apps/pdfcraft-web/src/bridge.rs` (testados no alvo nativo).
+
+**Retângulos.** Na página: `[x, y, largura, altura]` em pontos do *view space* (página como exibida sem rotação, y para
+baixo) — o mesmo `Rect` do app. Na tela (`anchor`, `menu-shown`): `[x, y, largura, altura]` em px CSS relativos à
+viewport do iframe (o canvas ocupa o iframe inteiro); conversão `pontos egui × ctx.pixels_per_point() ÷
+window.devicePixelRatio` (a escala de interface do PdfCraft faz ponto ≠ px CSS). Páginas são índices 0-based.
+
+### App → PdfCraft
+
+| Mensagem | Campos | Comportamento |
+|---|---|---|
+| `pdfcraft:menu-items` | `{ items: [{ key, label }] }` | Itens do app no **próprio** menu de seleção do PdfCraft (menu do botão direito, depois de "Copy", após um separador) e na barra flutuante de seleção (segunda linha, depois de um separador). Só aparecem com texto selecionado (em qualquer aba). `key` = `^[a-z0-9_-]{1,32}$`; `label` 1–64 caracteres após `trim`, exibido como veio (o app manda pt-BR). Entradas inválidas, além da 8ª, ou com `key` repetida são descartadas. Cada mensagem **substitui** a lista; `[]` remove tudo. `items` que não é array: mensagem ignorada. |
+| `pdfcraft:goto` | `{ id, page, find? }` | `id` obrigatório; `page` inteiro ≥ 0 (fração, negativo ou não numérico → ignorado; o PdfCraft limita à última página). Traz a aba para frente, vai à página e reenvia `pdfcraft:active`. Com `find` (string; cortado em 10 000 caracteres na ponte, depois espaços colapsados e corte em 500 no app): extrai o texto da página e das vizinhas ±2 (mesmo fora da tela) e procura, sem diferenciar maiúsculas: 1º acerto na página; senão o mais próximo em ±2 (a seguinte antes da anterior na mesma distância); senão repete com as 6 primeiras e depois as 3 primeiras palavras. O acerto vira a busca da **barra de localizar do PdfCraft** (query = a variante que achou, match atual = o acerto, destacado e centralizado). Sem acerto: fica na página, barra de localizar intocada. |
+| `pdfcraft:selection-now` | `{ seq? }` | Envia já a seleção que ainda está no debounce de 300 ms (atalho "Card da seleção" logo depois de selecionar). Espera dois quadros de animação (o quadro que processa a entrada anterior à mensagem já reportou a seleção), manda o `pdfcraft:selection` pendente, se houver e for diferente do último enviado, e responde `pdfcraft:selection-sent`. Página oculta: responde na hora. `seq` inteiro 0…2^32−1 (outro valor → `null` na resposta). Só ponte web. |
+
+### PdfCraft → app
+
+| Mensagem | Campos | Quando |
+|---|---|---|
+| `pdfcraft:selection` | `{ id, page, text, rects }` | Seleção de texto do documento **com id** na frente mudou; debounce de 300 ms (trailing: só o último estado da janela; nunca repete o último enviado). `text` como o "Copy" coloca (linhas com `\n`), no máx. 20 000 caracteres; `rects` um por trecho de linha, no máx. 2 000. Seleção limpa — ou deixada para trás quando outra aba vem para frente — vira `{ id, page, text: "", rects: [] }` (uma vez). Documentos sem id não geram nada. |
+| `pdfcraft:menu` | `{ key, id, page, text, rects, anchor }` | Clique num item do app. `id` = id da aba ou `null`. `anchor` = último retângulo da seleção na tela. O menu/barra fecha e a seleção **continua** (como depois de "Copy"). |
+| `pdfcraft:menu-shown` | `{ id, items: [{ key, rect }] }` | Quando o menu ou a barra passam a mostrar os itens do app, de novo se eles se movem (rolagem com a barra aberta) e uma vez com `items: []` quando somem. Serve para o host/testes mirarem nos itens (o canvas WebGL não tem DOM). |
+| `pdfcraft:selection-sent` | `{ seq }` | Resposta a cada `pdfcraft:selection-now`, depois do `pdfcraft:selection` que estava pendente (a ordem do `postMessage` garante que o app já o recebeu). O app espera no máx. 400 ms (`SELECTION_NOW_TIMEOUT_MS`) e então usa a última seleção que tem. |
+| `pdfcraft:found` | `{ id, page, query, found }` | Exatamente um por `pdfcraft:goto` com `find`, e para qualquer `goto` com `id` desconhecido (`found: false` imediato). `page` = página do acerto ou a pedida; `query` = o trecho pedido normalizado (não a variante curta). `found: false` também quando: o usuário interage (clique, roda, tecla, zoom) ou troca de aba antes do resultado, outro `goto` substitui o pendente, o documento fecha, não tem páginas ou o texto não chega em ~5 s. |
+
+### API Rust (ui-egui)
+
+- `PdfCraftApp::host_menu_items: HostMenuItems` (`Arc<Mutex<Vec<HostMenuItem { key, label }>>>`).
+- `HostRequest::Goto { tag, page, find: Option<String> }`.
+- `HostEvent::Selection { tag, page, text, rects }`, `HostEvent::Menu { key, tag: Option<_>, page, text, rects, anchor }`,
+  `HostEvent::MenuShown { tag: Option<_>, items: Vec<(key, [f32; 4])> }`, `HostEvent::Found { tag, page, query, found }`.
+  Em `host.rs` os retângulos são `[x0, y0, x1, y1]` (página: view space; tela: pontos egui); a ponte web converte.
+  `HostEvent` deixou de ser `Eq` (tem `f32`), continua `PartialEq`.
+- Constantes exportadas: `MAX_HOST_TEXT_CHARS` (20 000), `MAX_HOST_RECTS` (2 000), `MAX_HOST_FIND_CHARS` (500).
+- O app (ui-egui) **não** faz debounce: emite a cada mudança; a ponte web debounce.
+
+### Atalhos (auditoria no commit fixado)
+
+- Registro de comandos (`crates/engine/src/commands.rs`): os atalhos só usam ⌘/Ctrl, Shift e Ctrl-no-Mac
+  (`Shortcut { command, shift, mac_ctrl, key }`) — **não existe atalho com Alt** no registro.
+  `Ctrl+Shift+N` = `view.focus_page_input` ("Go to page…").
+- `consume_key`/`consume_shortcut`/`key_pressed`/`modifiers.alt` em `crates/ui-egui/src`: `Alt+D` e `Alt+N`
+  ("Don't save" no aviso de salvar, `dialogs.rs`), `Alt+↑/↓` (ordem de cálculo, Combinar), Alt+arrastar (seleção em
+  coluna), Alt+roda (rolagem do egui, `motion.rs`). Teclas simples sem modificador: `V`, `H`, Espaço (ferramentas); nenhuma usa `C`.
+- `Alt+C` está livre: nenhum `Key::C` em ui-egui (o que importa porque `consume_key` do egui deixa passar um Alt a
+  mais — `prepare.rs` comenta isso) e nenhum atalho do registro com `C` sem Ctrl (`Ctrl+C` = Copy exige Ctrl).

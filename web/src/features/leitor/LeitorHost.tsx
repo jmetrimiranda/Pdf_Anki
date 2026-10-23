@@ -1,14 +1,14 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useRouterState } from '@tanstack/react-router';
 import { AlertCircle, ExternalLink, RotateCw } from 'lucide-react';
-import { useCallback, useEffect, useRef, type ReactNode, type SyntheticEvent } from 'react';
+import { memo, useCallback, useEffect, useRef, type ReactNode, type SyntheticEvent } from 'react';
 import { Button, Dialog, Spinner, useToast } from '../../components/ui';
 import { t } from '../../i18n';
 import { core } from '../../lib/core/client';
 import { useMediaQuery } from '../../lib/useMediaQuery';
 import { BookPanel, PANEL_COMPACT_QUERY, usePdfcraftTheme } from './BookPanel';
 import type { LeitorSnapshot } from './controller';
-import { leitorController, useLeitorState } from './instance';
+import { leitorController, useLeitorSelector } from './instance';
 import { forwardShortcuts } from './keys';
 
 /** The PdfCraft web build, served on the same origin (spec 6.1). `?host=parent` turns its bridge on. */
@@ -18,6 +18,64 @@ export function isLeitorPath(pathname: string): boolean {
   return pathname === '/leitor' || pathname.startsWith('/leitor/');
 }
 
+/** What the host shows: everything but the frequent fields it doesn't use (selection, find results, menu rects). */
+type HostView = Pick<
+  LeitorSnapshot,
+  | 'mounted'
+  | 'generation'
+  | 'status'
+  | 'startError'
+  | 'startDetail'
+  | 'activeId'
+  | 'activeTitle'
+  | 'openingId'
+  | 'openingTitle'
+  | 'openError'
+  | 'theme'
+  | 'panelOpen'
+  | 'panelCompact'
+  | 'closePrompt'
+>;
+
+function hostView(s: LeitorSnapshot): HostView {
+  return {
+    mounted: s.mounted,
+    generation: s.generation,
+    status: s.status,
+    startError: s.startError,
+    startDetail: s.startDetail,
+    activeId: s.activeId,
+    activeTitle: s.activeTitle,
+    openingId: s.openingId,
+    openingTitle: s.openingTitle,
+    openError: s.openError,
+    theme: s.theme,
+    panelOpen: s.panelOpen,
+    panelCompact: s.panelCompact,
+    closePrompt: s.closePrompt,
+  };
+}
+
+function shallowEqual<T extends object>(a: T, b: T): boolean {
+  for (const k of Object.keys(a) as (keyof T)[]) if (!Object.is(a[k], b[k])) return false;
+  return true;
+}
+
+/** `/leitor?livro=<uid>&pagina=<1-based>&q=<text>`: what to open (page 0-based for the controller). */
+export function leitorSearchTarget(
+  search: Record<string, unknown>,
+): { uid: string; page?: number; find?: string } | null {
+  const uid = search.livro;
+  if (typeof uid !== 'string' || !uid) return null;
+  const target: { uid: string; page?: number; find?: string } = { uid };
+  const pagina = typeof search.pagina === 'string' ? Number(search.pagina) : search.pagina;
+  if (typeof pagina === 'number' && Number.isInteger(pagina) && pagina >= 1) target.page = pagina - 1;
+  const q = search.q;
+  if (typeof q === 'string' && q.trim()) target.find = q;
+  else if (typeof q === 'number') target.find = String(q);
+  return target;
+}
+
 /**
  * The Leitor tab's layer inside <main>: the PdfCraft iframe plus the "Painel Anki do livro". Mounted on the first
  * visit to /leitor (or the first openBook) and never unmounted: when another tab is showing it is only hidden
@@ -25,12 +83,13 @@ export function isLeitorPath(pathname: string): boolean {
  */
 export function LeitorHost() {
   const controller = leitorController();
-  const snap = useLeitorState();
+  const snap = useLeitorSelector(hostView, shallowEqual);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  // A string key so the selector result is stable between renders.
   const livro = useRouterState({
     select: (s) => {
-      const v = (s.location.search as Record<string, unknown>).livro;
-      return typeof v === 'string' ? v : null;
+      const target = leitorSearchTarget(s.location.search as Record<string, unknown>);
+      return target ? JSON.stringify(target) : null;
     },
   });
   const visible = isLeitorPath(pathname);
@@ -58,12 +117,14 @@ export function LeitorHost() {
     controller.setVisible(visible);
   }, [controller, visible]);
 
-  // `/leitor?livro=<uid>` opens that book (captures, deep links inside the app).
+  // `/leitor?livro=<uid>[&pagina=<N>&q=<text>]` opens that book, at that page finding that text (captures, links
+  // inside the app).
   const opened = useRef<string | null>(null);
   useEffect(() => {
     if (!visible || !livro || opened.current === livro) return;
     opened.current = livro;
-    void controller.openBook(livro);
+    const { uid, ...opts } = JSON.parse(livro) as { uid: string; page?: number; find?: string };
+    void controller.openBook(uid, opts.page === undefined && opts.find === undefined ? undefined : opts);
   }, [controller, visible, livro]);
 
   useEffect(() => {
@@ -118,7 +179,8 @@ export function LeitorHost() {
   );
 }
 
-function PdfcraftFrame() {
+/** Memoized: no props, so nothing the host re-renders for ever touches the iframe element. */
+const PdfcraftFrame = memo(function PdfcraftFrame() {
   const controller = leitorController();
   const detachKeys = useRef<(() => void) | null>(null);
 
@@ -126,6 +188,7 @@ function PdfcraftFrame() {
   const ref = useCallback(
     (el: HTMLIFrameElement | null) => {
       controller.setFrameWindow(el?.contentWindow ?? null);
+      controller.setFrameElement(el);
       if (!el) {
         detachKeys.current?.();
         detachKeys.current = null;
@@ -158,7 +221,7 @@ function PdfcraftFrame() {
       className="absolute inset-0 block size-full border-0"
     />
   );
-}
+});
 
 function Overlay({ children }: { children: ReactNode }) {
   return <div className="absolute inset-0 flex items-center justify-center bg-bg/80 p-6">{children}</div>;
@@ -180,7 +243,7 @@ function ProgressChip({ label, testId }: { label: string; testId: string }) {
   );
 }
 
-function Overlays({ snap }: { snap: LeitorSnapshot }) {
+function Overlays({ snap }: { snap: HostView }) {
   const controller = leitorController();
   if (snap.status === 'loading') return <ProgressChip testId="leitor-loading" label={t('reader.loading')} />;
   if (snap.status === 'failed') {

@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{Local, TimeZone};
 use core_anki::fixture::{self, FixtureInfo, FixtureOptions};
-use core_anki::study::{CardAction, StudyNext};
+use core_anki::study::{CardAction, StudyNext, StudyOwner};
 use core_anki::{BackupKind, ExportOptions};
-use leitor_app::{AppState, ChangeReason, UiEvent, open_paths_from_args};
+use leitor_app::{AppState, ChangeReason, StudyOwnerChange, UiEvent, open_paths_from_args};
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tauri::async_runtime::block_on(f)
@@ -138,7 +138,7 @@ fn deck_commands() {
 fn study_next_answer_undo() {
     let env = Env::new();
     let deck = env.deck(fixture::DECK_WORDS);
-    let first = block_on(env.state.anki_study_next(deck)).unwrap();
+    let first = block_on(env.state.anki_study_next(deck, None)).unwrap();
     let card = first.card().expect("the fixture has cards due").clone();
     assert_eq!(card.deck_id, deck);
     assert!(card.buttons.iter().all(|b| !b.is_empty()));
@@ -160,9 +160,158 @@ fn study_next_answer_undo() {
     )
     .unwrap();
     assert_eq!(flagged.flag, 2);
-    env.state.anki_study_close().unwrap();
+    env.state.anki_study_close(None).unwrap();
     let err = block_on(env.state.anki_undo()).unwrap_err();
     assert!(err.code.starts_with("anki_"), "{err:?}");
+}
+
+fn owner_events(env: &Env) -> Vec<StudyOwnerChange> {
+    env.events()
+        .into_iter()
+        .filter_map(|e| match e {
+            UiEvent::StudyOwner(c) => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
+fn current_deck(env: &Env) -> i64 {
+    block_on(env.state.anki_deck_tree())
+        .unwrap()
+        .current_deck_id
+}
+
+fn can_undo(next: &StudyNext) -> bool {
+    match next {
+        StudyNext::Card { card } => card.can_undo,
+        StudyNext::Done { can_undo, .. } => *can_undo,
+    }
+}
+
+const TAB: Option<StudyOwner> = Some(StudyOwner::Tab);
+const PANEL: Option<StudyOwner> = Some(StudyOwner::Panel);
+
+#[test]
+fn mini_review_preempts_the_tab_and_restores_the_deck() {
+    let env = Env::new();
+    let words = env.deck(fixture::DECK_WORDS);
+    let farm = env.deck(fixture::DECK_ANIMAL_FARM);
+    let first = block_on(env.state.anki_study_next(words, None)).unwrap();
+    let card = first.card().unwrap().card_id;
+    let next = block_on(env.state.anki_answer(card, 3, 2_000)).unwrap();
+    assert!(can_undo(&next));
+    assert_eq!(
+        owner_events(&env),
+        vec![StudyOwnerChange {
+            owner: TAB,
+            preempted: None
+        }]
+    );
+    assert_eq!(current_deck(&env), words);
+
+    // "Revisar aqui" takes the session from the tab and switches the current deck.
+    let opened = block_on(env.state.anki_mini_review_open(farm)).unwrap();
+    assert_eq!(opened.previous_deck_id, words);
+    assert_eq!(opened.preempted, Some(StudyOwner::Tab));
+    assert_eq!(opened.next.card().map(|c| c.deck_id), Some(farm));
+    assert_eq!(current_deck(&env), farm);
+    assert_eq!(
+        owner_events(&env).last(),
+        Some(&StudyOwnerChange {
+            owner: PANEL,
+            preempted: TAB
+        })
+    );
+    // Switching decks is not an answer: Ctrl+Z has nothing to undo (spec 10.1).
+    assert!(!can_undo(&opened.next));
+    assert!(block_on(env.state.anki_undo()).is_err());
+
+    // The tab leaving (its screen unmounts) does not end the panel's session.
+    env.state.anki_study_close(TAB).unwrap();
+    let panel_card = opened.next.card().unwrap().card_id;
+    block_on(env.state.anki_show_answer(panel_card, None)).unwrap();
+    let after = block_on(env.state.anki_answer(panel_card, 3, 1_000)).unwrap();
+    assert!(
+        can_undo(&after),
+        "an answer in the mini-review can be undone"
+    );
+
+    // Closing restores the deck from before the mini-review.
+    let closed = block_on(env.state.anki_mini_review_close()).unwrap();
+    assert_eq!(closed.restored_deck_id, Some(words));
+    assert_eq!(current_deck(&env), words);
+    assert_eq!(
+        owner_events(&env).last(),
+        Some(&StudyOwnerChange {
+            owner: None,
+            preempted: None
+        })
+    );
+    assert_eq!(owner_events(&env).len(), 3);
+    // Nothing to close any more: no event, no error.
+    let again = block_on(env.state.anki_mini_review_close()).unwrap();
+    assert_eq!(again.restored_deck_id, None);
+    env.state.anki_study_close(PANEL).unwrap();
+    assert_eq!(owner_events(&env).len(), 3);
+}
+
+#[test]
+fn tab_preempting_the_mini_review_keeps_its_deck() {
+    let env = Env::new();
+    let words = env.deck(fixture::DECK_WORDS);
+    let math = env.deck(fixture::DECK_MATH);
+    let farm = env.deck(fixture::DECK_ANIMAL_FARM);
+    block_on(env.state.anki_set_current_deck(words)).unwrap();
+    let opened = block_on(env.state.anki_mini_review_open(farm)).unwrap();
+    assert_eq!(opened.preempted, None);
+    assert_eq!(
+        owner_events(&env),
+        vec![StudyOwnerChange {
+            owner: PANEL,
+            preempted: None
+        }]
+    );
+    // The Anki tab starts studying another deck: the panel is preempted.
+    block_on(env.state.anki_study_next(math, TAB)).unwrap();
+    assert_eq!(
+        owner_events(&env).last(),
+        Some(&StudyOwnerChange {
+            owner: TAB,
+            preempted: PANEL
+        })
+    );
+    // The panel's close does not end the tab's session nor bring the old deck back.
+    env.state.anki_study_close(PANEL).unwrap();
+    let closed = block_on(env.state.anki_mini_review_close()).unwrap();
+    assert_eq!(closed.restored_deck_id, None);
+    assert_eq!(current_deck(&env), math);
+    assert_eq!(owner_events(&env).len(), 2);
+    let next = block_on(env.state.anki_study_next(math, None)).unwrap();
+    assert!(next.card().is_some(), "the tab still studies");
+    assert_eq!(owner_events(&env).len(), 2, "same owner: no event");
+}
+
+#[test]
+fn colpkg_replacement_tells_the_ui_nobody_studies() {
+    let env = Env::new();
+    block_on(
+        env.state
+            .anki_mini_review_open(env.deck(fixture::DECK_MATH)),
+    )
+    .unwrap();
+    let backup = block_on(env.state.anki_backup_now()).unwrap();
+    env.state.read_grants().grant(PathBuf::from(&backup.path));
+    block_on(env.state.anki_import_colpkg(&backup.path)).unwrap();
+    assert_eq!(
+        owner_events(&env).last(),
+        Some(&StudyOwnerChange {
+            owner: None,
+            preempted: None
+        })
+    );
+    // The remembered deck is gone with the session: closing restores nothing.
+    let closed = block_on(env.state.anki_mini_review_close()).unwrap();
+    assert_eq!(closed.restored_deck_id, None);
 }
 
 #[test]
@@ -261,7 +410,11 @@ fn colpkg_import_replaces_the_collection_after_a_backup() {
     assert!(env.deck_names().contains(&fixture::DECK_WORDS.to_string()));
 
     // Study something first: the session must not survive the replacement.
-    block_on(env.state.anki_study_next(env.deck(fixture::DECK_WORDS))).unwrap();
+    block_on(
+        env.state
+            .anki_study_next(env.deck(fixture::DECK_WORDS), None),
+    )
+    .unwrap();
 
     env.state.read_grants().grant(colpkg.clone());
     let backup = block_on(env.state.anki_import_colpkg(path)).unwrap();

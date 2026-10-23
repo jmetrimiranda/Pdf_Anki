@@ -601,10 +601,11 @@ impl AppState {
         .await?;
         let generation = self.sync.generation();
         let _ = self.emit_status_async().await;
+        let had_owner = handles.study.owner().is_some();
         handles.study.close();
         let result = handles.svc.sync_full(&creds, direction).await;
         // Whatever happened, the collection was closed and reopened: nothing cached survives.
-        handles.study.reset();
+        self.study_reset(&handles.study, had_owner);
         handles.bridge.reset();
         let this = Arc::clone(self);
         let outcome = blocking(move || {
