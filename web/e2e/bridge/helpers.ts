@@ -63,6 +63,12 @@ export interface Logged {
   query?: string;
   found?: boolean;
   find?: string;
+  // Bridge v3 (Phase 6): marks.
+  set?: string;
+  index?: number;
+  rect?: [number, number, number, number];
+  count?: number;
+  marks?: { page: number; rects: [number, number, number, number][]; style: string; color: string }[];
 }
 
 /**
@@ -179,6 +185,14 @@ export async function waitForMessage(
     )
     .toBe(true);
   return found!;
+}
+
+/** Asks PdfCraft for a save directly, as the autosave does. */
+export async function requestSave(page: Page, id: string) {
+  await page.evaluate((uid) => {
+    const frame = document.querySelector<HTMLIFrameElement>('iframe[title="PdfCraft"]')!;
+    frame.contentWindow!.postMessage({ type: 'pdfcraft:request-save', id: uid }, location.origin);
+  }, id);
 }
 
 export async function now(page: Page): Promise<number> {

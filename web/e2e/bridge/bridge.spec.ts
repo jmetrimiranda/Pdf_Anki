@@ -52,7 +52,7 @@ test('ready → open(id, page) → active → page → activity → request-save
   const log = await fromPdfcraft(page);
   const ready = log.filter((m) => m.type === 'pdfcraft:ready');
   expect(ready).toHaveLength(1);
-  expect(ready[0]!.bridge).toBeGreaterThanOrEqual(2);
+  expect(ready[0]!.bridge).toBeGreaterThanOrEqual(3);
 
   // The app sent the book with its id, the saved position (page 5 = index 4) and the Info key.
   const opens = (await fromHost(page)).filter((m) => m.type === 'pdfcraft:open');

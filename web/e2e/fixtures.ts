@@ -72,6 +72,18 @@ export interface LeitorMockHandle {
   syncSetLastSyncAt(ms: number | null): void;
   syncStatus(): { state: string; loggedIn: boolean; lastSyncAt: number | null } & Record<string, unknown>;
   readonly syncNotifications: string[];
+  /** The vocabulary scan mock (src/lib/core/mock/vocab.ts). */
+  readonly vocab: MockVocabHandle;
+  setVocabRoot(deckId: number | null): void;
+}
+
+/** `window.__leitorMock.vocab` (src/lib/core/mock/vocab.ts). */
+export interface MockVocabHandle {
+  readonly textReads: number;
+  readonly overrides: Record<string, 'known' | 'ignored' | 'proper'>;
+  setDataAvailable(available: boolean): void;
+  setJobDelay(ms: number | null): void;
+  setMapping(notetypeName: string, field: string): void;
 }
 
 /** `window.__leitorMock.anki` (src/lib/core/mock.ts): the mock Anki collection. */
@@ -199,14 +211,14 @@ export const syncMock = {
   },
 };
 
-// ---------------------------------------------------------------- scripted fake PdfCraft (bridge v2)
+// ---------------------------------------------------------------- scripted fake PdfCraft (bridge v3)
 
 /** Rect in page view space: [x, y, w, h] points, y down (as the bridge sends them). */
 export type FakeRect = [number, number, number, number];
 
 /**
- * A tiny HTML page speaking bridge v2 for the mocked suites (no WASM). It posts `pdfcraft:ready {bridge: 2}`; on
- * `pdfcraft:open` it posts `pdfcraft:active` (10 pages); on `pdfcraft:goto` it posts `active` + `page` and
+ * A tiny HTML page speaking bridge v3 for the mocked suites (no WASM). It posts `pdfcraft:ready {bridge: 3}`; on
+ * `pdfcraft:open` it posts `pdfcraft:active` (60 pages, like the mock Animal Farm); on `pdfcraft:goto` it posts `active` + `page` and
  * `pdfcraft:found {found: true}`; `pdfcraft:selection-now` gets its `pdfcraft:selection-sent`. Everything the app
  * sends is kept in `window.__received` (bytes summarized).
  */
@@ -217,7 +229,7 @@ body{display:flex;align-items:center;justify-content:center}</style></head>
 <body><p id="status">PdfCraft (fake)</p>
 <script>
 (function () {
-  var PAGES = 10;
+  var PAGES = 60;
   var origin = location.origin;
   var state = { active: null, page: 0 };
   window.__received = [];
@@ -267,11 +279,11 @@ body{display:flex;align-items:center;justify-content:center}</style></head>
       post({ type: 'pdfcraft:page', id: state.active, page: state.page, pageCount: PAGES });
     }
   };
-  post({ type: 'pdfcraft:ready', version: 'fake', bridge: 2 });
+  post({ type: 'pdfcraft:ready', version: 'fake', bridge: 3 });
 })();
 </script></body></html>`;
 
-/** Routes /pdfcraft/** to the scripted fake PdfCraft (bridge v2). Use instead of `stubPdfcraft`. */
+/** Routes /pdfcraft/** to the scripted fake PdfCraft (bridge v3). Use instead of `stubPdfcraft`. */
 export async function fakePdfcraft(page: Page) {
   await page.route('**/pdfcraft/**', (route) =>
     route.fulfill({ status: 200, contentType: 'text/html', body: FAKE_PDFCRAFT_HTML }),
@@ -350,3 +362,35 @@ export async function fakeTurn(page: Page, pageIndex: number) {
   const frame = await fakeFrame(page);
   await frame.evaluate((p) => (window as unknown as FakeFrameWindow).__fake.turn(p), pageIndex);
 }
+
+/** The uid of a mock library book by title. */
+export async function bookUid(page: Page, title: string): Promise<string> {
+  await mockReady(page);
+  return page.evaluate(
+    (t) => (window as unknown as MockWindow).__leitorMock.books.find((b) => b.title === t)!.bookUid,
+    title,
+  );
+}
+
+/** Drives the vocabulary mock (src/lib/core/mock/vocab.ts). */
+export const vocabMock = {
+  async setJobDelay(page: Page, ms: number | null) {
+    await mockReady(page);
+    await page.evaluate((v) => (window as unknown as MockWindow).__leitorMock.vocab.setJobDelay(v), ms);
+  },
+  async setMapping(page: Page, notetype: string, field: string) {
+    await mockReady(page);
+    await page.evaluate(
+      ([n, f]) => (window as unknown as MockWindow).__leitorMock.vocab.setMapping(n!, f!),
+      [notetype, field],
+    );
+  },
+  async setDataAvailable(page: Page, available: boolean) {
+    await mockReady(page);
+    await page.evaluate((v) => (window as unknown as MockWindow).__leitorMock.vocab.setDataAvailable(v), available);
+  },
+  async textReads(page: Page): Promise<number> {
+    await mockReady(page);
+    return page.evaluate(() => (window as unknown as MockWindow).__leitorMock.vocab.textReads);
+  },
+};

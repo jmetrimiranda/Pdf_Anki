@@ -93,7 +93,12 @@ describe('card form helpers', () => {
       Resposta: 'x = 1',
     });
     expect(prefill('codeProgram', '#include <cstdio>\nint main() { return 0; }').Linguagem).toBe('cpp');
-    expect(prefill('vocab', '“Animals,”')).toEqual({ Palavra: 'Animals', Lema: 'animals', Exemplo: 'Animals' });
+    expect(prefill('vocab', '“Animals,”')).toEqual({
+      Palavra: 'Animals',
+      Lema: 'animals',
+      Exemplo: 'Animals',
+      Família: '',
+    });
   });
 
   it('maps the values on the notetype fields by name (never by index)', () => {
@@ -132,6 +137,8 @@ describe('card form helpers', () => {
       lastDeckId: 9,
       lastKind: null,
       reviewDeckId: null,
+      vocab: null,
+      chapterDeck: null,
     };
     expect(defaultDeck('basic', base, 1)).toBe(9);
     expect(defaultDeck('basic', { ...base, lastDeckId: null }, 1)).toBe(8);
@@ -307,6 +314,10 @@ describe('CardForm', () => {
       ),
     );
     expect((within(form).getByRole('textbox', { name: 'Lema' }) as HTMLInputElement).value).toBe('farm');
+    // Família (spec 12.6): empty and editable, so the form matches the 10-field type.
+    const familia = within(form).getByRole('textbox', { name: 'Família' }) as HTMLInputElement;
+    expect(familia.value).toBe('');
+    fireEvent.change(familia, { target: { value: 'farmer' } });
     // The vocabulary deck (Livros::Animal Farm while no vocabulary folder is chosen) is the default.
     const deck = await deckId('Livros::Animal Farm');
     await waitFor(() =>
@@ -320,6 +331,8 @@ describe('CardForm', () => {
     const at = (name: string) => fields[vocab.fields.findIndex((f) => f.name === name)];
     expect(at('Palavra')).toBe('farm');
     expect(at('Lema')).toBe('farm');
+    expect(vocab.fields.map((f) => f.name)).toContain('Família');
+    expect(at('Família')).toBe('farmer');
     expect(at('Exemplo')).toBe(
       'As soon as the light in the bedroom went out there was a stirring and a fluttering all through the <b>farm</b> buildings.',
     );

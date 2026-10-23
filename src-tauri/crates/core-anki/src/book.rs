@@ -81,7 +81,7 @@ fn find_node(node: &DeckTreeNode, deck_id: i64) -> Option<&DeckTreeNode> {
     node.children.iter().find_map(|c| find_node(c, deck_id))
 }
 
-fn validate_uid(book_uid: &str) -> Result<()> {
+pub(crate) fn validate_uid(book_uid: &str) -> Result<()> {
     if book_uid.len() == 64
         && book_uid
             .bytes()

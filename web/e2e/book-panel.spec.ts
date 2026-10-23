@@ -168,3 +168,74 @@ test('captures: dark theme and a 390 px window', async ({ page }, info) => {
   await expect(form(page)).toHaveCount(0);
   await expect(panel(page)).toHaveAttribute('data-open', 'true');
 });
+
+test('vocabulary: "Vocabulário 94% →" opens the report, and the current chapter subdeck shows with "Revisar aqui"', async ({
+  page,
+}) => {
+  const uid = await openAnimalFarm(page);
+  const section = panel(page).getByTestId('book-panel-vocab');
+  // Not scanned yet: the way to the wizard, and the highlight off.
+  await expect(section.getByRole('button', { name: 'Escanear vocabulário' })).toBeVisible();
+  await expect(section.getByRole('switch', { name: 'Realçar vocabulário' })).toBeDisabled();
+
+  // Scan the whole book with the folder "Vocabulário" and generate one subdeck per chapter (through the mock core).
+  const result = await page.evaluate(async (id) => {
+    type Core = {
+      ankiDeckNames(): Promise<{ id: number; name: string }[]>;
+      vocabSettingsSet(p: { rootDeckId: number }): Promise<{ config: unknown }>;
+      vocabScanStart(u: string, r: number, x: number[], g: { kind: 'all' }, c: unknown): Promise<{ jobId: string }>;
+      onJobProgress(j: string, cb: (p: { stage: string }) => void): () => void;
+      vocabReport(u: string): Promise<{
+        scanUid: string;
+        metrics: { coverageKnown: number };
+        rows: { lemma: string; chapter: number | null; defaultSelected: boolean; group: string }[];
+      }>;
+      vocabGenerateDeck(
+        u: string,
+        s: string,
+        l: string[],
+        o: { order: 'reading'; perChapter: boolean; card2: boolean; enrich: 'wordnet' },
+      ): Promise<{ decks: string[] }>;
+    };
+    const core = (window as unknown as { __leitor: { core: Core } }).__leitor.core;
+    const root = (await core.ankiDeckNames()).find((d) => d.name === 'Vocabulário')!.id;
+    const settings = await core.vocabSettingsSet({ rootDeckId: root });
+    const job = await core.vocabScanStart(id, root, [], { kind: 'all' }, settings.config);
+    await new Promise<void>((resolve) => {
+      const off = core.onJobProgress(job.jobId, (p) => {
+        if (p.stage === 'done') {
+          off();
+          resolve();
+        }
+      });
+    });
+    const report = await core.vocabReport(id);
+    const lemmas = report.rows.filter((r) => r.group === 'main' && r.defaultSelected).map((r) => r.lemma);
+    const made = await core.vocabGenerateDeck(id, report.scanUid, lemmas, {
+      order: 'reading',
+      perChapter: true,
+      card2: false,
+      enrich: 'wordnet',
+    });
+    return { coverage: report.metrics.coverageKnown, decks: made.decks };
+  }, uid);
+  const pct = `${Math.floor(result.coverage * 100 + 1e-9)}%`;
+  const chapter1 = result.decks.filter((d) => /::Cap 0?1$/.test(d)).sort((a, b) => a.length - b.length)[0]!;
+  expect(chapter1).toBeTruthy();
+
+  // Back from another tab (as after the wizard): the panel asks again.
+  const nav = page.getByRole('navigation', { name: 'Abas' });
+  await nav.getByRole('link', { name: 'Biblioteca' }).click();
+  await nav.getByRole('link', { name: 'Leitor' }).click();
+  await fakeFrame(page);
+  const link = section.getByRole('button', { name: `Abrir o relatório de vocabulário (cobertura ${pct})` });
+  await expect(link).toHaveText(`Vocabulário ${pct} →`);
+  await expect(section.getByRole('switch', { name: 'Realçar vocabulário' })).toBeEnabled();
+  const row = panel(page).getByTestId('book-deck-chapter');
+  await expect(row).toContainText('Capítulo atual');
+  await expect(row).toContainText(chapter1);
+  await expect(row.getByRole('button', { name: `Revisar aqui: ${chapter1}` })).toBeEnabled();
+
+  await link.click();
+  await expect(page).toHaveURL(new RegExp(`/vocabulario\\?livro=${uid}`));
+});

@@ -90,6 +90,24 @@
     "allow-code-settings-set",
     "allow-code-runner-test",
     "allow-code-import-markdown",
-    "allow-code-import-commit"
+    "allow-code-import-commit",
+    "allow-vocab-settings-get",
+    "allow-vocab-settings-set",
+    "allow-vocab-folder",
+    "allow-vocab-mapping-samples",
+    "allow-vocab-mapping-get",
+    "allow-vocab-mapping-set",
+    "allow-vocab-outline",
+    "allow-vocab-range-check",
+    "allow-vocab-scan-start",
+    "allow-vocab-rescan",
+    "allow-vocab-report",
+    "allow-vocab-override-set",
+    "allow-vocab-generate-deck",
+    "allow-vocab-marks",
+    "allow-vocab-add-word",
+    "allow-vocab-data-info",
+    "allow-job-status",
+    "allow-job-cancel"
   ]
 }

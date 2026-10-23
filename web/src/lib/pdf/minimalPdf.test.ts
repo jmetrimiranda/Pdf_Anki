@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { layoutPageText, makePdf, pdfBytesToLatin1 } from './minimalPdf';
+import { layoutPageText, makePdf, pdfBytesToLatin1, readMinimalPdf } from './minimalPdf';
 
 function parse(bytes: Uint8Array) {
   const s = pdfBytesToLatin1(bytes);
@@ -75,5 +75,37 @@ describe('makePdf', () => {
     const lines = layoutPageText('one\ntwo');
     expect(lines.map((l) => l.text)).toEqual(['one', 'two']);
     expect(lines[1]!.baseline).toBeGreaterThan(lines[0]!.baseline);
+  });
+});
+
+describe('readMinimalPdf', () => {
+  it('reads back the page lines and a nested outline', () => {
+    const bytes = makePdf({
+      pages: 4,
+      textPerPage: (i) => `Page ${i + 1}\nThe (quick) fox`,
+      outlineItems: [
+        { title: 'Cap 1', page: 0, children: [{ title: 'Parte A', page: 1 }] },
+        { title: 'Notas' },
+        { title: 'Capítulo 2', page: 2 },
+      ],
+    });
+    const read = readMinimalPdf(bytes)!;
+    expect(read.pages).toHaveLength(4);
+    expect(read.pages[1]).toEqual(['Page 2', 'The (quick) fox']);
+    expect(read.outline).toEqual([
+      { title: 'Cap 1', page: 0, children: [{ title: 'Parte A', page: 1 }] },
+      { title: 'Notas', page: null },
+      { title: 'Capítulo 2', page: 2 },
+    ]);
+  });
+
+  it('keeps the default flat outline and refuses other files', () => {
+    const read = readMinimalPdf(makePdf({ pages: 3, outline: true }))!;
+    expect(read.outline.map((o) => [o.title, o.page])).toEqual([
+      ['Chapter 1', 0],
+      ['Chapter 2', 1],
+      ['Chapter 3', 2],
+    ]);
+    expect(readMinimalPdf(new TextEncoder().encode('not a pdf'))).toBeNull();
   });
 });

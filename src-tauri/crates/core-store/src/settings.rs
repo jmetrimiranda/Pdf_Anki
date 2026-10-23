@@ -4,6 +4,7 @@
 
 use rusqlite::{OptionalExtension, params};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::{Result, Store, StoreError};
@@ -15,6 +16,10 @@ pub mod keys {
     pub const VOCAB_COUNT_YOUNG: &str = "vocab_count_young";
     pub const VOCAB_SUSPENDED_POLICY: &str = "vocab_suspended_policy";
     pub const VOCAB_FUNCTION_WORDS_KNOWN: &str = "vocab_function_words_known";
+    /// Derivatives of known words (spec 12.3 I): `card` (default, they become cards) or `known`.
+    pub const VOCAB_DERIVED_POLICY: &str = "vocab_derived_policy";
+    /// Subdecks of the vocabulary folder left out of the scan (JSON array of deck ids).
+    pub const VOCAB_EXCLUDED_DECK_IDS: &str = "vocab_excluded_deck_ids";
     pub const ANKI_SYNC_URL: &str = "anki_sync_url";
     pub const ANKI_SYNC_USER: &str = "anki_sync_user";
     /// Extra root certificate (PEM, public data) trusted for the sync server, e.g. a dev CA.
@@ -45,10 +50,17 @@ pub mod keys {
 #[derive(Clone, Copy)]
 enum Kind {
     Bool,
-    Int { min: i64, max: i64 },
-    Number { min: f64 },
+    Int {
+        min: i64,
+        max: i64,
+    },
+    Number {
+        min: f64,
+    },
     Text,
     Choice(&'static [&'static str]),
+    /// JSON array of integers.
+    IntList,
 }
 
 struct Spec {
@@ -101,6 +113,15 @@ const SPECS: &[Spec] = &[
     ),
     spec(VOCAB_FUNCTION_WORDS_KNOWN, Kind::Bool, false, || {
         true.into()
+    }),
+    spec(
+        VOCAB_DERIVED_POLICY,
+        Kind::Choice(&["card", "known"]),
+        false,
+        || "card".into(),
+    ),
+    spec(VOCAB_EXCLUDED_DECK_IDS, Kind::IntList, false, || {
+        Value::Array(Vec::new())
     }),
     spec(ANKI_SYNC_URL, Kind::Text, true, null),
     spec(ANKI_SYNC_USER, Kind::Text, true, null),
@@ -189,6 +210,10 @@ fn validate(spec: &Spec, value: &Value) -> Result<()> {
             Some(s) if options.contains(&s) => Ok(()),
             _ => Err(invalid(format!("valores aceitos: {}.", options.join(", ")))),
         },
+        Kind::IntList => match value.as_array() {
+            Some(items) if items.iter().all(|v| v.as_i64().is_some()) => Ok(()),
+            _ => Err(invalid("esperada uma lista de números inteiros.".into())),
+        },
     }
 }
 
@@ -245,4 +270,105 @@ impl Store {
             .map(|s| Ok((s.key.to_owned(), self.setting(s.key)?)))
             .collect()
     }
+}
+
+/// What to do with suspended notes of the vocabulary folder (spec 12.1 step 4).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum VocabSuspendedPolicy {
+    /// Suspended notes don't count (default).
+    #[default]
+    Ignore,
+    /// Suspended notes count as known.
+    Known,
+}
+
+/// Derivatives of known words (spec 12.3 I).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum VocabDerivedPolicy {
+    /// They become cards, with the family shown (default).
+    #[default]
+    Card,
+    /// They count as known.
+    Known,
+}
+
+/// The vocabulary settings (spec 12.1), with their defaults.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabSettings {
+    pub root_deck_id: Option<i64>,
+    /// "Known" = mature: interval of at least this many days (default 21).
+    pub known_ivl_days: u32,
+    /// Count young cards as known (default off).
+    pub count_young: bool,
+    pub suspended_policy: VocabSuspendedPolicy,
+    /// Function words ("the", "of") count as known (default on).
+    pub function_words_known: bool,
+    pub derived_policy: VocabDerivedPolicy,
+    pub excluded_deck_ids: Vec<i64>,
+}
+
+impl Default for VocabSettings {
+    fn default() -> Self {
+        Self {
+            root_deck_id: None,
+            known_ivl_days: 21,
+            count_young: false,
+            suspended_policy: VocabSuspendedPolicy::Ignore,
+            function_words_known: true,
+            derived_policy: VocabDerivedPolicy::Card,
+            excluded_deck_ids: Vec::new(),
+        }
+    }
+}
+
+impl Store {
+    /// The vocabulary settings (stored values or defaults).
+    pub fn vocab_settings(&self) -> Result<VocabSettings> {
+        let ivl: i64 = self.setting_as(VOCAB_KNOWN_IVL_DAYS)?;
+        Ok(VocabSettings {
+            root_deck_id: self.setting_as(VOCAB_ROOT_DECK_ID)?,
+            known_ivl_days: u32::try_from(ivl).unwrap_or(u32::MAX),
+            count_young: self.setting_as(VOCAB_COUNT_YOUNG)?,
+            suspended_policy: self.setting_as(VOCAB_SUSPENDED_POLICY)?,
+            function_words_known: self.setting_as(VOCAB_FUNCTION_WORDS_KNOWN)?,
+            derived_policy: self.setting_as(VOCAB_DERIVED_POLICY)?,
+            excluded_deck_ids: self.setting_as(VOCAB_EXCLUDED_DECK_IDS)?,
+        })
+    }
+
+    /// Validates and stores every vocabulary setting (all or nothing).
+    pub fn set_vocab_settings(&mut self, v: &VocabSettings) -> Result<()> {
+        let entries: [(&str, Value); 7] = [
+            (VOCAB_ROOT_DECK_ID, to_json(&v.root_deck_id)?),
+            (VOCAB_KNOWN_IVL_DAYS, Value::from(v.known_ivl_days)),
+            (VOCAB_COUNT_YOUNG, Value::from(v.count_young)),
+            (VOCAB_SUSPENDED_POLICY, to_json(&v.suspended_policy)?),
+            (
+                VOCAB_FUNCTION_WORDS_KNOWN,
+                Value::from(v.function_words_known),
+            ),
+            (VOCAB_DERIVED_POLICY, to_json(&v.derived_policy)?),
+            (VOCAB_EXCLUDED_DECK_IDS, to_json(&v.excluded_deck_ids)?),
+        ];
+        for (key, value) in &entries {
+            validate(find_spec(key)?, value)?;
+        }
+        let tx = self.conn.transaction()?;
+        for (key, value) in entries {
+            tx.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                params![key, value.to_string()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+fn to_json<T: Serialize>(value: &T) -> Result<Value> {
+    serde_json::to_value(value).map_err(|e| StoreError::InvalidInput(e.to_string()))
 }

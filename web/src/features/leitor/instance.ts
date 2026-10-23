@@ -2,7 +2,13 @@
 import { useCallback, useRef, useSyncExternalStore } from 'react';
 import { core, type CoreClient } from '../../lib/core/client';
 import type { FlushReason } from './autosave';
-import { LeitorController, type LeitorCore, type LeitorSnapshot, type PanelRequest } from './controller';
+import {
+  LeitorController,
+  type LeitorCore,
+  type LeitorSnapshot,
+  type MarkClick,
+  type PanelRequest,
+} from './controller';
 import type { LeitorTiming } from './timings';
 
 function exactBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -43,11 +49,25 @@ export function leitorCore(c: CoreClient): LeitorCore {
     sessionStart: (uid, page) => inOrder(() => c.readingSessionStart(uid, page)),
     sessionHeartbeat: (uid, page) => inOrder(() => c.readingSessionHeartbeat(uid, page)),
     sessionStop: (uid, reason) => inOrder(() => c.readingSessionStop(uid, reason)),
+    vocabMarks: async (uid, pages) => {
+      try {
+        return await c.vocabMarks(uid, pages);
+      } catch (e) {
+        // Never scanned (or the scan is gone): no marks, not a failure.
+        if (isNotScanned(e)) return null;
+        throw e;
+      }
+    },
     log: (level, message) => {
       if (import.meta.env.DEV && level !== 'info') console.warn(message);
       void c.devLog(level, message).catch(() => {});
     },
   };
+}
+
+/** `vocab_marks` for a book without a scan (`vocab_not_scanned`). */
+export function isNotScanned(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && 'code' in e && typeof e.code === 'string' && /not_scanned/.test(e.code);
 }
 
 const controller = new LeitorController({ core: leitorCore(core) });
@@ -71,7 +91,23 @@ export const leitor = {
   onPanelRequest: (cb: (r: PanelRequest) => void): (() => void) => controller.onPanelRequest(cb),
   /** The panel's mini-review opened/closed: the reading session pauses while it is open (spec 6.4). */
   setReviewing: (on: boolean): void => controller.setReviewing(on),
+  /** The reading popover's listener for clicks on highlighted words; returns the unsubscribe function. */
+  onMarkClick: (cb: (c: MarkClick) => void): (() => void) => controller.onMarkClick(cb),
+  /** "Realçar vocabulário" for `uid` (remembered per book). */
+  setHighlight: (uid: string, on: boolean): void => controller.setHighlight(uid, on),
+  /** The vocabulary of `uid` (every book when absent) changed in the core: the visible marks are sent again. */
+  refreshVocab: (uid?: string): void => controller.refreshVocab(uid),
 };
+
+/** Whether "Realçar vocabulário" is on for `uid`, and whether the book is known to be not scanned. */
+export function useVocabHighlight(uid: string | null): { on: boolean; notScanned: boolean } {
+  const vocab = controller.vocab;
+  const snap = useSyncExternalStore(vocab.subscribe, vocab.snapshot, vocab.snapshot);
+  return {
+    on: uid !== null && snap.on.includes(uid),
+    notScanned: uid !== null && snap.notScanned.includes(uid),
+  };
+}
 
 export function useLeitorState(): LeitorSnapshot {
   return useSyncExternalStore(controller.subscribe, controller.snapshot, controller.snapshot);
@@ -98,8 +134,15 @@ export function useLeitorSelector<T>(select: (s: LeitorSnapshot) => T, equal: (a
 
 declare global {
   interface Window {
-    /** Mock mode only: lets Playwright drive the Leitor (flushSaves, state). */
-    __leitor?: typeof leitor & { state: () => LeitorSnapshot };
+    /**
+     * Mock mode only: lets Playwright drive the Leitor (flushSaves, state, the vocabulary highlight) and reach the mock
+     * core (`core`: e.g. start a vocabulary scan without the wizard, read the page words).
+     */
+    __leitor?: typeof leitor & {
+      state: () => LeitorSnapshot;
+      vocab: () => { on: readonly string[]; notScanned: readonly string[] };
+      core: CoreClient;
+    };
     /** Every mode: how long the Leitor tab took to show up (read-only copy; e2e specs and the real-app probe). */
     readonly __leitorTimings?: LeitorTiming[];
   }
@@ -110,5 +153,5 @@ if (typeof window !== 'undefined') {
 }
 
 if (core.kind === 'mock' && typeof window !== 'undefined') {
-  window.__leitor = { ...leitor, state: controller.snapshot };
+  window.__leitor = { ...leitor, state: controller.snapshot, vocab: controller.vocab.snapshot, core };
 }

@@ -160,6 +160,9 @@ pub struct LibraryEntry {
     #[serde(flatten)]
     pub book: Book,
     pub position: Option<ReadingPosition>,
+    /// The book has a finished vocabulary scan (the library menu offers "Relatório de vocabulário").
+    #[serde(default)]
+    pub vocab_scanned: bool,
 }
 
 /// The result of [`Store::record_file_version`].
@@ -364,7 +367,8 @@ impl Store {
     /// first (the later of the position's `updated_at` and the book's `added_at`).
     pub fn list_library(&self) -> Result<Vec<LibraryEntry>> {
         let mut stmt = self.conn.prepare(&format!(
-            r#"SELECT {BOOK_COLUMNS}, p.page, p."offset", p.cfi, p.progress, p.updated_at
+            r#"SELECT {BOOK_COLUMNS}, p.page, p."offset", p.cfi, p.progress, p.updated_at,
+                      EXISTS (SELECT 1 FROM vocab_scan v WHERE v.book_uid = b.book_uid AND v.status = 'done')
                FROM book b
                LEFT JOIN book_file f USING (book_uid)
                LEFT JOIN reading_position p ON p.book_uid = b.book_uid AND p.deleted = 0
@@ -385,7 +389,11 @@ impl Store {
                         updated_at: r.get(n + 4)?,
                     }),
                 };
-                Ok(LibraryEntry { book, position })
+                Ok(LibraryEntry {
+                    book,
+                    position,
+                    vocab_scanned: r.get(n + 5)?,
+                })
             })?
             .collect::<rusqlite::Result<_>>()?;
         Ok(entries)

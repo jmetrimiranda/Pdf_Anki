@@ -2,7 +2,8 @@
 //! is owned by `core-anki`; this crate keeps everything else: library and file versions, reading
 //! positions and sessions ([`ReadingTracker`], spec 6.4), EPUB annotations (PDF annotations live
 //! inside the PDF, spec 6.5), per-book preferences of this device, settings, code-card mappings and
-//! extras (spec 11.1), vocabulary caches, AI usage and the outbox.
+//! extras (spec 11.1), the vocabulary scans, lemma tables, overrides and mappings (spec 12), AI usage and the
+//! outbox.
 //!
 //! Conventions:
 //! - **Timestamps** (`added_at`, `updated_at`, `started_at`, …) are `INTEGER` Unix epoch
@@ -23,6 +24,7 @@ mod prefs;
 mod schema;
 mod sessions;
 mod settings;
+mod vocab;
 
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -45,6 +47,11 @@ pub use sessions::{
     RecoveryReport, StopReason, SystemClock,
 };
 pub use settings::keys as setting_keys;
+pub use settings::{VocabDerivedPolicy, VocabSettings, VocabSuspendedPolicy};
+pub use vocab::{
+    BookLemmaPageRow, BookLemmaRow, NewVocabScan, VOCAB_RANGE_ALL, VocabMappingRow,
+    VocabOverrideStatus, VocabScanMetrics, VocabScanRow, VocabScanStatus, VocabTableState,
+};
 
 /// Handle to the app database.
 pub struct Store {

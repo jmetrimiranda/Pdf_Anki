@@ -25,6 +25,8 @@ pub enum PdfError {
     Render(String),
     #[error("Erro interno no leitor de PDF.")]
     Internal(String),
+    #[error("A leitura do texto do livro foi cancelada.")]
+    Cancelled,
 }
 
 impl PdfError {
@@ -41,6 +43,7 @@ impl PdfError {
             Self::Text(_) => "pdf_text",
             Self::Render(_) => "pdf_render",
             Self::Internal(_) => "internal",
+            Self::Cancelled => "cancelled",
         }
     }
 
@@ -52,6 +55,7 @@ impl PdfError {
             Self::NeedsPassword | Self::WrongPassword => 403,
             Self::Invalid(_) | Self::Unsupported(_) => 422,
             Self::Timeout => 504,
+            Self::Cancelled => 499,
             Self::Text(_) | Self::Render(_) | Self::Internal(_) => 500,
         }
     }

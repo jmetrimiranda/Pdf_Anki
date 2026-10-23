@@ -80,6 +80,7 @@ async fn lists_the_app_notetypes_with_their_exact_fields() -> anyhow::Result<()>
                 "Exemplo",
                 "Fonte",
                 "Frequência",
+                "Família",
                 "Card 2",
             ],
             NotetypeKindName::Normal,

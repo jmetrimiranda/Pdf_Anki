@@ -22,9 +22,6 @@ export const bookPanelMessages = {
   'bookPanel.reviewNothing': 'Nada para revisar agora',
 
   'bookPanel.vocab': 'Vocabulário',
-  'bookPanel.vocabNotScanned': 'Ainda não escaneado.',
-  'bookPanel.vocabReport': 'Ver relatório →',
-  'bookPanel.vocabSoon': 'O escaneamento de vocabulário chega numa próxima versão.',
 
   'bookPanel.pageCards': 'Cards desta página (p. {n})',
   'bookPanel.pageCardsEmpty': 'Nenhum card desta página ainda.',
@@ -66,8 +63,9 @@ export const bookPanelMessages = {
   'bookPanel.define.oneWord': 'Selecione uma só palavra.',
   'bookPanel.define.openAnki': 'Abrir no Anki',
   'bookPanel.define.loadError': 'Não foi possível buscar a palavra.',
-  'bookPanel.define.footer':
-    'Definições do WordNet chegam com o escaneamento de vocabulário, e as da IA, com a IA (próximas versões).',
+  'bookPanel.define.wordnet': 'WordNet',
+  'bookPanel.define.noDefinition': 'Sem definição no WordNet para esta palavra.',
+  'bookPanel.define.footer': 'Definição com IA chega numa próxima versão.',
 
   'settings.ai.title': 'IA',
   'settings.ai.provider': 'Provedor de IA: em breve…',

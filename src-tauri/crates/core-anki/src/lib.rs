@@ -25,6 +25,7 @@ mod service;
 pub mod study;
 pub mod sync;
 pub mod types;
+pub mod vocab;
 
 pub use anki;
 pub use anki::collection::Collection;

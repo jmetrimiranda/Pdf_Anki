@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { ExternalLink, Settings } from 'lucide-react';
 import { Popover as P } from 'radix-ui';
+import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Button, Dialog, popoverSurface, SkeletonLines } from '../../components/ui';
 import { usePortalContainer } from '../../components/ui/portal';
@@ -53,23 +54,38 @@ export interface DefineRequest {
   anchor: ViewportAnchor;
 }
 
-export function DefinePopover({ request, onClose }: { request: DefineRequest | null; onClose: () => void }) {
+/**
+ * A popover pointing at a viewport rectangle (a word in PdfCraft, a menu item): an invisible fixed box sits where
+ * the anchor is and Radix positions the popover against it (flipped and clamped inside the window). Esc and a click
+ * outside close it; the focus moves into it and, on close, back to `returnFocus` (e.g. the PdfCraft iframe).
+ */
+export function AnchoredPopover({
+  anchor,
+  onClose,
+  label,
+  testId,
+  returnFocus,
+  children,
+}: {
+  /** Null: closed. */
+  anchor: ViewportAnchor | null;
+  onClose: () => void;
+  label: string;
+  testId: string;
+  returnFocus?: () => HTMLElement | null;
+  children: ReactNode;
+}) {
   const container = usePortalContainer();
-  const a = request?.anchor;
+  const a = anchor ? clampAnchor(anchor, viewportSize()) : null;
   return (
-    <P.Root open={request !== null} onOpenChange={(o) => !o && onClose()}>
-      {/* An invisible fixed box where the menu item was: Radix positions (flips, clamps) the popover against it. */}
+    <P.Root open={anchor !== null} onOpenChange={(o) => !o && onClose()}>
       {createPortal(
         <P.Anchor asChild>
           <div
             aria-hidden
-            data-testid="define-anchor"
+            data-testid={testId}
             className="pointer-events-none invisible fixed"
-            style={
-              a
-                ? { left: a.x, top: a.y, width: Math.max(1, a.width), height: Math.max(1, a.height) }
-                : { left: 0, top: 0 }
-            }
+            style={a ? { left: a.x, top: a.y, width: a.width, height: a.height } : { left: 0, top: 0 }}
           />
         </P.Anchor>,
         container ?? document.body,
@@ -80,13 +96,58 @@ export function DefinePopover({ request, onClose }: { request: DefineRequest | n
           align="start"
           sideOffset={6}
           collisionPadding={8}
-          aria-label={t('bookPanel.define.title')}
+          aria-label={label}
           className={cn(popoverSurface, 'w-72 max-w-[calc(100vw-16px)] p-3')}
+          onCloseAutoFocus={(e) => {
+            const el = returnFocus?.();
+            if (!el) return;
+            e.preventDefault();
+            el.focus({ preventScroll: true });
+          }}
         >
-          {request && <DefineBody text={request.text} bookUid={request.bookUid} onClose={onClose} />}
+          {children}
         </P.Content>
       </P.Portal>
     </P.Root>
+  );
+}
+
+function viewportSize(): { width: number; height: number } {
+  return typeof window === 'undefined'
+    ? { width: 0, height: 0 }
+    : { width: window.innerWidth, height: window.innerHeight };
+}
+
+/**
+ * The anchor kept inside the window (at least 1 px, never past an edge), so the popover never points at something
+ * off screen (a word half scrolled out of PdfCraft). A zero-sized window keeps the anchor as is.
+ */
+export function clampAnchor(a: ViewportAnchor, view: { width: number; height: number }): ViewportAnchor {
+  const finite = (v: number) => (Number.isFinite(v) ? v : 0);
+  let { x, y } = { x: finite(a.x), y: finite(a.y) };
+  let width = Math.max(1, finite(a.width));
+  let height = Math.max(1, finite(a.height));
+  if (view.width > 0 && view.height > 0) {
+    const x1 = Math.min(view.width, Math.max(1, x + width));
+    const y1 = Math.min(view.height, Math.max(1, y + height));
+    x = Math.min(Math.max(0, x), view.width - 1);
+    y = Math.min(Math.max(0, y), view.height - 1);
+    width = Math.max(1, x1 - x);
+    height = Math.max(1, y1 - y);
+  }
+  return { x, y, width, height };
+}
+
+export function DefinePopover({ request, onClose }: { request: DefineRequest | null; onClose: () => void }) {
+  return (
+    <AnchoredPopover
+      anchor={request?.anchor ?? null}
+      onClose={onClose}
+      label={t('bookPanel.define.title')}
+      testId="define-anchor"
+    >
+      {request && <DefineBody text={request.text} bookUid={request.bookUid} onClose={onClose} />}
+    </AnchoredPopover>
   );
 }
 
@@ -133,9 +194,19 @@ function DefineBody({ text, bookUid, onClose }: { text: string; bookUid: string 
           </Button>
         </div>
       ) : (
-        <p className="text-base text-muted">
-          {d.vocabRootDeckId === null ? t('bookPanel.define.noRoot') : t('bookPanel.define.noNote')}
-        </p>
+        <>
+          {d.wordnetDefinition ? (
+            <div className="flex flex-col gap-0.5 rounded-ctl bg-surface px-2.5 py-2">
+              <p className="text-base break-words">{d.wordnetDefinition}</p>
+              <p className="text-xs text-muted">{t('bookPanel.define.wordnet')}</p>
+            </div>
+          ) : (
+            <p className="text-base text-muted">{t('bookPanel.define.noDefinition')}</p>
+          )}
+          <p className="text-xs text-muted">
+            {d.vocabRootDeckId === null ? t('bookPanel.define.noRoot') : t('bookPanel.define.noNote')}
+          </p>
+        </>
       )}
       <p className="border-t border-line pt-2 text-2xs text-muted">{t('bookPanel.define.footer')}</p>
     </div>

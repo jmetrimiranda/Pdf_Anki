@@ -28,7 +28,7 @@ function setup(over: Partial<LeitorCore> = {}) {
   c.mount();
   c.setFrameWindow(frame.win as unknown as Window);
   const send = (data: Record<string, unknown>) => deliver(data, frame.win);
-  const ready = () => send({ type: 'pdfcraft:ready', version: '0.9', bridge: 2 });
+  const ready = () => send({ type: 'pdfcraft:ready', version: '0.9', bridge: 3 });
   const lastPosted = () => frame.posted.at(-1)?.msg;
   return { c, core, ui, send, ready, frame, lastPosted, store };
 }
@@ -66,6 +66,10 @@ describe('LeitorController startup', () => {
     v1.send({ type: 'pdfcraft:ready', version: '0.9', bridge: 1 });
     expect(v1.c.snapshot()).toMatchObject({ status: 'failed', startError: 'old-bridge' });
     expect(v1.frame.posted).toEqual([]);
+    // The Phase 4 bridge has no marks (spec 12.7).
+    const v2 = setup();
+    v2.send({ type: 'pdfcraft:ready', version: '0.9', bridge: 2 });
+    expect(v2.c.snapshot()).toMatchObject({ status: 'failed', startError: 'old-bridge' });
   });
 
   it("keeps PdfCraft's startup error text", () => {
@@ -719,5 +723,129 @@ describe('LeitorController · bridge v2 (selection, menu, goto)', () => {
     expect(core.calls.at(-1)).toBe(`stop(${UID_A},review)`);
     c.setReviewing(false);
     expect(core.calls.at(-1)).toBe(`start(${UID_A},4)`);
+  });
+});
+
+describe('LeitorController · vocabulary marks (bridge 3)', () => {
+  const marks = (page: number) => [
+    {
+      lemma: 'windmill',
+      form: 'windmill',
+      status: 'unknown' as const,
+      rects: [[20, 30 + page, 50, 14]] as [number, number, number, number][],
+    },
+    {
+      lemma: 'animal',
+      form: 'animals',
+      status: 'learning' as const,
+      rects: [[90, 30, 40, 14]] as [number, number, number, number][],
+    },
+  ];
+
+  async function opened(over: Partial<LeitorCore> = {}) {
+    const s = setup({
+      vocabMarks: vi.fn(async (_uid: string, pages: number[]) => pages.map((page) => ({ page, marks: marks(page) }))),
+      ...over,
+    });
+    s.ready();
+    const p = s.c.openBook(UID_A);
+    await flush();
+    s.send({ type: 'pdfcraft:active', id: UID_A, page: 4, pageCount: 12 });
+    await p;
+    return s;
+  }
+
+  const marksSent = (posted: { msg: Record<string, unknown> }[]) =>
+    posted.filter((p) => p.msg.type === 'pdfcraft:marks').map((p) => p.msg);
+
+  it('sends the marks of the page in front and its neighbours once the highlight is on, and follows the pages', async () => {
+    const { c, core, frame, send } = await opened();
+    expect(core.vocabMarks).not.toHaveBeenCalled();
+    c.setHighlight(UID_A, true);
+    await flush();
+    expect(core.vocabMarks).toHaveBeenCalledWith(UID_A, [3, 4, 5, 6]);
+    const [first] = marksSent(frame.posted);
+    expect(first).toMatchObject({ type: 'pdfcraft:marks', id: UID_A, set: 'vocab' });
+    expect((first!.marks as { page: number; color: string; style: string }[]).map((m) => [m.page, m.color])).toEqual([
+      [3, '#d85a30'],
+      [3, '#ba7517'],
+      [4, '#d85a30'],
+      [4, '#ba7517'],
+      [5, '#d85a30'],
+      [5, '#ba7517'],
+      [6, '#d85a30'],
+      [6, '#ba7517'],
+    ]);
+    send({ type: 'pdfcraft:page', id: UID_A, page: 5 });
+    await flush();
+    expect(core.vocabMarks).toHaveBeenLastCalledWith(UID_A, [7]);
+    expect(marksSent(frame.posted)).toHaveLength(2);
+  });
+
+  it('turns a mark-click into the popover request at the word on screen', async () => {
+    const { c, send } = await opened();
+    c.setFrameElement({ getBoundingClientRect: () => ({ left: 40, top: 56 }) });
+    c.setHighlight(UID_A, true);
+    await flush();
+    const clicks: unknown[] = [];
+    const off = c.onMarkClick((k) => clicks.push(k));
+    send({ type: 'pdfcraft:mark-click', id: UID_A, set: 'vocab', index: 1, page: 4, rect: [100, 200, 30, 16] });
+    expect(clicks).toEqual([
+      {
+        id: UID_A,
+        page: 4,
+        index: 1,
+        mark: marks(4)[1],
+        anchor: { x: 140, y: 256, width: 30, height: 16 },
+      },
+    ]);
+    // An index past the page's marks, another set or a page never sent: dropped by the bridge.
+    send({ type: 'pdfcraft:mark-click', id: UID_A, set: 'vocab', index: 2, page: 4, rect: [1, 1, 1, 1] });
+    send({ type: 'pdfcraft:mark-click', id: UID_A, set: 'vocab', index: 0, page: 11, rect: [1, 1, 1, 1] });
+    off();
+    send({ type: 'pdfcraft:mark-click', id: UID_A, set: 'vocab', index: 0, page: 4, rect: [1, 1, 1, 1] });
+    expect(clicks).toHaveLength(1);
+  });
+
+  it('clears the marks when turned off; marks never make the book dirty', async () => {
+    const { c, frame } = await opened();
+    c.setHighlight(UID_A, true);
+    await flush();
+    c.setHighlight(UID_A, false);
+    expect(frame.posted.at(-1)!.msg).toEqual({ type: 'pdfcraft:clear-marks', id: UID_A, set: 'vocab' });
+    expect(c.snapshot().unsavedIds).toEqual([]);
+    expect(frame.posted.some((p) => p.msg.type === 'pdfcraft:request-save')).toBe(false);
+  });
+
+  it('asks again after a refresh and after a new version is stored', async () => {
+    const { c, core, send } = await opened();
+    c.setHighlight(UID_A, true);
+    await flush();
+    vi.mocked(core.vocabMarks).mockClear();
+    c.refreshVocab(UID_A);
+    await flush();
+    expect(core.vocabMarks).toHaveBeenCalledWith(UID_A, [3, 4, 5, 6]);
+    vi.mocked(core.vocabMarks).mockClear();
+    send({ type: 'pdfcraft:save', id: UID_A, name: 'a.pdf', saveAs: false, bytes: new ArrayBuffer(8) });
+    await flush();
+    expect(core.vocabMarks).toHaveBeenCalledWith(UID_A, [3, 4, 5, 6]);
+  });
+
+  it('shows one toast for failures, then only logs', async () => {
+    const { c, ui, send } = await opened({ vocabMarks: vi.fn(async () => Promise.reject(new Error('down'))) });
+    c.setHighlight(UID_A, true);
+    await flush();
+    send({ type: 'pdfcraft:page', id: UID_A, page: 9 });
+    await flush();
+    expect(vi.mocked(ui.toast).mock.calls.filter((x) => x[0] === 'vocabReading.marksFailed')).toHaveLength(1);
+  });
+
+  it('forgets the marks when the iframe reloads', async () => {
+    const { c, core } = await opened();
+    c.setHighlight(UID_A, true);
+    await flush();
+    c.frameReloaded();
+    expect(c.vocab.markAt(UID_A, 4, 0)).toBeNull();
+    expect(core.vocabMarks).toHaveBeenCalledTimes(1);
   });
 });

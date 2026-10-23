@@ -12,10 +12,20 @@ export interface MakePdfOptions {
   textPerPage?: (i: number) => string;
   /** One outline (bookmark) entry per page, up to 50 entries. */
   outline?: boolean;
+  /** A custom (nested) outline instead of `outline`; items without `page` have no destination. */
+  outlineItems?: PdfOutlineItem[];
   /** Adds a yellow Highlight annotation over the first text line of page 1. */
   highlight?: boolean;
   /** Written as `/LeitorBookUid` in the Info dictionary, like the bridge does at save time. */
   leitorBookUid?: string;
+}
+
+/** One bookmark of `MakePdfOptions.outlineItems`. */
+export interface PdfOutlineItem {
+  title: string;
+  /** 0-based target page; `null`/absent: an item without destination. */
+  page?: number | null;
+  children?: PdfOutlineItem[];
 }
 
 const PAGE_W = 612;
@@ -116,7 +126,36 @@ export function makePdf(opts: MakePdfOptions): Uint8Array {
   const pageObj = (i: number) => 6 + 2 * i;
   const contentObj = (i: number) => 7 + 2 * i;
   const firstOutlineItem = 6 + 2 * pageCount;
-  const outlineCount = opts.outline ? Math.min(pageCount, MAX_OUTLINE) : 0;
+  const outlineTree: PdfOutlineItem[] =
+    opts.outlineItems ??
+    (opts.outline
+      ? Array.from({ length: Math.min(pageCount, MAX_OUTLINE) }, (_, k) => ({ title: `Chapter ${k + 1}`, page: k }))
+      : []);
+  // Preorder numbering of the outline items (object numbers firstOutlineItem…).
+  interface Placed {
+    item: PdfOutlineItem;
+    obj: number;
+    parent: number;
+    prev: number | null;
+    next: number | null;
+    kids: Placed[];
+  }
+  let nextObj = firstOutlineItem;
+  const place = (items: PdfOutlineItem[], parent: number): Placed[] => {
+    const placed: Placed[] = [];
+    for (const item of items) {
+      const p: Placed = { item, obj: nextObj++, parent, prev: null, next: null, kids: [] };
+      placed.push(p);
+      p.kids = place(item.children ?? [], p.obj);
+    }
+    placed.forEach((p, i) => {
+      p.prev = placed[i - 1]?.obj ?? null;
+      p.next = placed[i + 1]?.obj ?? null;
+    });
+    return placed;
+  };
+  const outlineRoots = place(outlineTree, OUTLINES);
+  const outlineCount = nextObj - firstOutlineItem;
   const highlightObj = firstOutlineItem + outlineCount;
   const total = highlightObj + (opts.highlight ? 1 : 0) - 1;
 
@@ -138,7 +177,7 @@ export function makePdf(opts: MakePdfOptions): Uint8Array {
   bodies[INFO] = `<< ${info.join(' ')} >>`;
 
   bodies[OUTLINES] = outlineCount
-    ? `<< /Type /Outlines /First ${firstOutlineItem} 0 R /Last ${firstOutlineItem + outlineCount - 1} 0 R /Count ${outlineCount} >>`
+    ? `<< /Type /Outlines /First ${outlineRoots[0]!.obj} 0 R /Last ${outlineRoots[outlineRoots.length - 1]!.obj} 0 R /Count ${outlineCount} >>`
     : '<< /Type /Outlines /Count 0 >>';
 
   for (let i = 0; i < pageCount; i++) {
@@ -150,13 +189,25 @@ export function makePdf(opts: MakePdfOptions): Uint8Array {
     bodies[contentObj(i)] = `<< /Length ${stream.length} >>\nstream\n${stream}endstream`;
   }
 
-  for (let k = 0; k < outlineCount; k++) {
-    const n = firstOutlineItem + k;
-    const links = (k > 0 ? ` /Prev ${n - 1} 0 R` : '') + (k < outlineCount - 1 ? ` /Next ${n + 1} 0 R` : '');
-    bodies[n] =
-      `<< /Title ${textString(`Chapter ${k + 1}`)} /Parent ${OUTLINES} 0 R${links}` +
-      ` /Dest [${pageObj(k)} 0 R /XYZ 0 ${PAGE_H} null] >>`;
-  }
+  const countAll = (list: Placed[]): number => list.reduce((n, p) => n + 1 + countAll(p.kids), 0);
+  const writeItems = (list: Placed[]) => {
+    for (const p of list) {
+      const links =
+        (p.prev !== null ? ` /Prev ${p.prev} 0 R` : '') +
+        (p.next !== null ? ` /Next ${p.next} 0 R` : '') +
+        (p.kids.length
+          ? ` /First ${p.kids[0]!.obj} 0 R /Last ${p.kids[p.kids.length - 1]!.obj} 0 R /Count ${countAll(p.kids)}`
+          : '');
+      const page = p.item.page;
+      const dest =
+        page !== undefined && page !== null && page >= 0 && page < pageCount
+          ? ` /Dest [${pageObj(page)} 0 R /XYZ 0 ${PAGE_H} null]`
+          : '';
+      bodies[p.obj] = `<< /Title ${textString(p.item.title)} /Parent ${p.parent} 0 R${links}${dest} >>`;
+      writeItems(p.kids);
+    }
+  };
+  writeItems(outlineRoots);
 
   if (opts.highlight) {
     const top = PAGE_H - MARGIN + FONT_SIZE;
@@ -200,4 +251,94 @@ export function pdfBytesToLatin1(bytes: Uint8Array): string {
     s += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
   }
   return s;
+}
+
+/** What [`readMinimalPdf`] finds in a file: the text lines of each page and the outline. */
+export interface MinimalPdfContents {
+  /** Per page, the `Tj` lines in drawing order (Latin-1, as written). */
+  pages: string[][];
+  outline: PdfOutlineItem[];
+}
+
+function unescapeLiteral(body: string): string {
+  return body.replace(/\\([\\()rn])/g, (_, c: string) => (c === 'r' ? '\r' : c === 'n' ? '\n' : c));
+}
+
+function decodeTextString(raw: string): string {
+  const hex = /^<FEFF([0-9A-Fa-f]*)>$/.exec(raw);
+  if (hex) {
+    let out = '';
+    for (let i = 0; i + 4 <= hex[1]!.length; i += 4) out += String.fromCharCode(parseInt(hex[1]!.slice(i, i + 4), 16));
+    return out;
+  }
+  const lit = /^\(((?:\\.|[^\\)])*)\)$/s.exec(raw);
+  return lit ? unescapeLiteral(lit[1]!) : '';
+}
+
+/**
+ * Reads back a file written by [`makePdf`] (or a plain uncompressed PDF of the same shape, incremental updates
+ * included): page text lines and the outline. `null` when the file is not shaped like that (compressed streams, object
+ * streams…), so callers can fall back to what they know about the book.
+ */
+export function readMinimalPdf(bytes: Uint8Array): MinimalPdfContents | null {
+  const s = pdfBytesToLatin1(bytes);
+  const objects = new Map<number, string>();
+  for (const m of s.matchAll(/(?:^|\n)(\d+) 0 obj\s*([\s\S]*?)\s*endobj/g)) objects.set(Number(m[1]), m[2]!);
+  if (!objects.size) return null;
+  let kids: number[] | null = null;
+  for (const body of objects.values()) {
+    if (/\/Type\s*\/Pages\b/.test(body)) {
+      const k = /\/Kids\s*\[([^\]]*)\]/.exec(body);
+      if (k) kids = [...k[1]!.matchAll(/(\d+)\s+0\s+R/g)].map((x) => Number(x[1]));
+      break;
+    }
+  }
+  if (!kids || !kids.length) return null;
+  const pages: string[][] = [];
+  for (const pageObj of kids) {
+    const page = objects.get(pageObj);
+    if (!page || /\/Kids/.test(page)) return null;
+    const contents = /\/Contents\s+(\d+)\s+0\s+R/.exec(page);
+    if (!contents) {
+      pages.push([]);
+      continue;
+    }
+    const stream = objects.get(Number(contents[1]));
+    if (!stream || /\/Filter/.test(stream.slice(0, stream.indexOf('stream')))) return null;
+    const data = /stream\r?\n([\s\S]*?)endstream/.exec(stream)?.[1] ?? '';
+    pages.push([...data.matchAll(/\(((?:\\.|[^\\)])*)\)\s*Tj/g)].map((m) => unescapeLiteral(m[1]!)));
+  }
+  const catalog = [...objects.values()].find((b) => /\/Type\s*\/Catalog\b/.test(b));
+  const outlineRef = catalog && /\/Outlines\s+(\d+)\s+0\s+R/.exec(catalog);
+  const outline: PdfOutlineItem[] = [];
+  if (outlineRef) {
+    const seen = new Set<number>();
+    const walk = (first: number | null, out: PdfOutlineItem[]) => {
+      let at = first;
+      while (at !== null && !seen.has(at) && seen.size < 10_000) {
+        seen.add(at);
+        const body = objects.get(at);
+        if (!body) break;
+        const title = /\/Title\s*(\((?:\\.|[^\\)])*\)|<[0-9A-Fa-f]*>)/s.exec(body);
+        const dest = /\/Dest\s*\[\s*(\d+)\s+0\s+R/.exec(body);
+        const index = dest ? kids!.indexOf(Number(dest[1])) : -1;
+        const item: PdfOutlineItem = {
+          title: title ? decodeTextString(title[1]!) : '',
+          page: index >= 0 ? index : null,
+        };
+        const child = /\/First\s+(\d+)\s+0\s+R/.exec(body);
+        if (child) {
+          item.children = [];
+          walk(Number(child[1]), item.children);
+        }
+        out.push(item);
+        const next = /\/Next\s+(\d+)\s+0\s+R/.exec(body);
+        at = next ? Number(next[1]) : null;
+      }
+    };
+    const root = objects.get(Number(outlineRef[1]));
+    const first = root && /\/First\s+(\d+)\s+0\s+R/.exec(root);
+    if (first) walk(Number(first[1]), outline);
+  }
+  return { pages, outline };
 }

@@ -1,8 +1,11 @@
 //! Builds the test fixture collection (docs/PROJETO.md 20) in a folder and prints its
 //! `FixtureInfo` as JSON.
 //!
-//! `cargo run -p core-anki --example seed_fixture -- <LEITOR_DATA_DIR>/anki [--isolation-probe] [--force]
+//! `cargo run -p core-anki --example seed_fixture -- <LEITOR_DATA_DIR>/anki [--isolation-probe] [--vocab] [--force]
 //! [--book-uid=<sha256>]`
+//!
+//! `--vocab` adds the vocabulary folder ("Vocabulário" with "Inglês básico", "Oxford" and an empty subdeck) for the
+//! vocabulary scan.
 //!
 //! `--book-uid` points the Animal Farm note's `Fonte` link at a real book of the library (captures), instead of
 //! the fixture's made-up `book_uid`.
@@ -27,6 +30,7 @@ fn main() -> ExitCode {
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--isolation-probe" => opts.isolation_probe = true,
+            "--vocab" => opts.vocab = true,
             "--force" => force = true,
             flag if flag.starts_with("--book-uid=") => {
                 let uid = &flag["--book-uid=".len()..];
@@ -45,7 +49,7 @@ fn main() -> ExitCode {
     }
     let Some(dir) = dir else {
         eprintln!(
-            "uso: seed_fixture <pasta da coleção> [--isolation-probe] [--force] [--book-uid=<sha256>]"
+            "uso: seed_fixture <pasta da coleção> [--isolation-probe] [--vocab] [--force] [--book-uid=<sha256>]"
         );
         return ExitCode::FAILURE;
     };

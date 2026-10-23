@@ -111,7 +111,11 @@ export interface ReadingPosition {
   updatedAt: number;
 }
 
-export type LibraryEntry = Book & { position: ReadingPosition | null };
+export type LibraryEntry = Book & {
+  position: ReadingPosition | null;
+  /** The book has a finished vocabulary scan (the menu offers "Relatório de vocabulário"). */
+  vocabScanned: boolean;
+};
 
 /**
  * `created`: new book; `existing`: already in the library (nothing changed); `restored`: a removed
@@ -408,6 +412,21 @@ export interface BookPanelInfo {
   lastKind: BookCardKind | null;
   /** Deck last reviewed with "Revisar aqui" (`null` when unset or deleted). */
   reviewDeckId: number | null;
+  /** The book's last vocabulary scan (spec 10.1 "Vocabulário 94% →"), `null` when never scanned. */
+  vocab: BookPanelVocab | null;
+  /** The generated per-chapter subdeck of the chapter at `page` (`…::Cap 03`), `null` when none. */
+  chapterDeck: BookDeckInfo | null;
+}
+
+export interface BookPanelVocab {
+  scanUid: string;
+  /** 0..=1. */
+  coverageKnown: number;
+  coverageWithLearning: number;
+  /** The scanned range's label (`Cap 3`, `p. 21-45`), `null` for the whole book. */
+  rangeLabel: string | null;
+  /** Epoch ms. */
+  scannedAt: number;
 }
 
 /** Fields absent = unchanged; `null` = clear. */
@@ -435,6 +454,16 @@ export interface BookCard {
 export interface WordDefinition {
   word: string;
   lemma: string;
+  /** WordNet part of speech of the lemma (`null`: not in WordNet or no data). */
+  pos: VocabPos | null;
+  /** Status of the lemma in the book's last scan / the vocabulary folder (`null`: unknown, no scan). */
+  status: VocabStatus | null;
+  /** The known lemma this word derives from (spec 12.3 I), when any. */
+  family: VocabLemmaRef | null;
+  /** First-sense WordNet definition (offline), when the data is installed. */
+  wordnetDefinition: string | null;
+  /** Where the definition shown comes from: the note in the deck, WordNet, or none. */
+  definitionSource: 'note' | 'wordnet' | null;
   vocabRootDeckId: number | null;
   vocabRootName: string | null;
   note: { noteId: number; deckName: string; notetype: string; definition: string | null; preview: string } | null;
@@ -691,6 +720,331 @@ export interface FullSyncResult {
 /** What the UI tells the core's sync scheduler (the timers live in the core). */
 export type SyncNotifyEvent = 'tabEntered' | 'online' | 'offline' | 'visible';
 
+// ---------------------------------------------------------------- vocabulary scan (spec 12, 14, 15)
+
+/** WordNet part of speech: noun, verb, adjective, adverb. */
+export type VocabPos = 'n' | 'v' | 'a' | 'r';
+
+/**
+ * `known`: mature in the folder (or counted as known); `learning`: studied, interval under the limit; `new`: in the
+ * folder, never studied; `suspended`: only suspended cards; `unknown`: not in the folder; `ignored`/`proper`: manual
+ * adjustments or detected proper nouns (out of the metrics).
+ */
+export type VocabStatus = 'known' | 'learning' | 'new' | 'suspended' | 'unknown' | 'ignored' | 'proper';
+
+/** Why a row has its status: a manual adjustment, the decks, a function word, a form or the family of a known word. */
+export type VocabStatusSource = 'override' | 'deck' | 'function' | 'form' | 'family';
+
+/** "Eu sei" criterion (spec 12.1 step 4). */
+export interface VocabConfig {
+  /** Mature = interval ≥ this many days (21, Anki's definition). */
+  knownIvlDays: number;
+  /** Young cards (studied, interval under the limit) count as known. */
+  countYoung: boolean;
+  suspendedPolicy: 'ignore' | 'known';
+  /** Function words ("the", "of"…) count as known. */
+  functionWordsKnown: boolean;
+  /** Derivatives of known words (learner ← learn): a card (default) or known (spec 12.3 I). */
+  derivedPolicy: 'card' | 'known';
+}
+
+/** The vocabulary folder and criterion saved as defaults (settings `vocab_*`). */
+export interface VocabSettings {
+  /** `null` until chosen (or when the deck was deleted). */
+  rootDeckId: number | null;
+  rootName: string | null;
+  /** Subdecks left out of the folder. */
+  excludedDeckIds: number[];
+  config: VocabConfig;
+}
+
+/** Absent = unchanged; `rootDeckId: null` clears the folder. */
+export interface VocabSettingsPatch {
+  rootDeckId?: number | null;
+  excludedDeckIds?: number[];
+  config?: VocabConfig;
+}
+
+export interface VocabFolderDeck {
+  deckId: number;
+  /** Full name with `::`. */
+  name: string;
+  /** 0 for the root, 1 for its children… */
+  depth: number;
+  /** Cards and notes in this deck only (not its subdecks). */
+  cardCount: number;
+  noteCount: number;
+}
+
+export interface VocabFolderNotetype {
+  notetypeId: number;
+  name: string;
+  fields: string[];
+  /** Notes of this type in the folder. */
+  noteCount: number;
+  /** The field saved in `notetype_mapping` (role vocab), `null` when not mapped yet. */
+  mappedField: string | null;
+  /** By the field name (`Word`, `Palavra`, `Front`…), else the first field. */
+  suggestedField: string;
+  /** Up to 5 words read from the mapped (else suggested) field. */
+  samples: string[];
+}
+
+/** `vocab_folder`: the chosen parent deck, every subdeck (recursively) and the notetypes found in them. */
+export interface VocabFolder {
+  root: { deckId: number; name: string };
+  /** The root first, then its subdecks in tree order. */
+  decks: VocabFolderDeck[];
+  notetypes: VocabFolderNotetype[];
+}
+
+/** A user notetype's vocabulary field (`notetype_mapping`, role `vocab`). */
+export interface VocabMapping {
+  notetypeId: number;
+  field: string;
+}
+
+/** What part of the book to scan (spec 12.1 step 2). */
+export type VocabRangeSpec = { kind: 'all' } | { kind: 'outline'; ids: string[] } | { kind: 'pages'; text: string };
+
+/** A range resolved against the book (`vocab_range_check`, and the report header). */
+export interface ResolvedRange {
+  kind: VocabRangeSpec['kind'];
+  /** 0-based inclusive page intervals, sorted and merged. */
+  pages: [number, number][];
+  /** Outline titles joined by " + " (outline), the normalized pages (`p. 21-45`), `null` for the whole book. */
+  label: string | null;
+  /** For people: `Livro inteiro`, `Cap 3 (p. 21–45)`, `p. 21–45, 60, 72–80`. */
+  display: string;
+  /** `cap-3`, `p-21-45`; `null` for the whole book. */
+  slug: string | null;
+  /** Subdeck name of the generated deck (`Cap 3`, `p. 21-45`); `null` for the whole book. */
+  subdeck: string | null;
+  /** Outline item ids (outline ranges). */
+  items: string[];
+  /** The pages as typed, normalized (`21-45, 60, 72-80`), for page ranges. */
+  text: string | null;
+}
+
+export interface VocabOutlineItem {
+  id: string;
+  title: string;
+  /** 0-based target page, `null` when the item has no page (cannot be chosen). */
+  page: number | null;
+  /** The item's range by the rule of spec 12.1 (0-based inclusive), `null` without a page. */
+  startPage: number | null;
+  endPage: number | null;
+  children: VocabOutlineItem[];
+}
+
+/** The PDF outline of the current version (incl. bookmarks made in PdfCraft). */
+export interface VocabOutline {
+  pageCount: number;
+  items: VocabOutlineItem[];
+}
+
+export interface VocabJob {
+  jobId: string;
+  scanUid: string;
+}
+
+export type JobStage = 'queued' | 'text' | 'lemmas' | 'known' | 'compare' | 'done' | 'failed' | 'cancelled';
+
+/** Payload of `job://<jobId>` and of `job_status`. */
+export interface JobProgress {
+  jobId: string;
+  kind: 'vocabScan';
+  bookUid: string;
+  scanUid: string;
+  stage: JobStage;
+  done: number;
+  total: number;
+  /** The book's per-page lemma table was reused (no PDF read). */
+  reused: boolean;
+  error: CoreErrorPayload | null;
+}
+
+export interface VocabLemmaRef {
+  lemma: string;
+  status: VocabStatus;
+}
+
+/** One lemma of the report (spec 12.5). */
+export interface VocabRow {
+  lemma: string;
+  /** The most common original form in the range. */
+  form: string;
+  pos: VocabPos | null;
+  /** `forms`: inflections of known words that are lemmas of their own (unchecked by default). */
+  group: 'main' | 'forms' | 'proper' | 'phrasal';
+  status: VocabStatus;
+  /** `null`: nothing says anything about it (unknown, detected proper nouns). */
+  statusSource: VocabStatusSource | null;
+  /** Occurrences in the range. */
+  occurrences: number;
+  /** 0-based, first page in the range. */
+  firstPage: number;
+  /** 0-based pages of the range where it occurs. */
+  pages: number[];
+  zipf: number | null;
+  /** Zipf < 2.5 or not in the frequency list. */
+  rare: boolean;
+  /** First example sentence in the range (original spelling). */
+  example: string | null;
+  /** UTF-16 offsets of the form inside `example` (end exclusive). */
+  exampleSpan: [number, number] | null;
+  examplePage: number | null;
+  /** `forms` group: the known base word (learning ← learn). */
+  base: VocabLemmaRef | null;
+  /** Derivatives: the known word of the same family (learner → learn). */
+  family: VocabLemmaRef | null;
+  /** A note made by an earlier scan of this book ("já no deck do livro"). */
+  existingNoteId: number | null;
+  defaultSelected: boolean;
+  /** Chapter (1-based `VocabChapter.index`) of `firstPage`. */
+  chapter: number | null;
+  /** Index of the first occurrence among the words of `firstPage` (reading order). */
+  position: number;
+}
+
+export interface VocabCurvePoint {
+  /** Words learned (the most frequent unknown ones first). */
+  n: number;
+  /** 0..=1. */
+  coverage: number;
+}
+
+export interface VocabMetrics {
+  totalTokens: number;
+  knownTokens: number;
+  learningTokens: number;
+  /** 0..=1. */
+  coverageKnown: number;
+  coverageWithLearning: number;
+  unknownLemmas: number;
+  /** Unknown lemmas with 2 or more occurrences. */
+  unknownLemmasRepeated: number;
+  /**
+   * Unknown lemmas to learn, most frequent first, to reach 95% / 98% (0 when already there; all of them when the
+   * goal cannot be reached). The curve starts at the coverage with learning.
+   */
+  wordsTo95: number;
+  wordsTo98: number;
+  curve: VocabCurvePoint[];
+  properLemmas: number;
+  formsLemmas: number;
+}
+
+/** Coverage of a chapter that touches the range (only its part inside the range). */
+export interface VocabChapter {
+  /** 1-based. */
+  index: number;
+  label: string;
+  startPage: number;
+  endPage: number;
+  totalTokens: number;
+  knownTokens: number;
+  /** 0..=1. */
+  coverageKnown: number;
+  coverageWithLearning: number;
+}
+
+export interface VocabDeckNaming {
+  /** `<pasta>::Livros::<Título>`. */
+  baseName: string;
+  subdeck: string | null;
+  /** The deck the cards go to (`baseName` or `baseName::subdeck`). */
+  fullName: string;
+  /** `trecho::cap-3`, `null` for the whole book. */
+  rangeTag: string | null;
+  /** `livro::animal-farm`. */
+  bookTag: string;
+}
+
+/** `vocab_report`: the last finished scan of the book. */
+export interface VocabReport {
+  scanUid: string;
+  bookUid: string;
+  title: string;
+  author: string | null;
+  /** Epoch ms. */
+  scannedAt: number;
+  folder: { rootDeckId: number; rootName: string; deckCount: number };
+  range: ResolvedRange;
+  config: VocabConfig;
+  metrics: VocabMetrics;
+  chapters: VocabChapter[];
+  rows: VocabRow[];
+  deck: VocabDeckNaming;
+}
+
+/** "Já sei", "Ignorar", "Nome próprio"; `null` removes the adjustment. */
+export type VocabOverride = 'known' | 'ignored' | 'proper';
+
+export interface VocabDeckOptions {
+  order: 'reading' | 'frequency';
+  /** One subdeck per chapter (`…::Cap 01`). */
+  perChapter: boolean;
+  /** The optional Português → Inglês card. */
+  card2: boolean;
+  /** `ai` arrives with Phase 8 (refused before that). */
+  enrich: 'wordnet' | 'ai';
+}
+
+export interface VocabDeckResult {
+  /** The deck of the range (or of the book). */
+  deckId: number;
+  deckName: string;
+  /** Every deck that received cards (full names). */
+  decks: string[];
+  /** Notes created. */
+  created: number;
+  noteIds: number[];
+  /** Lemmas already in the vocabulary folder. */
+  skippedExisting: string[];
+  /** Lemmas created by an earlier scan of this book. */
+  skippedPrevious: string[];
+}
+
+export interface VocabMark {
+  lemma: string;
+  form: string;
+  status: 'unknown' | 'learning';
+  /** Page view space, like `PageWord.rects`. */
+  rects: Rect[];
+}
+
+export interface VocabPageMarks {
+  page: number;
+  marks: VocabMark[];
+}
+
+/** "Adicionar ao deck do livro" from the reading popover. */
+export interface VocabWordAdded {
+  noteId: number;
+  deckId: number;
+  deckName: string;
+}
+
+/** One bundled data set (credits in Configurações → Sobre). */
+export interface VocabDataSource {
+  name: string;
+  /** The pinned release ("2025", "3.1.1"). */
+  version: string;
+  /** SPDX id ("CC-BY-4.0"). */
+  license: string;
+  url: string | null;
+}
+
+/** The bundled vocabulary data (`vocab_data_info`). */
+export interface VocabDataInfo {
+  available: boolean;
+  wordnet: VocabDataSource | null;
+  frequency: VocabDataSource | null;
+  stopwords: VocabDataSource | null;
+  schemaVersion: number | null;
+}
+
 // ---------------------------------------------------------------- dev
 
 export interface SmokeReport {
@@ -741,12 +1095,64 @@ export interface CoreClient {
   onStudyOwner(cb: (c: StudyOwnerChange) => void): Unlisten;
 
   // Book panel (spec 10, 12.7)
-  bookPanelInfo(uid: string): Promise<BookPanelInfo>;
+  /** `page` (0-based, the page shown) picks `chapterDeck`. */
+  bookPanelInfo(uid: string, page?: number): Promise<BookPanelInfo>;
   bookPanelSet(uid: string, patch: BookPanelPatch): Promise<BookPanelInfo>;
   /** Notes whose Fonte links to this book. */
   ankiBookCards(uid: string): Promise<BookCard[]>;
   /** One word only (`invalid_input` otherwise). `bookUid` is context for later phases. */
   vocabDefine(word: string, bookUid: string | null): Promise<WordDefinition>;
+
+  // Vocabulary scan (spec 12, 15)
+  vocabSettingsGet(): Promise<VocabSettings>;
+  vocabSettingsSet(patch: VocabSettingsPatch): Promise<VocabSettings>;
+  /** The folder under `rootDeckId`: every subdeck with counts and the notetypes with their vocabulary field. */
+  vocabFolder(rootDeckId: number): Promise<VocabFolder>;
+  /** Up to 5 words of `field` in the notes of `notetypeId` inside the folder. */
+  vocabMappingSamples(
+    rootDeckId: number,
+    excludedDeckIds: number[],
+    notetypeId: number,
+    field: string,
+  ): Promise<string[]>;
+  vocabMappingGet(): Promise<VocabMapping[]>;
+  vocabMappingSet(notetypeId: number, field: string): Promise<VocabMapping[]>;
+  /** The outline (incl. PdfCraft bookmarks) of the current version, with each item's range. */
+  vocabOutline(uid: string): Promise<VocabOutline>;
+  /** Resolves a range; `vocab_range_invalid` with a pt-BR message for bad page lists. */
+  vocabRangeCheck(uid: string, range: VocabRangeSpec): Promise<ResolvedRange>;
+  /** Starts a scan in the background (`job://<jobId>`); the folder and criterion become the defaults. */
+  vocabScanStart(
+    uid: string,
+    rootDeckId: number,
+    excludedDeckIds: number[],
+    range: VocabRangeSpec,
+    config: VocabConfig,
+  ): Promise<VocabJob>;
+  /** Scans the last range again with the current settings and adjustments (seconds: the table is reused). */
+  vocabRescan(uid: string): Promise<VocabJob>;
+  /** The last finished scan of the book, `null` when none. */
+  vocabReport(uid: string): Promise<VocabReport | null>;
+  vocabOverrideSet(lemmas: string[], status: VocabOverride | null): Promise<void>;
+  /** Creates the notes of `lemmas` (spec 12.6); `vocab_prepare_needed` when "Vocabulário · Livro" is missing. */
+  vocabGenerateDeck(
+    uid: string,
+    scanUid: string,
+    lemmas: string[],
+    options: VocabDeckOptions,
+  ): Promise<VocabDeckResult>;
+  /** Underline rects of unknown/learning words on these pages (0-based), from the last scan. */
+  vocabMarks(uid: string, pages: number[]): Promise<VocabPageMarks[]>;
+  /** "Adicionar ao deck do livro" (reading popover): one note at once, enriched later. */
+  vocabAddWord(uid: string, lemma: string, page: number, form: string): Promise<VocabWordAdded>;
+  vocabDataInfo(): Promise<VocabDataInfo>;
+
+  // Jobs (spec 15)
+  /** `null` when the job is unknown (finished long ago, or another app run). */
+  jobStatus(jobId: string): Promise<JobProgress | null>;
+  jobCancel(jobId: string): Promise<void>;
+  /** `job://<jobId>`; calls `jobStatus` once after subscribing, so an early end is never missed. */
+  onJobProgress(jobId: string, cb: (p: JobProgress) => void): Unlisten;
 
   // Anki · notes
   ankiNotetypes(): Promise<NotetypeInfo[]>;

@@ -55,9 +55,9 @@ impl Default for PdfCore {
 }
 
 /// The result of opening through `inspect`, with the password the renderer needs.
-struct Inspected {
-    info: pdfcraft_render::DocInfo,
-    render_password: Option<String>,
+pub(crate) struct Inspected {
+    pub(crate) info: pdfcraft_render::DocInfo,
+    pub(crate) render_password: Option<String>,
 }
 
 impl PdfCore {
@@ -273,7 +273,7 @@ impl OpenDoc {
 }
 
 /// `inspect`, retrying an owner password as the user password it recovers (R2–R4).
-fn inspect_with_password(
+pub(crate) fn inspect_with_password(
     bytes: Arc<Vec<u8>>,
     password: Option<&str>,
 ) -> Result<Inspected, PdfError> {

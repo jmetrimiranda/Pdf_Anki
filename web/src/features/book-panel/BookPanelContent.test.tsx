@@ -3,7 +3,9 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { mockClient, mockHandle } from '../../lib/core/mock';
 import { installDomStubs } from '../../lib/testing/dom';
 import type { LeitorSelection } from '../leitor/controller';
-import { BookPanelContent } from './BookPanelContent';
+import type { BookPanelInfo } from '../../lib/core/types';
+import { BookPanelContent, PAGE_DEBOUNCE_MS } from './BookPanelContent';
+import { formatCoverage } from './VocabSection';
 import { createFakeLeitor, renderWithProviders } from './testing';
 
 const fake = vi.hoisted(() => ({ current: null as unknown as ReturnType<typeof createFakeLeitor> }));
@@ -27,6 +29,12 @@ vi.mock('./review/MiniReview', () => ({
   },
 }));
 
+const router = vi.hoisted(() => ({ navigate: vi.fn() }));
+vi.mock('@tanstack/react-router', async (orig) => ({
+  ...(await orig<typeof import('@tanstack/react-router')>()),
+  useNavigate: () => router.navigate,
+}));
+
 vi.mock('../anki/editor/NoteEditorDialog', () => ({
   NoteEditorDialog: (p: { noteId: number | null; open: boolean }) =>
     p.open ? <div role="dialog" aria-label="editor" data-note={p.noteId} /> : null,
@@ -36,6 +44,7 @@ beforeAll(() => installDomStubs());
 beforeEach(() => {
   mockHandle.reset();
   review.props = null;
+  router.navigate.mockClear();
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -74,8 +83,6 @@ describe('BookPanelContent', () => {
       false,
     );
     expect(within(screen.getByTestId('book-deck-content')).getByText('Escolher deck de conteúdo…')).toBeTruthy();
-    expect(screen.getByText('Ainda não escaneado.')).toBeTruthy();
-    expect(screen.getByText('Ver relatório →').getAttribute('aria-disabled')).toBe('true');
   });
 
   it('says when the vocabulary deck does not exist', async () => {
@@ -171,5 +178,89 @@ describe('BookPanelContent', () => {
     rerender(<BookPanelContent {...props} cardRequest={{ page: 0, text: 'Manor Farm', rects: [] }} />);
     await screen.findByRole('form', { name: 'Novo card' });
     expect(screen.queryByTestId('mini-review')).toBeNull();
+  });
+
+  describe('vocabulary (spec 10.1, 12.7)', () => {
+    async function withInfo(patch: (real: BookPanelInfo) => Partial<BookPanelInfo>) {
+      const real = await mockClient.bookPanelInfo(farmUid());
+      return vi.spyOn(mockClient, 'bookPanelInfo').mockImplementation(async (_uid, page) => ({
+        ...real,
+        ...patch(real),
+        // Echo the page asked for in the chapter deck's name, to see which page the panel asked for.
+        ...(patch(real).chapterDeck ? { chapterDeck: { ...patch(real).chapterDeck!, name: `X::Cap ${page}` } } : {}),
+      }));
+    }
+
+    it('formats the coverage as a whole pt-BR percent, never rounding up', () => {
+      expect(formatCoverage(0.941)).toBe('94%');
+      expect(formatCoverage(0.9999)).toBe('99%');
+      expect(formatCoverage(1)).toBe('100%');
+      expect(formatCoverage(Number.NaN)).toBe('0%');
+    });
+
+    it('offers the scan when the book was never scanned, with the highlight disabled', async () => {
+      await withInfo(() => ({ vocab: null, chapterDeck: null }));
+      const { uid } = renderContent();
+      const section = await screen.findByTestId('book-panel-vocab');
+      fireEvent.click(within(section).getByRole('button', { name: 'Escanear vocabulário' }));
+      expect(router.navigate).toHaveBeenCalledWith({ to: '/vocabulario/escanear', search: { livro: uid } });
+      const toggle = within(section).getByRole('switch');
+      expect(toggle).toHaveProperty('disabled', true);
+      expect(within(section).getByText('Escaneie o vocabulário do livro para poder realçar as palavras.')).toBeTruthy();
+      expect(within(section).queryByText(/Vocabulário \d/)).toBeNull();
+    });
+
+    it('links "Vocabulário 94% →" to the report, with the scanned range, and turns the highlight on', async () => {
+      await withInfo(() => ({
+        vocab: { scanUid: 's1', coverageKnown: 0.941, coverageWithLearning: 0.953, rangeLabel: 'Cap 3', scannedAt: 0 },
+        chapterDeck: null,
+      }));
+      const { uid } = renderContent();
+      const link = await screen.findByRole('button', { name: 'Abrir o relatório de vocabulário (cobertura 94%)' });
+      expect(link.textContent).toBe('Vocabulário 94% →');
+      expect(screen.getByText('Trecho: Cap 3')).toBeTruthy();
+      fireEvent.click(link);
+      expect(router.navigate).toHaveBeenCalledWith({ to: '/vocabulario', search: { livro: uid } });
+      const toggle = screen.getByRole('switch', { name: 'Realçar vocabulário' });
+      expect(toggle.getAttribute('aria-checked')).toBe('false');
+      fireEvent.click(toggle);
+      expect(fake.current.leitor.setHighlight).toHaveBeenCalledWith(uid, true);
+      await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
+      fireEvent.click(toggle);
+      expect(fake.current.leitor.setHighlight).toHaveBeenLastCalledWith(uid, false);
+    });
+
+    it('shows the current chapter subdeck with its counts and "Revisar aqui", following the page', async () => {
+      const spy = await withInfo((real) => ({
+        vocab: { scanUid: 's1', coverageKnown: 0.9, coverageWithLearning: 0.95, rangeLabel: null, scannedAt: 0 },
+        chapterDeck: {
+          role: 'vocab',
+          deckId: real.vocabDeck.deckId! + 1000,
+          name: 'X',
+          exists: true,
+          counts: { new: 3, learn: 1, review: 0 },
+        },
+      }));
+      const uid = farmUid();
+      const props = { bookUid: uid, title: 'Animal Farm', selection: null, cardRequest: null, onCardDone: vi.fn() };
+      const { rerender } = renderWithProviders(<BookPanelContent {...props} page={12} />);
+      const row = await screen.findByTestId('book-deck-chapter');
+      expect(within(row).getByText('Capítulo atual')).toBeTruthy();
+      expect(within(row).getByText('X::Cap 12')).toBeTruthy();
+      expect(within(row).getByLabelText('3 novos, 1 aprendendo, 0 para revisar')).toBeTruthy();
+      expect(spy).toHaveBeenCalledWith(uid, 12);
+      expect(screen.queryByText(/Vocabulário 90%/)).toBeTruthy();
+
+      // A new page: the rest stays on screen and the chapter is asked again once the page rests.
+      rerender(<BookPanelContent {...props} page={18} />);
+      expect(screen.getByTestId('book-deck-chapter')).toBeTruthy();
+      await waitFor(() => expect(spy).toHaveBeenCalledWith(uid, 18), { timeout: PAGE_DEBOUNCE_MS + 1000 });
+      await screen.findByText('X::Cap 18');
+
+      fireEvent.click(within(screen.getByTestId('book-deck-chapter')).getByRole('button', { name: /Revisar aqui/ }));
+      const mini = await screen.findByTestId('mini-review');
+      expect(review.props?.decks).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'X::Cap 18' })]));
+      expect(mini).toBeTruthy();
+    });
   });
 });

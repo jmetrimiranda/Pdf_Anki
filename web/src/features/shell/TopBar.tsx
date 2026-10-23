@@ -26,7 +26,9 @@ import type { TabPath } from './shortcuts';
 export type ActiveTab = 'library' | 'leitor' | 'anki' | 'other';
 
 export function activeTabFromPath(pathname: string): ActiveTab {
-  if (pathname.startsWith('/biblioteca')) return 'library';
+  // The vocabulary report and wizard belong to a book of the library (spec 12).
+  if (pathname.startsWith('/biblioteca') || pathname === '/vocabulario' || pathname.startsWith('/vocabulario/'))
+    return 'library';
   if (pathname === '/leitor' || pathname.startsWith('/leitor/')) return 'leitor';
   if (pathname.startsWith('/anki')) return 'anki';
   return 'other';

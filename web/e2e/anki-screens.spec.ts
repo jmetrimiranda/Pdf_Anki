@@ -21,7 +21,7 @@ for (const theme of ['light', 'dark'] as const) {
     await page.mouse.move(0, 0);
     await snap('decks');
 
-    const oxford = tree.getByRole('treeitem', { name: /^Oxford,/ });
+    const oxford = tree.getByRole('treeitem', { name: /^Oxford,/ }).first();
     await oxford.hover();
     await oxford.getByRole('button', { name: 'Ações do deck Oxford' }).click();
     await expect(page.getByRole('menuitem', { name: 'Criar subdeck' })).toBeVisible();

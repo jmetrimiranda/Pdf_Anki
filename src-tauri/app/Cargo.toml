@@ -44,6 +44,9 @@ tauri-plugin-deep-link = "2.4"
 base64 = "0.22"
 percent-encoding = "2.3"
 chrono.workspace = true
+# Job ids (spec 15 `job://<id>`) and the sentence starts of a page for the vocabulary marks (spec 12.7).
+uuid.workspace = true
+unicode-segmentation.workspace = true
 # Already in the graph through Anki; `_SVELTEKIT_CSP_META_RE` of mediasrv.py, verbatim.
 regex = "1.11"
 
@@ -72,6 +75,7 @@ tokio = { workspace = true, features = ["net"] }
 # Synthetic PDFs for the integration tests (spec 20); nothing large is committed.
 pdfcraft-testkit.workspace = true
 pdfcraft-cos.workspace = true
+pdfcraft-organize.workspace = true
 
 [lints]
 workspace = true

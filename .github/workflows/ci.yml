@@ -100,6 +100,14 @@ jobs:
         with:
           path: src-tauri/resources/pyodide
           key: pyodide-${{ hashFiles('scripts/fetch-pyodide.sh') }}
+      - name: Cache vocabulary data
+        # scripts/build-wordnet.sh pins every source by sha256 and stamps its output; a hit leaves it nothing to do.
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/generated/vocab
+            data/generated/cache
+          key: vocab-data-${{ hashFiles('scripts/build-wordnet.sh', 'scripts/vocab-data/**') }}
       - uses: docker/setup-buildx-action@v3
       - name: Build dev image
         uses: docker/build-push-action@v6
@@ -139,6 +147,7 @@ jobs:
           mkdir -p ~/cargo-registry ~/cargo-git
           docker run --rm --ulimit core=0 --user 0 -e HOME=/root --network leitor-dev \
             -e CARGO_INCREMENTAL -e CARGO_TERM_COLOR -e TAURI_APP_PATH -e APPIMAGE_EXTRACT_AND_RUN=1 \
+            -e LEITOR_REQUIRE_VOCAB_DATA=1 \
             -e LEITOR_SYNC_TEST_URL=http://ankisync-dev:8080/ -e LEITOR_SYNC_TEST_TLS_URL=https://ankisync-dev-tls:8443/ \
             -e LEITOR_SYNC_TEST_CA=/workspaces/leitor-estudos/server/ankisync-dev/certs/ca.crt \
             -e LEITOR_SYNC_TEST_UNTRUSTED_CA=/workspaces/leitor-estudos/server/ankisync-dev/certs/untrusted-ca.crt \
@@ -150,6 +159,9 @@ jobs:
               scripts/fetch-anki-web.sh
               scripts/fetch-ocr-models.sh
               scripts/fetch-pyodide.sh
+              # Vocabulary data pack (WordNet + Zipf + stopwords → data/generated/vocab, bundled by the app)
+              python3 -I scripts/vocab-data/build_vocab_db.py --self-test
+              scripts/build-wordnet.sh
               # trunk build --release of the fork (also compiles pdfcraft-web for wasm32, i.e. the fork check)
               CARGO_BUILD_JOBS=2 timeout 40m scripts/build-pdfcraft-web.sh
               pnpm install --frozen-lockfile
@@ -288,14 +300,23 @@ jobs:
       - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      - name: Cache vocabulary data
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/generated/vocab
+            data/generated/cache
+          key: vocab-data-windows-${{ hashFiles('scripts/build-wordnet.sh', 'scripts/vocab-data/**') }}
       - name: Fetch bundled assets
         # Git Bash on the runner has curl, sha256sum and Python.
         shell: bash
         run: |
           scripts/fetch-anki-web.sh
           scripts/fetch-ocr-models.sh
+          scripts/build-wordnet.sh
       - name: Test core
         working-directory: src-tauri
+        env: { LEITOR_REQUIRE_VOCAB_DATA: "1" }
         run: cargo test -j 2 --workspace
       - name: Bundle (.msi)
         # MSVC, the Windows SDK and WebView2 are preinstalled; the Tauri CLI downloads WiX itself.

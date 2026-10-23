@@ -22,7 +22,9 @@ while IFS= read -r name; do
 done < <(compgen -e | grep -E '^(LEITOR_SYNC_TEST_[A-Z0-9_]+|LEITOR_RUNNER_TEST_[A-Z0-9_]+|LEITOR_TEST_KEYRING)$' || true)
 TTY=()
 [[ -t 0 && -t 1 ]] && TTY=(-it)
-exec docker run --rm "${TTY[@]}" "${GUI[@]}" "${FWD[@]}" \
+# --init: a real PID 1 (tini) forwards signals and reaps orphans (Xvfb left by xvfb-run), so a timeout or Ctrl+C
+# stops the whole container.
+exec docker run --rm --init "${TTY[@]}" "${GUI[@]}" "${FWD[@]}" \
   --shm-size=2g --ulimit core=0 ${LEITOR_DEV_NETWORK:+--network "$LEITOR_DEV_NETWORK"} \
   -v "$ROOT":/workspaces/leitor-estudos \
   -v leitor-cargo-registry:/usr/local/cargo/registry \

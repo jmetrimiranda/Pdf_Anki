@@ -15,8 +15,9 @@ describe('mock search (subset of Anki syntax)', () => {
     expect(mockSearch('deck:current', null)).toHaveLength(7);
     expect(fronts(mockSearch('kitch*', null))).toEqual(['kitchen']);
     expect(mockSearch('deck:Oxford -abandon', null)).toHaveLength(2);
-    // "able" also matches "ros2 pkg executables" (a word search is a substring search, like Anki).
-    expect(mockSearch('abandon OR able', null)).toHaveLength(3);
+    // "able" also matches "ros2 pkg executables" (a word search is a substring search, like Anki), and "abandon" is
+    // also in the vocabulary folder (Vocabulário::Oxford).
+    expect(mockSearch('abandon OR able', null)).toHaveLength(4);
     expect(mockSearch('(abandon OR able) deck:Oxford*', null)).toHaveLength(2);
     expect(mockSearch('', null).length).toBeGreaterThan(15);
   });
@@ -95,7 +96,7 @@ describe('mock notes', () => {
   it('bulk operations and the common notetype', async () => {
     const ids = mockSearch('deck:Oxford', null);
     await mockClient.ankiCardsSuspend(ids.slice(0, 1), true);
-    expect(mockSearch('is:suspended', null)).toEqual(ids.slice(0, 1));
+    expect(mockSearch('is:suspended deck:Oxford', null)).toEqual(ids.slice(0, 1));
     const target = await deckId('Oxford::Oxford 5000');
     expect(await mockClient.ankiCardsSetDeck(ids, target)).toBe(3);
     expect(mockSearch('deck:"Oxford::Oxford 5000"', null)).toHaveLength(3);

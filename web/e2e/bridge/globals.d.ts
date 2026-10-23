@@ -10,6 +10,30 @@ interface MockBook {
   fileHash: string;
 }
 
+type Rect4 = [number, number, number, number];
+
+/** The few mock core calls the bridge suites make (src/lib/core/types.ts has the full contract). */
+interface MockCore {
+  ankiDeckNames(): Promise<{ id: number; name: string }[]>;
+  vocabSettingsSet(patch: { rootDeckId?: number | null }): Promise<{ config: unknown }>;
+  vocabScanStart(
+    uid: string,
+    rootDeckId: number,
+    excludedDeckIds: number[],
+    range: { kind: 'all' },
+    config: unknown,
+  ): Promise<{ jobId: string; scanUid: string }>;
+  onJobProgress(jobId: string, cb: (p: { stage: string }) => void): () => void;
+  docWords(
+    uid: string,
+    page: number,
+  ): Promise<{ page: number; width: number; height: number; words: { text: string; rects: Rect4[] }[] }>;
+  vocabMarks(
+    uid: string,
+    pages: number[],
+  ): Promise<{ page: number; marks: { lemma: string; form: string; status: string; rects: Rect4[] }[] }[]>;
+}
+
 declare global {
   interface Window {
     __leitorMock?: {
@@ -38,6 +62,7 @@ declare global {
       deepLink(url: string): void;
       setPendingDeepLinks(urls: string[]): void;
       readonly anki: { readonly logs: ({ kind: string; at: number } & Record<string, unknown>)[] };
+      readonly vocab: { readonly overrides: Record<string, string>; readonly textReads: number };
     };
     /** src/features/leitor/timings.ts (every mode). */
     readonly __leitorTimings?: {
@@ -48,6 +73,11 @@ declare global {
     }[];
     __leitor?: {
       openBook(uid: string, opts?: { page?: number; find?: string | null }): Promise<boolean>;
+      setHighlight(uid: string, on: boolean): void;
+      refreshVocab(uid?: string): void;
+      vocab(): { on: readonly string[]; notScanned: readonly string[] };
+      /** The mock core (only what the suites use). */
+      core: MockCore;
       togglePanel(open?: boolean): void;
       flushSaves(reason?: string): Promise<boolean>;
       requestCardFromSelection(via?: 'shortcut' | 'button'): void;

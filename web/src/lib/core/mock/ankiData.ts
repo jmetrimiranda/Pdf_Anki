@@ -292,11 +292,99 @@ export const APP_NOTETYPES: MockNotetype[] = [
     id: NT_VOCAB_BOOK,
     name: 'Vocabulário · Livro',
     kind: 'normal',
-    fields: ['Palavra', 'Lema', 'Classe', 'Definição', 'Tradução', 'Exemplo', 'Fonte', 'Frequência', 'Card 2'],
+    fields: [
+      'Palavra',
+      'Lema',
+      'Classe',
+      'Definição',
+      'Tradução',
+      'Exemplo',
+      'Fonte',
+      'Frequência',
+      'Família',
+      'Card 2',
+    ],
     templates: ['Inglês → Português', 'Português → Inglês'],
     templateRequires: { 1: 'Card 2' },
     appType: 'Vocabulário · Livro',
   },
+];
+
+/** User vocabulary types shaped like common shared decks (spec 12.1 step 3, fixture `VOCAB_*` in core-anki). */
+export const NT_VOCAB_WORD = 1_600_000_000_202;
+export const VOCAB_WORD_NOTETYPE = 'Vocab (Word)';
+export const NT_VOCAB_FRONT = 1_600_000_000_203;
+export const VOCAB_FRONT_NOTETYPE = 'Oxford (Front/Back)';
+
+export function userVocabNotetypes(): MockNotetype[] {
+  return [
+    {
+      id: NT_VOCAB_WORD,
+      name: VOCAB_WORD_NOTETYPE,
+      kind: 'normal',
+      fields: ['Word', 'Meaning', 'Example'],
+      templates: ['Cartão 1'],
+      appType: null,
+    },
+    {
+      id: NT_VOCAB_FRONT,
+      name: VOCAB_FRONT_NOTETYPE,
+      kind: 'normal',
+      fields: ['Front', 'Back'],
+      templates: ['Cartão 1'],
+      appType: null,
+    },
+  ];
+}
+
+/**
+ * The vocabulary folder's words (deck "Vocabulário"): `[word, meaning, scheduling]` in "Inglês básico" (Word/Meaning)
+ * and "Oxford" (Front/Back); known = review with interval ≥ 21 days (spec 12.3 A).
+ */
+export const VOCAB_FOLDER_WORDS: {
+  deck: 'Inglês básico' | 'Oxford';
+  word: string;
+  meaning: string;
+  ivl?: number;
+  queue?: MockCardQueue;
+}[] = [
+  { deck: 'Inglês básico', word: 'learn', meaning: 'aprender', ivl: 40 },
+  { deck: 'Inglês básico', word: 'happy', meaning: 'feliz', ivl: 35 },
+  { deck: 'Inglês básico', word: 'quick', meaning: 'rápido', ivl: 30 },
+  { deck: 'Inglês básico', word: 'mean', meaning: 'significar', ivl: 25 },
+  { deck: 'Inglês básico', word: 'feel', meaning: 'sentir', ivl: 60 },
+  { deck: 'Inglês básico', word: 'build', meaning: 'construir', ivl: 45 },
+  { deck: 'Inglês básico', word: 'interest', meaning: 'interessar', ivl: 22 },
+  { deck: 'Inglês básico', word: 'animal', meaning: 'animal', ivl: 90 },
+  { deck: 'Inglês básico', word: 'farm', meaning: 'fazenda', ivl: 50 },
+  { deck: 'Inglês básico', word: 'night', meaning: 'noite', ivl: 50 },
+  { deck: 'Inglês básico', word: 'light', meaning: 'luz', ivl: 30 },
+  { deck: 'Inglês básico', word: 'remember', meaning: 'lembrar', ivl: 28 },
+  { deck: 'Inglês básico', word: 'sleep', meaning: 'dormir', ivl: 30 },
+  { deck: 'Inglês básico', word: 'hour', meaning: 'hora', ivl: 30 },
+  { deck: 'Inglês básico', word: 'pig', meaning: 'porco', ivl: 33 },
+  { deck: 'Inglês básico', word: 'horse', meaning: 'cavalo', ivl: 40 },
+  { deck: 'Inglês básico', word: 'work', meaning: 'trabalhar', ivl: 80 },
+  { deck: 'Inglês básico', word: 'old', meaning: 'velho', ivl: 80 },
+  { deck: 'Inglês básico', word: 'day', meaning: 'dia', ivl: 80 },
+  { deck: 'Inglês básico', word: 'say', meaning: 'dizer', ivl: 70 },
+  { deck: 'Inglês básico', word: 'come', meaning: 'vir', ivl: 70 },
+  { deck: 'Inglês básico', word: 'go', meaning: 'ir', ivl: 70 },
+  { deck: 'Inglês básico', word: 'house', meaning: 'casa', ivl: 70 },
+  { deck: 'Inglês básico', word: 'lock', meaning: 'trancar', ivl: 6 },
+  { deck: 'Inglês básico', word: 'drunk', meaning: 'bêbado' },
+  { deck: 'Inglês básico', word: 'hedge', meaning: 'cerca viva', ivl: 30, queue: 'suspended' },
+  { deck: 'Inglês básico', word: 'look up', meaning: 'olhar para cima; procurar', ivl: 30 },
+  { deck: 'Oxford', word: 'abandon', meaning: 'abandonar' },
+  { deck: 'Oxford', word: 'ability', meaning: 'habilidade', ivl: 30 },
+  { deck: 'Oxford', word: 'ready', meaning: 'pronto', ivl: 30 },
+  { deck: 'Oxford', word: 'order', meaning: 'ordem', ivl: 30 },
+  { deck: 'Oxford', word: 'soon', meaning: 'logo', ivl: 30 },
+  { deck: 'Oxford', word: 'dream', meaning: 'sonho', ivl: 30 },
+  { deck: 'Oxford', word: 'song', meaning: 'canção', ivl: 30 },
+  { deck: 'Oxford', word: 'shut', meaning: 'fechar', ivl: 4 },
+  { deck: 'Oxford', word: 'speech', meaning: 'discurso' },
+  { deck: 'Oxford', word: 'regard', meaning: 'considerar', ivl: 12 },
 ];
 
 /** Like the user's "DIGITE O COMANDO · CTRL+ENTER RESPONDE" type (docs/referencia/capturas/06..09). */
@@ -569,6 +657,7 @@ export function seedAnki(): AnkiState {
     // The fixture already uses four app types (as if an earlier "Preparar coleção" made them).
     ...APP_NOTETYPES.filter((nt) => [NT_BASIC_LEITOR, NT_CODE_COMMAND, NT_CODE_PROGRAM, NT_VOCAB_BOOK].includes(nt.id)),
     userCommandNotetype(),
+    ...userVocabNotetypes(),
   ];
   const b = new Builder('seed', notetypes);
   const s = b.state;
@@ -597,6 +686,8 @@ export function seedAnki(): AnkiState {
   b.deck('Vocabulário', [10, 2, 14]);
   b.deck('Vocabulário::Livros', [10, 2, 14]);
   b.deck('Vocabulário::Livros::Teste', [10, 2, 14]);
+  const basic = b.deck('Vocabulário::Inglês básico');
+  const oxfordFolder = b.deck('Vocabulário::Oxford');
 
   // 5000 palavras: image + audio, three reviews with different intervals, one learning card, new cards, and TTS.
   const img = '<img src="fixture-image.png">';
@@ -617,6 +708,14 @@ export function seedAnki(): AnkiState {
     '',
     '12',
   ]);
+
+  // Vocabulário (spec 12): the folder of the vocabulary scan, with user-shaped types and every status.
+  for (const w of VOCAB_FOLDER_WORDS) {
+    const card: Partial<MockCard> = w.ivl ? review(w.ivl) : {};
+    if (w.queue) card.queue = w.queue;
+    if (w.deck === 'Inglês básico') b.note(basic, NT_VOCAB_WORD, [w.word, w.meaning, ''], [card]);
+    else b.note(oxfordFolder, NT_VOCAB_FRONT, [w.word, w.meaning], [card]);
+  }
 
   // Oxford 3000: new cards only.
   const oxford: [string, string][] = [

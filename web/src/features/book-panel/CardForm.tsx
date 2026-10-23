@@ -113,6 +113,8 @@ export const KINDS: Record<BookCardKind, KindSpec> = {
       { name: 'Palavra', role: 'line' },
       { name: 'Lema', role: 'line' },
       { name: 'Exemplo', role: 'example', rows: 3 },
+      // The known lemma this word derives from (spec 12.6); filled by the scan, editable here.
+      { name: 'Família', role: 'line' },
     ],
     focus: 'Lema',
   },
@@ -152,7 +154,7 @@ export function prefill(kind: BookCardKind, text: string): Record<string, string
       return { Pergunta: '', Linguagem: guessLanguage(text), Modo: 'estrutura', Resposta: codeText(text) };
     case 'vocab': {
       const word = singleWord(text) ?? proseText(text);
-      return { Palavra: word, Lema: word.toLowerCase(), Exemplo: word };
+      return { Palavra: word, Lema: word.toLowerCase(), Exemplo: word, Família: '' };
     }
   }
 }
@@ -349,8 +351,8 @@ export function CardForm({
       await core.ankiNoteAdd({ notetypeId: notetype.id, deckId: effectiveDeck, fields, tags: ['leitor'] });
       toast.show(t('bookPanel.form.added'), { tone: 'success' });
       try {
-        const saved = await core.bookPanelSet(bookUid, { lastDeckId: effectiveDeck, lastKind: kind });
-        qc.setQueryData(['bookPanel', bookUid], saved);
+        // The panel's info is per page (`['bookPanel', uid, page]`): refreshed by the invalidation below.
+        await core.bookPanelSet(bookUid, { lastDeckId: effectiveDeck, lastKind: kind });
       } catch {
         // Only the defaults of the next card are lost.
       }

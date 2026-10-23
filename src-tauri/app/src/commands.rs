@@ -33,10 +33,19 @@ use crate::code::{
 };
 use crate::deep_link::DeepLink;
 use crate::error::AppError;
+use crate::jobs::JobProgress;
 use crate::library::{AddedBook, BookOpen, LibraryPatch, SavedVersion};
 use crate::reading::{SessionStarted, StopReasonArg};
 use crate::state::AppState;
 use crate::sync::{AnkiSyncStatus, FullSyncResult, SyncNotice};
+use crate::vocab::deck::{VocabDeckOptions, VocabDeckResult, VocabWordAdded};
+use crate::vocab::marks::VocabPageMarks;
+use crate::vocab::scan::{ScanStarted, VocabReport};
+use crate::vocab::{
+    OverrideArg, VocabDataInfo, VocabFolder, VocabOutline, VocabSettings, VocabSettingsPatch,
+};
+use core_store::VocabMappingRow;
+use core_vocab::{RangeSpec, ResolvedRange, ScanConfig};
 
 type Shared<'a> = State<'a, Arc<AppState>>;
 
@@ -202,9 +211,20 @@ pub async fn anki_mini_review_close(state: Shared<'_>) -> Result<MiniReviewClose
 }
 
 #[tauri::command]
-pub async fn book_panel_info(state: Shared<'_>, uid: String) -> Result<BookPanelInfo, AppError> {
+pub async fn book_panel_info(
+    state: Shared<'_>,
+    uid: String,
+    page: Option<u32>,
+) -> Result<BookPanelInfo, AppError> {
     anki_ready(&state).await?;
-    state.book_panel_info(&uid).await
+    let chapter = match page {
+        Some(p) => {
+            let uid = uid.clone();
+            blocking(&state, move |s| Ok(s.vocab_chapter_at(&uid, p))).await?
+        }
+        None => None,
+    };
+    state.book_panel_info_with(&uid, chapter).await
 }
 
 #[tauri::command]
@@ -230,6 +250,8 @@ pub async fn vocab_define(
     book_uid: Option<String>,
 ) -> Result<WordDefinition, AppError> {
     anki_ready(&state).await?;
+    // Opens the vocabulary data (first use) off the async runtime.
+    blocking(&state, |s| Ok(s.vocab_hub().data.lexicon_opt().is_some())).await?;
     state.vocab_define(&word, book_uid.as_deref()).await
 }
 
@@ -981,4 +1003,163 @@ pub async fn code_import_commit(
 ) -> Result<CodeImportResult, AppError> {
     anki_ready(&state).await?;
     state.code_import_commit(text, deck_id, include).await
+}
+
+// --- Vocabulary scanning (spec 12, 15) ------------------------------------------------------------
+
+/// Like [`blocking`], for the methods that take `self: &Arc<AppState>` (they start background jobs).
+async fn blocking_arc<R, F>(state: &Shared<'_>, f: F) -> Result<R, AppError>
+where
+    R: Send + 'static,
+    F: FnOnce(&Arc<AppState>) -> Result<R, AppError> + Send + 'static,
+{
+    let state = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || f(&state)).await?
+}
+
+#[tauri::command]
+pub async fn vocab_settings_get(state: Shared<'_>) -> Result<VocabSettings, AppError> {
+    blocking(&state, |s| s.vocab_settings_get()).await
+}
+
+#[tauri::command]
+pub async fn vocab_settings_set(
+    state: Shared<'_>,
+    patch: VocabSettingsPatch,
+) -> Result<VocabSettings, AppError> {
+    blocking(&state, move |s| s.vocab_settings_set(patch)).await
+}
+
+#[tauri::command]
+pub async fn vocab_folder(state: Shared<'_>, root_deck_id: i64) -> Result<VocabFolder, AppError> {
+    blocking(&state, move |s| s.vocab_folder(root_deck_id)).await
+}
+
+#[tauri::command]
+pub async fn vocab_mapping_samples(
+    state: Shared<'_>,
+    root_deck_id: i64,
+    excluded_deck_ids: Vec<i64>,
+    notetype_id: i64,
+    field: String,
+) -> Result<Vec<String>, AppError> {
+    blocking(&state, move |s| {
+        s.vocab_mapping_samples(root_deck_id, excluded_deck_ids, notetype_id, field)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn vocab_mapping_get(state: Shared<'_>) -> Result<Vec<VocabMappingRow>, AppError> {
+    blocking(&state, |s| s.vocab_mapping_get()).await
+}
+
+#[tauri::command]
+pub async fn vocab_mapping_set(
+    state: Shared<'_>,
+    notetype_id: i64,
+    field: String,
+) -> Result<Vec<VocabMappingRow>, AppError> {
+    blocking(&state, move |s| {
+        s.vocab_mapping_set(notetype_id, field)?;
+        s.vocab_mapping_get()
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn vocab_outline(state: Shared<'_>, uid: String) -> Result<VocabOutline, AppError> {
+    blocking(&state, move |s| s.vocab_outline(&uid)).await
+}
+
+#[tauri::command]
+pub async fn vocab_range_check(
+    state: Shared<'_>,
+    uid: String,
+    range: RangeSpec,
+) -> Result<ResolvedRange, AppError> {
+    blocking(&state, move |s| s.vocab_range_check(&uid, &range)).await
+}
+
+#[tauri::command]
+pub async fn vocab_scan_start(
+    state: Shared<'_>,
+    uid: String,
+    root_deck_id: i64,
+    excluded_deck_ids: Vec<i64>,
+    range: RangeSpec,
+    config: ScanConfig,
+) -> Result<ScanStarted, AppError> {
+    blocking_arc(&state, move |s| {
+        s.vocab_scan_start(&uid, root_deck_id, excluded_deck_ids, range, config)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn vocab_rescan(state: Shared<'_>, uid: String) -> Result<ScanStarted, AppError> {
+    blocking_arc(&state, move |s| s.vocab_rescan(&uid)).await
+}
+
+#[tauri::command]
+pub async fn vocab_report(state: Shared<'_>, uid: String) -> Result<Option<VocabReport>, AppError> {
+    blocking(&state, move |s| s.vocab_report(&uid)).await
+}
+
+#[tauri::command]
+pub async fn vocab_override_set(
+    state: Shared<'_>,
+    lemmas: Vec<String>,
+    status: Option<OverrideArg>,
+) -> Result<(), AppError> {
+    blocking(&state, move |s| s.vocab_override_set(lemmas, status)).await
+}
+
+#[tauri::command]
+pub async fn vocab_generate_deck(
+    state: Shared<'_>,
+    uid: String,
+    scan_uid: String,
+    lemmas: Vec<String>,
+    options: VocabDeckOptions,
+) -> Result<VocabDeckResult, AppError> {
+    blocking_arc(&state, move |s| {
+        s.vocab_generate_deck(&uid, &scan_uid, lemmas, options)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn vocab_marks(
+    state: Shared<'_>,
+    uid: String,
+    pages: Vec<u32>,
+) -> Result<Vec<VocabPageMarks>, AppError> {
+    blocking(&state, move |s| s.vocab_marks(&uid, &pages)).await
+}
+
+#[tauri::command]
+pub async fn vocab_add_word(
+    state: Shared<'_>,
+    uid: String,
+    lemma: String,
+    page: u32,
+    form: String,
+) -> Result<VocabWordAdded, AppError> {
+    blocking(&state, move |s| s.vocab_add_word(&uid, &lemma, page, &form)).await
+}
+
+#[tauri::command]
+pub async fn vocab_data_info(state: Shared<'_>) -> Result<VocabDataInfo, AppError> {
+    blocking(&state, |s| Ok(s.vocab_data_info())).await
+}
+
+#[tauri::command]
+pub fn job_status(state: Shared<'_>, job_id: String) -> Option<JobProgress> {
+    state.job_status(&job_id)
+}
+
+#[tauri::command]
+pub fn job_cancel(state: Shared<'_>, job_id: String) {
+    state.job_cancel(&job_id);
 }

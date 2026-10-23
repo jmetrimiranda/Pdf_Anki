@@ -4,6 +4,7 @@
 # Each route runs in a fresh process with LEITOR_START_ROUTE; data lives in a throwaway dir unless
 # LEITOR_DATA_DIR is set. Optional LEITOR_CAPTURE_SETUP is a command run once before the captures.
 # LEITOR_CAPTURE_SEED=1 first seeds the Anki fixture collection (decks, media, cloze, MathJax…)
+# (LEITOR_CAPTURE_SEED_ARGS adds seed_fixture flags, e.g. '--vocab' for the vocabulary folder)
 # into $LEITOR_DATA_DIR/anki and exports LEITOR_FIXTURE_JSON (its FixtureInfo: deck and card ids)
 # for LEITOR_CAPTURE_SETUP. Routes may carry a query ('?', '&'): they become '-' in file names.
 # With the seed, '{deck:<full name>}' and '{card:<full name>}' in a route become that deck's id and
@@ -35,9 +36,11 @@ else
 fi
 BOOK_UID=""
 SEED_ARGS=()
+read -r -a EXTRA_SEED_ARGS <<<"${LEITOR_CAPTURE_SEED_ARGS:-}"
+SEED_ARGS+=("${EXTRA_SEED_ARGS[@]}")
 if [[ -n "${LEITOR_CAPTURE_PDF:-}" ]]; then
   BOOK_UID=$(sha256sum "$LEITOR_CAPTURE_PDF" | cut -d' ' -f1)
-  SEED_ARGS=(--book-uid="$BOOK_UID")
+  SEED_ARGS+=(--book-uid="$BOOK_UID")
   echo "book: $LEITOR_CAPTURE_PDF ($BOOK_UID)"
 fi
 if [[ "${LEITOR_CAPTURE_SEED:-}" == 1 ]]; then
@@ -61,6 +64,8 @@ if [[ -n "$BOOK_UID" ]]; then
     kill \$APP 2>/dev/null; wait \$APP 2>/dev/null || true"
   echo "imported $LEITOR_CAPTURE_PDF"
 fi
+# The setup sees the imported book as $LEITOR_CAPTURE_BOOK_UID (e.g. for the vocab_scan example).
+export LEITOR_CAPTURE_BOOK_UID="$BOOK_UID"
 [[ -n "${LEITOR_CAPTURE_SETUP:-}" ]] && bash -c "$LEITOR_CAPTURE_SETUP"
 resolve() {
   local r="${1//\{book\}/$BOOK_UID}"

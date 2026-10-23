@@ -12,6 +12,7 @@ pub mod deep_link;
 mod error;
 mod files;
 pub mod grants;
+pub mod jobs;
 pub mod library;
 pub mod open_paths;
 mod protocol;
@@ -22,6 +23,7 @@ pub mod secrets;
 mod smoke;
 mod state;
 pub mod sync;
+pub mod vocab;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,6 +37,7 @@ pub use book_panel::{
 pub use deep_link::{DeepLink, deep_links_from_args, parse_deep_link};
 pub use error::AppError;
 pub use files::BookFiles;
+pub use jobs::{JobKind, JobProgress, JobStage};
 pub use library::{AddedBook, BookOpen, SavedVersion};
 pub use open_paths::open_paths_from_args;
 pub use protocol::{cover_url, protocol_url, ui_origins_with};
@@ -42,6 +45,10 @@ pub use reading::SessionStarted;
 pub use smoke::SmokeReport;
 pub use state::AppState;
 pub use sync::{AnkiSyncStatus, FullSyncResult, SyncErrorInfo, SyncNotice, SyncState};
+pub use vocab::deck::{VocabDeckOptions, VocabDeckResult, VocabWordAdded};
+pub use vocab::marks::{VocabMark, VocabPageMarks};
+pub use vocab::scan::{ScanStarted, VocabReport};
+pub use vocab::{VocabDataInfo, VocabFolder, VocabOutline, VocabSettings, VocabSettingsPatch};
 
 /// Overrides the app data dir (tests, CI and side-by-side dev profiles).
 const DATA_DIR_ENV: &str = "LEITOR_DATA_DIR";
@@ -153,6 +160,9 @@ fn build(launch_paths: Vec<String>) -> Result<App, Box<dyn std::error::Error>> {
     tracing::info!(data_dir = %data_dir.display(), "starting");
     let state = AppState::new(data_dir);
     state.push_open_paths(launch_paths);
+    if let Ok(dir) = app.path().resource_dir() {
+        state.set_vocab_resource_dir(dir);
+    }
     let web = anki_web::AnkiWeb::resolve(
         std::env::var_os(anki_web::ANKI_WEB_DIR_ENV).map(PathBuf::from),
         app.path().resource_dir().ok(),
@@ -179,6 +189,11 @@ fn emit_ui_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: UiEvent) {
         UiEvent::AnkiSync(status) => app.emit_to("main", sync::ANKI_SYNC_EVENT, &status),
         UiEvent::StudyOwner(change) => app.emit_to("main", anki::STUDY_OWNER_EVENT, change),
         UiEvent::DeepLink(link) => app.emit_to("main", deep_link::DEEP_LINK_EVENT, &link),
+        UiEvent::Job(progress) => app.emit_to(
+            "main",
+            &format!("{}{}", jobs::JOB_EVENT_PREFIX, progress.job_id),
+            &progress,
+        ),
         UiEvent::OpenUrl(url) => {
             open_url(app, &url);
             Ok(())
@@ -289,6 +304,24 @@ macro_rules! app_commands {
             commands::code_runner_test,
             commands::code_import_markdown,
             commands::code_import_commit,
+            commands::vocab_settings_get,
+            commands::vocab_settings_set,
+            commands::vocab_folder,
+            commands::vocab_mapping_samples,
+            commands::vocab_mapping_get,
+            commands::vocab_mapping_set,
+            commands::vocab_outline,
+            commands::vocab_range_check,
+            commands::vocab_scan_start,
+            commands::vocab_rescan,
+            commands::vocab_report,
+            commands::vocab_override_set,
+            commands::vocab_generate_deck,
+            commands::vocab_marks,
+            commands::vocab_add_word,
+            commands::vocab_data_info,
+            commands::job_status,
+            commands::job_cancel,
             $($extra),*
         ]
     };

@@ -3,6 +3,9 @@ import {
   BridgeClient,
   INFO_KEY,
   MAX_BYTES,
+  MAX_MARK_PAGES,
+  MAX_MARK_RECTS,
+  MIN_BRIDGE,
   MAX_RECTS,
   MAX_TEXT,
   normalizeFind,
@@ -196,6 +199,121 @@ describe('parseMessage · bridge v2', () => {
     expect(parse({ type: 'pdfcraft:selection-sent', seq: null })).toMatchObject({ ok: true, msg: { seq: null } });
     expect(parse({ type: 'pdfcraft:selection-sent' })).toMatchObject({ ok: true, msg: { seq: null } });
     for (const seq of [-1, 1.5, '3', NaN]) expect(parse({ type: 'pdfcraft:selection-sent', seq }).ok).toBe(false);
+  });
+});
+
+describe('marks (bridge 3)', () => {
+  const marks = (id: string, set: string, page: number) =>
+    id === UID_A && set === 'vocab' && page === 2 ? 3 : undefined;
+  const parse = (data: unknown) => parseMessage(data, known, new Set(), marks);
+  const click = { type: 'pdfcraft:mark-click', id: UID_A, set: 'vocab', index: 1, page: 2, rect: [10, 20, 30, 4] };
+
+  it('needs bridge 3', () => {
+    expect(MIN_BRIDGE).toBe(3);
+  });
+
+  it('accepts a click on a mark the app sent', () => {
+    expect(parse(click)).toEqual({ ok: true, msg: click });
+    expect(parse({ ...click, index: 2 }).ok).toBe(true);
+  });
+
+  it.each([
+    ['no id', { ...click, id: null }],
+    ['unknown id', { ...click, id: UID_B }],
+    ['unknown set', { ...click, set: 'other' }],
+    ['malformed set', { ...click, set: 'Vocab!' }],
+    ['set as number', { ...click, set: 3 }],
+    ['page without marks', { ...click, page: 1 }],
+    ['index past the page marks', { ...click, index: 3 }],
+    ['negative index', { ...click, index: -1 }],
+    ['fractional index', { ...click, index: 0.5 }],
+    ['index as string', { ...click, index: '1' }],
+    ['NaN in the rect', { ...click, rect: [NaN, 0, 1, 1] }],
+    ['infinite rect', { ...click, rect: [0, Infinity, 1, 1] }],
+    ['negative size', { ...click, rect: [0, 0, -1, 1] }],
+    ['short rect', { ...click, rect: [0, 0, 1] }],
+    ['no rect', { ...click, rect: undefined }],
+  ])('drops a mark-click with %s', (_why, data) => {
+    expect(parse(data).ok).toBe(false);
+  });
+
+  it('drops every mark-click while no marks were sent', () => {
+    expect(parseMessage(click, known).ok).toBe(false);
+  });
+
+  it('accepts marks-shown and rejects malformed ones', () => {
+    const shown = { type: 'pdfcraft:marks-shown', id: UID_A, set: 'vocab', page: 2, count: 3 };
+    expect(parse(shown)).toEqual({ ok: true, msg: shown });
+    expect(parse({ ...shown, count: -1 }).ok).toBe(false);
+    expect(parse({ ...shown, id: null }).ok).toBe(false);
+  });
+
+  it('posts marks grouped by page with the underline style, and remembers them for clicks', () => {
+    const { client, frame, got, send } = setup();
+    client.open({ id: UID_A, name: 'a.pdf', bytes: new Uint8Array(1), page: 0 });
+    const ok = client.sendMarks(UID_A, 'vocab', [
+      {
+        page: 2,
+        marks: [
+          { rects: [[1, 2, 3, 4]], color: '#D85A30' },
+          { rects: [[5, 6, 7, 8], [NaN, 0, 1, 1] as never], color: '#ba7517' },
+        ],
+      },
+      { page: 3, marks: [] },
+    ]);
+    expect(ok).toBe(true);
+    expect(frame.posted.at(-1)!.msg).toEqual({
+      type: 'pdfcraft:marks',
+      id: UID_A,
+      set: 'vocab',
+      marks: [
+        { page: 2, rects: [[1, 2, 3, 4]], style: 'underline', color: '#d85a30' },
+        { page: 2, rects: [[5, 6, 7, 8]], style: 'underline', color: '#ba7517' },
+        // An empty page: one entry without rects clears it in PdfCraft.
+        { page: 3, rects: [], style: 'underline', color: '#000000' },
+      ],
+    });
+    expect(client.markCount(UID_A, 'vocab', 2)).toBe(2);
+    expect(client.markCount(UID_A, 'vocab', 3)).toBeUndefined();
+    send({ type: 'pdfcraft:mark-click', id: UID_A, set: 'vocab', index: 1, page: 2, rect: [1, 1, 1, 1] });
+    send({ type: 'pdfcraft:mark-click', id: UID_A, set: 'vocab', index: 2, page: 2, rect: [1, 1, 1, 1] });
+    expect(got.filter((m) => m.type === 'pdfcraft:mark-click')).toHaveLength(1);
+
+    // Clearing forgets them: later clicks are dropped.
+    expect(client.clearMarks(UID_A, 'vocab')).toBe(true);
+    expect(frame.posted.at(-1)!.msg).toEqual({ type: 'pdfcraft:clear-marks', id: UID_A, set: 'vocab' });
+    expect(client.markCount(UID_A, 'vocab', 2)).toBeUndefined();
+  });
+
+  it('caps pages, rects per mark, and refuses documents it did not open or bad sets', () => {
+    const { client, frame } = setup();
+    expect(client.sendMarks(UID_A, 'vocab', [{ page: 0, marks: [{ rects: [[0, 0, 1, 1]], color: '#d85a30' }] }])).toBe(
+      false,
+    );
+    client.open({ id: UID_A, name: 'a.pdf', bytes: new Uint8Array(1), page: 0 });
+    expect(client.sendMarks(UID_A, 'Bad Set', [{ page: 0, marks: [] }])).toBe(false);
+    const many = Array.from({ length: MAX_MARK_PAGES + 5 }, (_, page) => ({
+      page,
+      marks: [
+        {
+          rects: Array.from({ length: 12 }, (_, i) => [i, 0, 1, 1] as [number, number, number, number]),
+          color: '#d85a30',
+        },
+      ],
+    }));
+    client.sendMarks(UID_A, 'vocab', many);
+    const sent = frame.posted.at(-1)!.msg as { marks: { page: number; rects: unknown[] }[] };
+    expect(new Set(sent.marks.map((m) => m.page)).size).toBe(MAX_MARK_PAGES);
+    expect(sent.marks.every((m) => m.rects.length === MAX_MARK_RECTS)).toBe(true);
+  });
+
+  it('forgets the marks of a reload or a closed document', () => {
+    const { client } = setup();
+    client.open({ id: UID_A, name: 'a.pdf', bytes: new Uint8Array(1), page: 0 });
+    client.sendMarks(UID_A, 'vocab', [{ page: 0, marks: [{ rects: [[0, 0, 1, 1]], color: '#d85a30' }] }]);
+    expect(client.markCount(UID_A, 'vocab', 0)).toBe(1);
+    client.reset();
+    expect(client.markCount(UID_A, 'vocab', 0)).toBeUndefined();
   });
 });
 

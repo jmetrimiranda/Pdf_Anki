@@ -5,7 +5,7 @@ use rusqlite::Connection;
 
 use crate::{Result, StoreError};
 
-const MIGRATIONS: &[&str] = &[V1, V2, V3];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4];
 
 /// Schema version this build creates and understands.
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -270,6 +270,48 @@ CREATE TABLE book_prefs (
 ) STRICT;
 "#;
 
+/// Phase 6 (spec 12.1, 12.3 F, 14): vocabulary scans of a range of the book with their report, and the per-page lemma
+/// table (`book_lemma_page`) computed once per version of the book's text, so scanning another range never re-reads
+/// the PDF. `book_lemma_state` is the table's completeness marker: the rows are valid only when the state row
+/// matches the current text version and algorithm (it is written in the same transaction as the rows).
+///
+/// Only `ALTER TABLE ADD COLUMN` and `CREATE`, never the rebuild procedure (see V2).
+const V4: &str = r#"
+ALTER TABLE vocab_scan ADD COLUMN range TEXT NOT NULL DEFAULT '{"kind":"all"}' CHECK (json_valid(range));
+ALTER TABLE vocab_scan ADD COLUMN text_version TEXT;
+ALTER TABLE vocab_scan ADD COLUMN report TEXT CHECK (report IS NULL OR json_valid(report));
+ALTER TABLE vocab_scan ADD COLUMN error TEXT;
+
+ALTER TABLE book_lemma ADD COLUMN forms TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(forms));
+ALTER TABLE book_lemma ADD COLUMN text_version TEXT NOT NULL DEFAULT '';
+
+-- Cache per page, rebuildable; doesn't sync.
+CREATE TABLE book_lemma_page (
+    book_uid     TEXT NOT NULL REFERENCES book (book_uid) ON DELETE CASCADE,
+    lemma        TEXT NOT NULL,
+    unit         INTEGER NOT NULL CHECK (unit >= 0),
+    occurrences  INTEGER NOT NULL CHECK (occurrences >= 0),
+    form         TEXT NOT NULL,
+    forms        TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(forms)),
+    example      TEXT,
+    example_span TEXT CHECK (example_span IS NULL OR json_valid(example_span)),
+    text_version TEXT NOT NULL,
+    PRIMARY KEY (book_uid, lemma, unit)
+) STRICT;
+CREATE INDEX book_lemma_page_unit ON book_lemma_page (book_uid, unit);
+
+-- Completeness marker of book_lemma/book_lemma_page; doesn't sync.
+CREATE TABLE book_lemma_state (
+    book_uid     TEXT PRIMARY KEY NOT NULL REFERENCES book (book_uid) ON DELETE CASCADE,
+    text_version TEXT NOT NULL,
+    algo_version INTEGER NOT NULL,
+    page_count   INTEGER NOT NULL CHECK (page_count >= 0),
+    built_at     INTEGER NOT NULL,
+    -- Repeated header/footer lines removed by the cleanup (JSON list of normalized keys): the highlight skips them.
+    repeated_lines TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(repeated_lines))
+) STRICT;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,6 +562,154 @@ mod tests {
             .is_err(),
             "foreign key"
         );
+        migrate(&mut conn).expect("idempotent");
+    }
+
+    /// A real V3 file with a book, a scan, lemmas and mappings is upgraded to V4: rows kept, the new columns get
+    /// their defaults, the new tables are usable and constrained.
+    #[test]
+    fn v3_database_with_data_migrates_to_v4() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("app.sqlite");
+        {
+            let mut conn = Connection::open(&path).expect("open");
+            conn.pragma_update(None, "foreign_keys", "ON").expect("fk");
+            for (i, sql) in [V1, V2, V3].iter().enumerate() {
+                let tx = conn.transaction().expect("tx");
+                tx.execute_batch(sql).expect("migration");
+                tx.execute_batch(&format!("PRAGMA user_version = {}", i + 1))
+                    .expect("version");
+                tx.commit().expect("commit");
+            }
+            conn.execute_batch(&format!(
+                r#"
+                INSERT INTO book (book_uid, title, format, file_name, pages, file_hash, added_at, updated_at)
+                    VALUES ('{UID_A}', 'Livro A', 'pdf', 'a.pdf', 10, '{UID_A}', 1, 2);
+                INSERT INTO vocab_scan (uid, book_uid, created_at, root_deck_id, deck_ids, config, total_tokens,
+                                        cov_known, status)
+                    VALUES ('s1', '{UID_A}', 10, 5, '[5,6]', '{{"a":1}}', 100, 0.9, 'done');
+                INSERT INTO book_lemma (book_uid, lemma, occurrences, first_unit, units)
+                    VALUES ('{UID_A}', 'windmill', 3, 2, '[2,4]');
+                INSERT INTO notetype_mapping (anki_notetype_id, role, fields, updated_at)
+                    VALUES (7, 'vocab', '{{"word":"Word"}}', 1);
+                INSERT INTO book_prefs (book_uid, last_card_kind, updated_at) VALUES ('{UID_A}', 'vocab', 3);
+                "#
+            ))
+            .expect("v3 rows");
+        }
+
+        let mut conn = Connection::open(&path).expect("reopen");
+        conn.pragma_update(None, "foreign_keys", "ON").expect("fk");
+        migrate(&mut conn).expect("migrate");
+        let version: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        const { assert!(SCHEMA_VERSION >= 4) };
+        let t = tables(&conn);
+        assert!(t.iter().any(|n| n == "book_lemma_page"), "{t:?}");
+        assert!(t.iter().any(|n| n == "book_lemma_state"), "{t:?}");
+        for col in ["range", "text_version", "report", "error"] {
+            assert!(
+                columns(&conn, "vocab_scan").iter().any(|c| c == col),
+                "{col}"
+            );
+        }
+        for col in ["forms", "text_version"] {
+            assert!(
+                columns(&conn, "book_lemma").iter().any(|c| c == col),
+                "{col}"
+            );
+        }
+
+        let (range, total, report): (String, i64, Option<String>) = conn
+            .query_row(
+                "SELECT range, total_tokens, report FROM vocab_scan WHERE uid = 's1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("scan");
+        assert_eq!(
+            (range.as_str(), total, report),
+            (r#"{"kind":"all"}"#, 100, None)
+        );
+        let (forms, version, units): (String, String, String) = conn
+            .query_row(
+                "SELECT forms, text_version, units FROM book_lemma WHERE lemma = 'windmill'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("lemma");
+        assert_eq!(
+            (forms.as_str(), version.as_str(), units.as_str()),
+            ("[]", "", "[2,4]")
+        );
+        let (mappings, prefs): (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT count(*) FROM notetype_mapping), (SELECT count(*) FROM book_prefs)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("counts");
+        assert_eq!((mappings, prefs), (1, 1), "data survives the migration");
+
+        // The new constraints hold.
+        assert!(
+            conn.execute(
+                "UPDATE vocab_scan SET range = 'not json' WHERE uid = 's1'",
+                []
+            )
+            .is_err()
+        );
+        assert!(
+            conn.execute("UPDATE vocab_scan SET report = '{' WHERE uid = 's1'", [])
+                .is_err()
+        );
+        let page = |lemma: &str, unit: i64, occ: i64, forms: &str| {
+            conn.execute(
+                &format!(
+                    "INSERT INTO book_lemma_page (book_uid, lemma, unit, occurrences, form, forms, text_version)
+                     VALUES ('{UID_A}', '{lemma}', {unit}, {occ}, '{lemma}', '{forms}', 'v1')"
+                ),
+                [],
+            )
+        };
+        page("windmill", 2, 1, "[]").expect("page row");
+        assert!(page("windmill", 2, 1, "[]").is_err(), "primary key");
+        assert!(page("farm", -1, 1, "[]").is_err(), "unit >= 0");
+        assert!(page("farm", 1, -1, "[]").is_err(), "occurrences >= 0");
+        assert!(page("farm", 1, 1, "x").is_err(), "forms is JSON");
+        let unknown = "c".repeat(64);
+        assert!(
+            conn.execute(
+                &format!(
+                    "INSERT INTO book_lemma_state (book_uid, text_version, algo_version, page_count, built_at)
+                     VALUES ('{unknown}', 'v', 1, 1, 1)"
+                ),
+                [],
+            )
+            .is_err(),
+            "foreign key"
+        );
+        conn.execute(
+            &format!(
+                "INSERT INTO book_lemma_state (book_uid, text_version, algo_version, page_count, built_at)
+                 VALUES ('{UID_A}', 'v', 1, 10, 1)"
+            ),
+            [],
+        )
+        .expect("state row");
+        // Deleting the book cascades to the new tables.
+        conn.execute(&format!("DELETE FROM book WHERE book_uid = '{UID_A}'"), [])
+            .expect("delete");
+        let left: i64 = conn
+            .query_row(
+                "SELECT (SELECT count(*) FROM book_lemma_page) + (SELECT count(*) FROM book_lemma_state)",
+                [],
+                |r| r.get(0),
+            )
+            .expect("left");
+        assert_eq!(left, 0);
         migrate(&mut conn).expect("idempotent");
     }
 }

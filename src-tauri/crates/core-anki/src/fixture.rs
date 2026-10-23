@@ -8,6 +8,14 @@
 //! `estrutura`, C++ `testes`, C++ `saida`; code fields HTML-encoded like the UI's `codeToHtml`) and, optionally,
 //! "Isolamento (teste)" with the card isolation probe.
 //!
+//! Opt-in ([`FixtureOptions::vocab`], off by default so the other tests and snapshots don't change): a vocabulary
+//! folder shaped like common shared decks, for the vocabulary scan (spec 12): [`DECK_VOCAB`] (root) with
+//! [`DECK_VOCAB_BASIC`] (notetype [`VOCAB_WORD_NOTETYPE`], fields `Word`, `Meaning`, `Audio`), [`DECK_VOCAB_OXFORD`]
+//! (notetype [`VOCAB_FRONT_NOTETYPE`], fields `Front`, `Back`) and the empty [`DECK_VOCAB_EMPTY`]. The word fields
+//! ([`VOCAB_NOTES`]) exercise the cleaning rules (HTML, `[sound:…]`, cloze, parentheses, `/` and `;` variants, a
+//! phrase) and every status: mature (interval ≥ 21 days), learning (interval 3–5), new and suspended. Note roles
+//! are `vocab:<key>` ("vocab:learn", "vocab:look up"); notetype roles `vocabWord`, `vocabFront`.
+//!
 //! "ROS 2 — Revisão" also has three notes of a user-shaped type, [`USER_COMMAND_NOTETYPE`] (fields `Frente`,
 //! `Comando`, `Explicação`; a textarea + Ctrl+Enter front like the user's real deck, docs/referencia/capturas/06..09).
 //! It is a normal user type (not an app type, not created by "Preparar coleção"), used to test assigning it the
@@ -44,6 +52,118 @@ pub const DECK_BOOKS: &str = "Livros";
 pub const DECK_ANIMAL_FARM: &str = "Livros::Animal Farm";
 pub const DECK_ISOLATION: &str = "Isolamento (teste)";
 pub const DECK_PROGRAMMING: &str = "Programação";
+pub const DECK_VOCAB: &str = "Vocabulário";
+pub const DECK_VOCAB_BASIC: &str = "Vocabulário::Inglês básico";
+pub const DECK_VOCAB_OXFORD: &str = "Vocabulário::Oxford";
+pub const DECK_VOCAB_EMPTY: &str = "Vocabulário::Revisar depois";
+
+/// The vocabulary folder's "Word"-shaped notetype (fields `Word`, `Meaning`, `Audio`).
+pub const VOCAB_WORD_NOTETYPE: &str = "Vocab (Word)";
+/// The vocabulary folder's "Front"-shaped notetype (fields `Front`, `Back`).
+pub const VOCAB_FRONT_NOTETYPE: &str = "Oxford (Front)";
+
+/// Status of a fixture vocabulary note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixtureVocabStatus {
+    /// Review card with this interval in days.
+    Review(u32),
+    New,
+    Suspended,
+}
+
+/// One note of the fixture's vocabulary folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FixtureVocabNote {
+    /// Role in [`FixtureInfo::notes`] is `vocab:<key>`.
+    pub key: &'static str,
+    pub deck: &'static str,
+    /// The word field (`Word` / `Front`), raw HTML.
+    pub word: &'static str,
+    /// The second field (`Meaning` / `Back`).
+    pub meaning: &'static str,
+    pub status: FixtureVocabStatus,
+}
+
+/// The vocabulary folder's notes, in creation order.
+pub const VOCAB_NOTES: [FixtureVocabNote; 11] = [
+    FixtureVocabNote {
+        key: "learn",
+        deck: DECK_VOCAB_BASIC,
+        word: "<b>learn</b> [sound:learn.mp3]",
+        meaning: "aprender",
+        status: FixtureVocabStatus::Review(30),
+    },
+    FixtureVocabNote {
+        key: "happy",
+        deck: DECK_VOCAB_BASIC,
+        word: "happy / glad",
+        meaning: "feliz",
+        status: FixtureVocabStatus::Review(25),
+    },
+    FixtureVocabNote {
+        key: "quick",
+        deck: DECK_VOCAB_BASIC,
+        word: "{{c1::quick}}",
+        meaning: "rápido",
+        status: FixtureVocabStatus::Review(3),
+    },
+    FixtureVocabNote {
+        key: "feel",
+        deck: DECK_VOCAB_BASIC,
+        word: "feel (v.)",
+        meaning: "sentir",
+        status: FixtureVocabStatus::Review(40),
+    },
+    FixtureVocabNote {
+        key: "mean",
+        deck: DECK_VOCAB_BASIC,
+        word: "mean; meaning",
+        meaning: "significar; significado",
+        status: FixtureVocabStatus::Review(5),
+    },
+    FixtureVocabNote {
+        key: "build",
+        deck: DECK_VOCAB_BASIC,
+        word: "build",
+        meaning: "construir",
+        status: FixtureVocabStatus::New,
+    },
+    FixtureVocabNote {
+        key: "interest",
+        deck: DECK_VOCAB_OXFORD,
+        word: "interest",
+        meaning: "interesse",
+        status: FixtureVocabStatus::Review(21),
+    },
+    FixtureVocabNote {
+        key: "farm",
+        deck: DECK_VOCAB_OXFORD,
+        word: "farm",
+        meaning: "fazenda",
+        status: FixtureVocabStatus::Review(60),
+    },
+    FixtureVocabNote {
+        key: "animal",
+        deck: DECK_VOCAB_OXFORD,
+        word: "animal",
+        meaning: "animal",
+        status: FixtureVocabStatus::New,
+    },
+    FixtureVocabNote {
+        key: "windmill",
+        deck: DECK_VOCAB_OXFORD,
+        word: "windmill",
+        meaning: "moinho de vento",
+        status: FixtureVocabStatus::Suspended,
+    },
+    FixtureVocabNote {
+        key: "look up",
+        deck: DECK_VOCAB_OXFORD,
+        word: "look up",
+        meaning: "procurar (no dicionário)",
+        status: FixtureVocabStatus::Review(3),
+    },
+];
 
 /// Name of the fixture's user-shaped command notetype (like the user's "DIGITE O COMANDO · CTRL+ENTER RESPONDE").
 pub const USER_COMMAND_NOTETYPE: &str = "ROS 2 · Digite o comando";
@@ -258,6 +378,9 @@ pub const ISOLATION_PROBE_FRONT: &str = r#"<div class="leitor-probe">sonda de is
 pub struct FixtureOptions {
     /// Adds the "Isolamento (teste)" deck with [`ISOLATION_PROBE_FRONT`].
     pub isolation_probe: bool,
+    /// Adds the vocabulary folder ([`DECK_VOCAB`] and its subdecks, [`VOCAB_NOTES`]).
+    #[serde(default)]
+    pub vocab: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -345,6 +468,11 @@ pub fn populate(col: &mut Collection, opts: FixtureOptions) -> Result<FixtureInf
     }
     if opts.isolation_probe {
         decks.push((DECK_ISOLATION, crate::decks::create(col, DECK_ISOLATION)?));
+    }
+    if opts.vocab {
+        for name in [DECK_VOCAB_BASIC, DECK_VOCAB_OXFORD, DECK_VOCAB_EMPTY] {
+            decks.push((name, crate::decks::create(col, name)?));
+        }
     }
 
     // --- 5000 palavras: 8 basic notes (first with image, second with audio) + a TTS note.
@@ -555,11 +683,19 @@ pub fn populate(col: &mut Collection, opts: FixtureOptions) -> Result<FixtureInf
         info.notes.insert("isolamento".into(), probe);
     }
 
+    if opts.vocab {
+        add_vocab_folder(col, &mut info)?;
+    }
+
     // Every deck expanded on the Decks screen; current deck = "5000 palavras".
     for (_, did) in &decks {
         col.set_deck_collapsed(DeckId(*did), false, DeckCollapseScope::Reviewer)?;
     }
-    for parent in [DECK_OXFORD, DECK_GRAMMAR, DECK_BOOKS] {
+    let vocab_parent: &[&str] = if opts.vocab { &[DECK_VOCAB] } else { &[] };
+    for parent in [DECK_OXFORD, DECK_GRAMMAR, DECK_BOOKS]
+        .iter()
+        .chain(vocab_parent)
+    {
         let did = deck_id(col, parent)?;
         col.set_deck_collapsed(DeckId(did), false, DeckCollapseScope::Reviewer)?;
     }
@@ -579,6 +715,71 @@ pub fn populate(col: &mut Collection, opts: FixtureOptions) -> Result<FixtureInf
         info.decks.insert(d.name, d.id);
     }
     Ok(info)
+}
+
+/// The opt-in vocabulary folder: two user-shaped notetypes and [`VOCAB_NOTES`] with their statuses.
+fn add_vocab_folder(col: &mut Collection, info: &mut FixtureInfo) -> Result<()> {
+    let word = plain_notetype(
+        col,
+        VOCAB_WORD_NOTETYPE,
+        &["Word", "Meaning", "Audio"],
+        "{{Word}}",
+        "{{FrontSide}}<hr id=answer>{{Meaning}}{{Audio}}",
+    )?;
+    let front = plain_notetype(
+        col,
+        VOCAB_FRONT_NOTETYPE,
+        &["Front", "Back"],
+        "{{Front}}",
+        "{{FrontSide}}<hr id=answer>{{Back}}",
+    )?;
+    info.notetypes.insert("vocabWord".into(), word.id.0);
+    info.notetypes.insert("vocabFront".into(), front.id.0);
+    for v in VOCAB_NOTES {
+        let did = deck_id(col, v.deck)?;
+        let nt = if v.deck == DECK_VOCAB_BASIC {
+            &word
+        } else {
+            &front
+        };
+        let (nid, cards) = add(col, nt, did, &[v.word, v.meaning], &["vocabulario"])?;
+        match v.status {
+            FixtureVocabStatus::Review(ivl) => {
+                col.set_due_date(&cards, &format!("{ivl}!"), None)?;
+            }
+            FixtureVocabStatus::New => {}
+            FixtureVocabStatus::Suspended => {
+                col.bury_or_suspend_cards(
+                    &cards,
+                    anki_proto::scheduler::bury_or_suspend_cards_request::Mode::Suspend,
+                )?;
+            }
+        }
+        info.notes.insert(format!("vocab:{}", v.key), nid);
+    }
+    Ok(())
+}
+
+/// A plain user notetype with one "Cartão 1" template, or the existing one with that name.
+fn plain_notetype(
+    col: &mut Collection,
+    name: &str,
+    fields: &[&str],
+    front: &str,
+    back: &str,
+) -> Result<std::sync::Arc<Notetype>> {
+    if let Some(existing) = col.get_notetype_by_name(name)? {
+        return Ok(existing);
+    }
+    let mut nt = Notetype {
+        name: name.to_string(),
+        fields: fields.iter().map(|f| NoteField::new(*f)).collect(),
+        templates: vec![CardTemplate::new(card_1_name(), front, back)],
+        ..Default::default()
+    };
+    nt.config.sort_field_idx = 0;
+    col.add_notetype(&mut nt, false)?;
+    notetype(col, name)
 }
 
 /// [`USER_COMMAND_NOTETYPE`]: added as a plain user type (fields, one "Cartão 1" template, CSS), or the existing one.

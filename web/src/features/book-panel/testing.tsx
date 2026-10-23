@@ -5,7 +5,7 @@ import { render } from '@testing-library/react';
 import { useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
 import { vi } from 'vitest';
 import { ToastProvider, TooltipProvider } from '../../components/ui';
-import type { LeitorSelection, LeitorSnapshot, PanelRequest } from '../leitor/controller';
+import type { LeitorSelection, LeitorSnapshot, MarkClick, PanelRequest } from '../leitor/controller';
 
 type Snap = Pick<LeitorSnapshot, 'activeBookUid' | 'page' | 'visible' | 'panelOpen'> & {
   selection: LeitorSelection | null;
@@ -16,6 +16,9 @@ export function createFakeLeitor(initial: Partial<Snap> = {}) {
   let snap: Snap = { activeBookUid: null, page: 0, visible: true, panelOpen: true, selection: null, ...initial };
   const subs = new Set<() => void>();
   const panelListeners = new Set<(r: PanelRequest) => void>();
+  const markListeners = new Set<(c: MarkClick) => void>();
+  /** Books with "Realçar vocabulário" on. */
+  let highlight = new Set<string>();
   const leitor = {
     openBook: vi.fn(async (_uid: string, _opts?: { page?: number; find?: string | null }) => true),
     togglePanel: vi.fn(),
@@ -28,6 +31,17 @@ export function createFakeLeitor(initial: Partial<Snap> = {}) {
       panelListeners.add(cb);
       return () => void panelListeners.delete(cb);
     }),
+    onMarkClick: vi.fn((cb: (c: MarkClick) => void) => {
+      markListeners.add(cb);
+      return () => void markListeners.delete(cb);
+    }),
+    setHighlight: vi.fn((uid: string, on: boolean) => {
+      highlight = new Set(highlight);
+      if (on) highlight.add(uid);
+      else highlight.delete(uid);
+      for (const fn of [...subs]) fn();
+    }),
+    refreshVocab: vi.fn((_uid?: string) => {}),
   };
   const subscribe = (fn: () => void) => {
     subs.add(fn);
@@ -39,6 +53,10 @@ export function createFakeLeitor(initial: Partial<Snap> = {}) {
     set(patch: Partial<Snap>) {
       snap = { ...snap, ...patch };
       for (const fn of [...subs]) fn();
+    },
+    /** Delivers a click on a highlighted word as the controller would (`pdfcraft:mark-click`). */
+    emitMark(c: MarkClick) {
+      for (const fn of [...markListeners]) fn(c);
     },
     /** Delivers a panel request as the controller would (PdfCraft's menu, a shortcut). */
     emit(r: PanelRequest) {
@@ -52,6 +70,10 @@ export function createFakeLeitor(initial: Partial<Snap> = {}) {
         return select(s);
       },
       leitorController: () => ({}),
+      useVocabHighlight: (uid: string | null) => {
+        const set = useSyncExternalStore(subscribe, () => highlight);
+        return { on: uid !== null && set.has(uid), notScanned: false };
+      },
     },
   };
 }

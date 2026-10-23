@@ -9,6 +9,7 @@ import {
   type BookPanelInfo,
   type BookPanelPatch,
   type CoreClient,
+  type BookPanelVocab,
   type DeepLink,
   type WordDefinition,
 } from '../types';
@@ -78,6 +79,22 @@ function persist(): void {
 
 const deepLinkListeners = new Set<(l: DeepLink) => void>();
 
+/** What the panel and "Definir palavra" take from the vocabulary mock (mock/vocab.ts registers it). */
+export interface VocabBridge {
+  panel(uid: string, page: number | undefined): { vocab: BookPanelVocab | null; chapterDeck: BookDeckInfo | null };
+  define(
+    lemma: string,
+    bookUid: string | null,
+  ): Pick<WordDefinition, 'pos' | 'status' | 'family' | 'wordnetDefinition'>;
+  lemma(word: string): string;
+}
+
+let vocabBridge: VocabBridge | null = null;
+
+export function setVocabBridge(bridge: VocabBridge): void {
+  vocabBridge = bridge;
+}
+
 // ---------------------------------------------------------------- helpers
 
 function plain(html: string): string {
@@ -120,7 +137,7 @@ function prefsOf(uid: string): BookPrefs {
   return state.prefs[uid] ?? { lastDeckId: null, lastKind: null, reviewDeckId: null };
 }
 
-function info(deps: BookPanelDeps, uid: string): BookPanelInfo {
+function info(deps: BookPanelDeps, uid: string, page?: number): BookPanelInfo {
   const book = deps.book(uid);
   const root = vocabRoot();
   const vocabName = root ? `${root.name}::Livros::${book.title}` : `Livros::${book.title}`;
@@ -140,6 +157,7 @@ function info(deps: BookPanelDeps, uid: string): BookPanelInfo {
     lastDeckId: liveDeckId(prefs.lastDeckId),
     lastKind: prefs.lastKind,
     reviewDeckId: liveDeckId(prefs.reviewDeckId),
+    ...(vocabBridge?.panel(uid, page) ?? { vocab: null, chapterDeck: null }),
   };
 }
 
@@ -200,12 +218,10 @@ function bookCards(uid: string): BookCard[] {
 
 // ---------------------------------------------------------------- "Definir palavra"
 
-/** A tiny stand-in for `core_vocab::lemma` (the core uses rules; Phase 6 brings the real one). */
-const LEMMAS: Record<string, string> = { animals: 'animal', ran: 'run', windmills: 'windmill' };
-
+/** The mock engine's lemma (mock/vocabEngine.ts), like `core_vocab::lemma`. */
 export function mockLemma(word: string): string {
   const w = word.trim().toLowerCase().replace(/[’‘]/g, "'").replace(/'s$/, '');
-  return LEMMAS[w] ?? w;
+  return vocabBridge ? vocabBridge.lemma(w) : w;
 }
 
 /** Like `core_vocab::single_word`: the selection trimmed of surrounding punctuation, if it is exactly one word. */
@@ -262,14 +278,28 @@ function define(deps: BookPanelDeps, word: string, bookUid: string | null): Word
       break;
     }
   }
-  return { word: single, lemma, vocabRootDeckId: root?.id ?? null, vocabRootName: root?.name ?? null, note };
+  const extras = vocabBridge?.define(lemma, bookUid) ?? {
+    pos: null,
+    status: null,
+    family: null,
+    wordnetDefinition: null,
+  };
+  return {
+    word: single,
+    lemma,
+    ...extras,
+    definitionSource: note?.definition ? 'note' : extras.wordnetDefinition ? 'wordnet' : null,
+    vocabRootDeckId: root?.id ?? null,
+    vocabRootName: root?.name ?? null,
+    note,
+  };
 }
 
 // ---------------------------------------------------------------- client
 
 export function createBookPanelMock(deps: BookPanelDeps): Pick<CoreClient, BookPanelMockKeys> {
   return {
-    bookPanelInfo: (uid) => later(() => info(deps, uid)),
+    bookPanelInfo: (uid, page) => later(() => info(deps, uid, page)),
     bookPanelSet: (uid, patch) => later(() => setPanel(deps, uid, patch)),
     ankiBookCards: (uid) => later(() => bookCards(uid)),
     vocabDefine: (word, bookUid) => later(() => define(deps, word, bookUid)),
@@ -285,6 +315,11 @@ export function createBookPanelMock(deps: BookPanelDeps): Pick<CoreClient, BookP
 }
 
 // ---------------------------------------------------------------- test hooks
+
+/** Setting `vocab_root_deck_id` (shared with the vocabulary mock). */
+export function mockVocabRootId(): number | null {
+  return state.vocabRootDeckId;
+}
 
 export function mockSetVocabRoot(deckId: number | null): void {
   state.vocabRootDeckId = deckId;

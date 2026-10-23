@@ -84,6 +84,10 @@ debug = "line-tables-only"
 
 [profile.dev]
 opt-level = 1
+# Our crates too: file:line in backtraces and panics, but no variable/type info, so the dozens of test binaries
+# stay small (the build volume reached 83 GB with full debug info). For a debugger session with variables:
+# CARGO_PROFILE_DEV_DEBUG=true cargo build …
+debug = "line-tables-only"
 
 [profile.release]
 lto = "thin"

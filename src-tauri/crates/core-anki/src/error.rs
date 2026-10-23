@@ -59,6 +59,10 @@ pub enum Error {
         kind: crate::sync::SyncFailure,
         message: String,
     },
+    #[error("O baralho da pasta de vocabulário não existe mais. Escolha a pasta de novo.")]
+    DeckNotFound(i64),
+    #[error("Prepare a coleção para criar os cards de vocabulário.")]
+    VocabPrepareNeeded,
     #[error("Erro de arquivo ({}): {source}", path.display())]
     Io {
         path: PathBuf,
@@ -88,6 +92,9 @@ impl Error {
             Error::TooLarge => "anki.tooLarge",
             Error::Sync { kind, .. } => kind.code(),
             Error::Io { .. } => "anki.io",
+            // Contract codes of the vocabulary commands (already snake_case).
+            Error::DeckNotFound(_) => "deck_not_found",
+            Error::VocabPrepareNeeded => "vocab_prepare_needed",
         }
     }
 

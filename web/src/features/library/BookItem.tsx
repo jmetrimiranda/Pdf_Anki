@@ -1,4 +1,15 @@
-import { BookOpen, Download, ExternalLink, FolderInput, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
+import {
+  BookOpen,
+  ChartColumn,
+  Download,
+  ExternalLink,
+  FolderInput,
+  MoreHorizontal,
+  Pencil,
+  ScanText,
+  Trash2,
+} from 'lucide-react';
+import { useState } from 'react';
 import { Badge, IconButton, Menu, ProgressBar, Tooltip, type MenuEntry } from '../../components/ui';
 import { t } from '../../i18n';
 import { cn } from '../../lib/cn';
@@ -6,13 +17,27 @@ import type { LibraryEntry } from '../../lib/core/client';
 import { BookCover } from './BookCover';
 import { progressOf } from './filter';
 
-export type BookAction = 'open' | 'rename' | 'move' | 'export' | 'openExternal' | 'remove';
+export type BookAction =
+  'open' | 'rename' | 'move' | 'export' | 'openExternal' | 'remove' | 'vocabScan' | 'vocabReport';
 
 export type LibraryView = 'grid' | 'list';
 
 function BookMenu({ book, onAction }: { book: LibraryEntry; onAction: (a: BookAction) => void }) {
+  const [open, setOpen] = useState(false);
+  // Whether the book was scanned (spec 12) comes with the library entry: the menu is complete when it opens.
+  const vocab: MenuEntry[] = book.hasText
+    ? [
+        { kind: 'separator' },
+        { label: t('library.vocabScan'), icon: ScanText, onSelect: () => onAction('vocabScan') },
+        ...(book.vocabScanned
+          ? [{ label: t('library.vocabReport'), icon: ChartColumn, onSelect: () => onAction('vocabReport') }]
+          : []),
+      ]
+    : [];
   const items: MenuEntry[] = [
     { label: t('library.open'), icon: BookOpen, onSelect: () => onAction('open') },
+    ...vocab,
+    { kind: 'separator' },
     { label: t('library.rename'), icon: Pencil, onSelect: () => onAction('rename') },
     { label: t('library.move'), icon: FolderInput, onSelect: () => onAction('move') },
     { kind: 'separator' },
@@ -25,6 +50,8 @@ function BookMenu({ book, onAction }: { book: LibraryEntry; onAction: (a: BookAc
     <Menu
       label={t('library.actions', { titulo: book.title })}
       items={items}
+      open={open}
+      onOpenChange={setOpen}
       trigger={<IconButton icon={MoreHorizontal} label={t('library.actions', { titulo: book.title })} size="sm" />}
     />
   );

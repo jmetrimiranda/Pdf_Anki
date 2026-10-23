@@ -9,6 +9,8 @@ import { codeAuthoringMessages } from './pt-BR/codeAuthoring';
 import { codeReviewMessages } from './pt-BR/codeReview';
 import { leitorBridgeMessages } from './pt-BR/leitorBridge';
 import { miniReviewMessages } from './pt-BR/miniReview';
+import { vocabMessages } from './pt-BR/vocab';
+import { vocabReadingMessages } from './pt-BR/vocabReading';
 
 export const baseMessages = {
   'app.name': 'Leitor de Estudos',
@@ -287,6 +289,8 @@ export const messageSections = {
   leitorBridge: leitorBridgeMessages,
   codeReview: codeReviewMessages,
   codeAuthoring: codeAuthoringMessages,
+  vocab: vocabMessages,
+  vocabReading: vocabReadingMessages,
 } as const;
 
 export const ptBR = {
@@ -300,6 +304,8 @@ export const ptBR = {
   ...leitorBridgeMessages,
   ...codeReviewMessages,
   ...codeAuthoringMessages,
+  ...vocabMessages,
+  ...vocabReadingMessages,
 } as const;
 
 export type Messages = typeof ptBR;

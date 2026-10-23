@@ -51,6 +51,8 @@ pub enum ChangeReason {
     Sync,
     /// A full sync replaced the collection (the study session was reset).
     SyncFull,
+    /// Vocabulary notes were created (deck generation, "Adicionar ao deck do livro").
+    Vocab,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -83,6 +85,8 @@ pub enum UiEvent {
     StudyOwner(StudyOwnerChange),
     /// `leitor://deep-link` (a `leitor://livro/…` link opened by the OS).
     DeepLink(crate::deep_link::DeepLink),
+    /// `job://<jobId>`: progress of a long task (spec 15).
+    Job(crate::jobs::JobProgress),
 }
 
 /// Receives [`UiEvent`]s: the app emits them to the main window; tests collect them.
@@ -622,7 +626,7 @@ fn submit_now<F: std::future::Future>(job: F) {
     let _ = job.as_mut().poll(&mut cx);
 }
 
-fn emit_with(slot: &std::sync::RwLock<Option<UiSink>>, event: UiEvent) {
+pub(crate) fn emit_with(slot: &std::sync::RwLock<Option<UiSink>>, event: UiEvent) {
     let sink = slot
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

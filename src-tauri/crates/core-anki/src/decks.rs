@@ -147,7 +147,7 @@ fn existing(col: &mut Collection, deck_id: i64) -> Result<std::sync::Arc<anki::d
 }
 
 /// Trims each `::` component; rejects empty names and empty components ("A::", "::B").
-fn validate_name(name: &str) -> Result<String> {
+pub(crate) fn validate_name(name: &str) -> Result<String> {
     let parts: Vec<&str> = name.split("::").map(str::trim).collect();
     if parts.iter().any(|p| p.is_empty()) {
         return Err(Error::InvalidInput(if name.trim().is_empty() {

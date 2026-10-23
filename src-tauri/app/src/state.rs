@@ -53,6 +53,8 @@ pub struct AppState {
     shutting_down: AtomicBool,
     /// Anki sync: account, key store, scheduler state (spec 9).
     pub(crate) sync: SyncHub,
+    /// Vocabulary scanning: data pack, jobs and caches (spec 12).
+    pub(crate) vocab: crate::vocab::VocabHub,
 }
 
 impl AppState {
@@ -90,6 +92,7 @@ impl AppState {
             deep_links: Mutex::new(Vec::new()),
             shutting_down: AtomicBool::new(false),
             sync: SyncHub::new(secrets),
+            vocab: crate::vocab::VocabHub::default(),
         }
     }
 
@@ -135,7 +138,8 @@ impl AppState {
 
     /// Runs `f` with the app database, opening it on first use. Blocks.
     ///
-    /// Opening also closes the reading sessions a crash left open (spec 6.4).
+    /// Opening also closes the reading sessions a crash left open (spec 6.4) and fails the vocabulary scans it left
+    /// running.
     pub fn with_store<R>(
         &self,
         f: impl FnOnce(&mut Store) -> core_store::Result<R>,
@@ -155,6 +159,12 @@ impl AppState {
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!(%e, "could not recover the reading sessions"),
+            }
+            // Likewise, scans a previous run left running (crash, quit) are marked failed.
+            match store.recover_vocab_scans() {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(n, "vocabulary scans recovered"),
+                Err(e) => tracing::warn!(%e, "could not recover the vocabulary scans"),
             }
             *slot = Some(store);
         }
@@ -273,6 +283,7 @@ impl AppState {
     /// every document.
     pub fn shutdown(&self) {
         self.shutting_down.store(true, Ordering::Relaxed);
+        self.vocab.jobs.cancel_all();
         // A running sync stops (a normal sync applying changes finishes or rolls back).
         self.abort_sync();
         self.sync.wake();

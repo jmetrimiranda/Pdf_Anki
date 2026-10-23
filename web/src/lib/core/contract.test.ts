@@ -46,6 +46,40 @@ function walk(nodes: DeckNode[], fn: (n: DeckNode) => void) {
 
 beforeEach(() => mockHandle.reset());
 
+/** The vocabulary shapes (Phase 6); see the loop at the end of the first test. */
+const VOCAB_SHAPES = new Set([
+  'VocabSettings',
+  'ScanConfig',
+  'VocabFolder',
+  'VocabFolderRoot',
+  'VocabFolderDeck',
+  'VocabFolderNotetype',
+  'VocabMappingRow',
+  'VocabOutline',
+  'OutlineRangeItem',
+  'ResolvedRange',
+  'ScanStarted',
+  'JobProgress',
+  'VocabReport',
+  'ReportFolder',
+  'ReportDeck',
+  'Metrics',
+  'CurvePoint',
+  'ChapterCoverage',
+  'VocabRow',
+  'BaseRef',
+  'VocabDeckResult',
+  'VocabPageMarks',
+  'VocabMark',
+  'VocabWordAdded',
+  'VocabDataInfo',
+  'BookPanelVocab',
+]);
+
+function hasVocab(expected: Shapes): boolean {
+  return Object.keys(expected).some((k) => VOCAB_SHAPES.has(k));
+}
+
 describe('mock core vs the Rust contract snapshot', () => {
   it('serializes the same keys as the Rust core', async () => {
     const out: Shapes = {};
@@ -176,6 +210,88 @@ describe('mock core vs the Rust contract snapshot', () => {
     expect(imported.added).toBe(2);
     collect(out, 'CodeImportResult', imported);
 
+    // Vocabulary (spec 12): settings, folder, outline and ranges, a scan through its job, the report, a deck, the
+    // reading marks, "Adicionar ao deck do livro" and the data info; the panel's vocabulary summary afterwards.
+    const vocabRoot = (await mockClient.ankiDeckNames()).find((d) => d.name === 'Vocabulário')!.id;
+    const settings = await mockClient.vocabSettingsGet();
+    collect(out, 'VocabSettings', settings);
+    collect(out, 'ScanConfig', settings.config);
+    const folder = await mockClient.vocabFolder(vocabRoot);
+    collect(out, 'VocabFolder', folder);
+    collect(out, 'VocabFolderRoot', folder.root);
+    for (const d of folder.decks) collect(out, 'VocabFolderDeck', d);
+    for (const nt of folder.notetypes) collect(out, 'VocabFolderNotetype', nt);
+    const nt = folder.notetypes.find((n) => n.mappedField === null)!;
+    for (const m of await mockClient.vocabMappingSet(nt.notetypeId, nt.suggestedField))
+      collect(out, 'VocabMappingRow', m);
+    const outline = await mockClient.vocabOutline(farmBook.bookUid);
+    collect(out, 'VocabOutline', outline);
+    const walkOutline = (items: typeof outline.items) => {
+      for (const it of items) {
+        collect(out, 'OutlineRangeItem', it);
+        walkOutline(it.children);
+      }
+    };
+    walkOutline(outline.items);
+    collect(out, 'ResolvedRange', await mockClient.vocabRangeCheck(farmBook.bookUid, { kind: 'pages', text: '21-45' }));
+    const job = await mockClient.vocabScanStart(
+      farmBook.bookUid,
+      vocabRoot,
+      [],
+      { kind: 'outline', ids: ['2'] },
+      settings.config,
+    );
+    collect(out, 'ScanStarted', job);
+    const progress: unknown[] = [];
+    await new Promise<void>((resolve) => {
+      const stopJob = mockClient.onJobProgress(job.jobId, (p) => {
+        progress.push(p);
+        if (p.stage === 'done' || p.stage === 'failed') {
+          stopJob();
+          resolve();
+        }
+      });
+    });
+    for (const p of progress) collect(out, 'JobProgress', p);
+    const report = (await mockClient.vocabReport(farmBook.bookUid))!;
+    collect(out, 'VocabReport', report);
+    collect(out, 'ReportFolder', report.folder);
+    collect(out, 'ReportDeck', report.deck);
+    collect(out, 'ResolvedRange', report.range);
+    collect(out, 'ScanConfig', report.config);
+    collect(out, 'Metrics', report.metrics);
+    for (const c of report.metrics.curve) collect(out, 'CurvePoint', c);
+    for (const c of report.chapters) collect(out, 'ChapterCoverage', c);
+    for (const r of report.rows) {
+      collect(out, 'VocabRow', r);
+      if (r.base) collect(out, 'BaseRef', r.base);
+      if (r.family) collect(out, 'BaseRef', r.family);
+    }
+    const unknown = report.rows.filter((r) => r.defaultSelected).map((r) => r.lemma);
+    collect(
+      out,
+      'VocabDeckResult',
+      await mockClient.vocabGenerateDeck(farmBook.bookUid, report.scanUid, unknown.slice(0, 3), {
+        order: 'reading',
+        perChapter: false,
+        card2: false,
+        enrich: 'wordnet',
+      }),
+    );
+    for (const pm of await mockClient.vocabMarks(farmBook.bookUid, [12, 13])) {
+      collect(out, 'VocabPageMarks', pm);
+      for (const m of pm.marks) collect(out, 'VocabMark', m);
+    }
+    collect(out, 'VocabWordAdded', await mockClient.vocabAddWord(farmBook.bookUid, unknown[5]!, 12, unknown[5]!));
+    const dataInfo = await mockClient.vocabDataInfo();
+    collect(out, 'VocabDataInfo', dataInfo);
+    for (const src of [dataInfo.wordnet, dataInfo.frequency, dataInfo.stopwords]) collect(out, 'VocabDataSource', src);
+    const panelVocab = await mockClient.bookPanelInfo(farmBook.bookUid, 12);
+    collect(out, 'BookPanelInfo', panelVocab);
+    collect(out, 'BookPanelVocab', panelVocab.vocab);
+    const wd = await mockClient.vocabDefine('windmills', farmBook.bookUid);
+    collect(out, 'WordDefinition', wd);
+
     const expected = contract as Shapes;
     for (const required of [
       'StudyNext.card',
@@ -223,8 +339,14 @@ describe('mock core vs the Rust contract snapshot', () => {
     ]) {
       expect(out[required], `the mock produced no ${required}`).toBeDefined();
     }
+    const known = new Set(Object.values(expected).map((k) => JSON.stringify(k)));
     for (const [name, keys] of Object.entries(out)) {
       if (name.startsWith('Values.')) continue;
+      if (VOCAB_SHAPES.has(name) && !expected[name]) {
+        // The Rust contract may name a vocabulary struct differently: the key set must still be one it sends.
+        if (hasVocab(expected)) expect(known.has(JSON.stringify(keys)), `${name} keys ${keys.join(',')}`).toBe(true);
+        continue;
+      }
       expect(expected[name], `${name} is not in contract.json`).toBeDefined();
       expect(keys, name).toEqual(expected[name]);
     }

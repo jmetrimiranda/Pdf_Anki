@@ -206,13 +206,13 @@ test('Abrir no livro opens the book of the Fonte link in the Leitor and finds th
   expect(pageN).toBeGreaterThan(0);
   await button.click();
   await expect(page).toHaveURL(/\/leitor/);
-  // PdfCraft is asked for that page (0-based; the mock book has 10 pages) and to find the excerpt of the link.
+  // PdfCraft is asked for that page (0-based; the fake PdfCraft has 60 pages, like the mock book) and to find the excerpt of the link.
   await expect
     .poll(async () =>
       (await fakeReceived(page)).some(
         (m) =>
           (m.type === 'pdfcraft:goto' || m.type === 'pdfcraft:open') &&
-          m.page === Math.min(pageN - 1, 9) &&
+          m.page === Math.min(pageN - 1, 59) &&
           typeof m.find === 'string' &&
           m.find.length > 0,
       ),

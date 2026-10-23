@@ -75,7 +75,7 @@ pub struct CodeNoteExtra {
 }
 
 /// The next `updated_at` of a row: now, but always after the previous value.
-fn next_updated_at(previous: Option<i64>) -> i64 {
+pub(crate) fn next_updated_at(previous: Option<i64>) -> i64 {
     let now = now_ms();
     match previous {
         Some(prev) if prev >= now => prev.saturating_add(1),
@@ -191,17 +191,25 @@ impl Store {
         notetype_id: i64,
         mapping: Option<(CodeRole, CodeMappingFields)>,
     ) -> Result<()> {
-        let previous: Option<(String, i64)> = self
+        let previous: Option<(String, i64, i64)> = self
             .conn
             .query_row(
-                "SELECT role, updated_at FROM notetype_mapping WHERE anki_notetype_id = ?1",
+                "SELECT role, updated_at, deleted FROM notetype_mapping WHERE anki_notetype_id = ?1",
                 params![notetype_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
         let updated_at = next_updated_at(previous.as_ref().map(|p| p.1));
         match mapping {
             Some((role, fields)) => {
+                // The key is shared with the vocabulary role: never replace an active vocab mapping.
+                if let Some((existing, _, 0)) = &previous
+                    && existing == "vocab"
+                {
+                    return Err(StoreError::MappingConflict {
+                        role: crate::vocab::role_label(existing).to_owned(),
+                    });
+                }
                 let fields = normalize_fields(fields)?;
                 let json = serde_json::to_string(&fields)
                     .map_err(|e| StoreError::InvalidInput(e.to_string()))?;

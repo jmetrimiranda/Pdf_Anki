@@ -63,7 +63,7 @@ function uniqueName(name: string, exceptIds: Set<number>): string {
 }
 
 /** Creates the deck and any missing parent; returns the id (the existing one when the name is taken). */
-function createDeck(name: string): number {
+export function createDeck(name: string): number {
   const full = normalizeDeckName(name);
   const parts = full.split('::');
   let id = DEFAULT_DECK_ID;

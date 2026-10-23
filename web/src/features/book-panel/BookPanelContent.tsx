@@ -1,10 +1,11 @@
-// The "Painel Anki do livro" (spec 10.1): the book's decks with their counts and "Revisar aqui", "＋ Card da seleção",
-// the vocabulary placeholder (Phase 6) and the cards of the current page. Rendered by features/leitor/BookPanel.tsx
+// The "Painel Anki do livro" (spec 10.1): the book's decks with their counts and "Revisar aqui" (with the generated
+// subdeck of the current chapter), "＋ Card da seleção", the vocabulary coverage and highlight (spec 12.7) and the
+// cards of the current page. Rendered by features/leitor/BookPanel.tsx
 // while a library book is in front.
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Pencil, Plus } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Button, Counts, IconButton, Notice, SkeletonLines, Tooltip, useToast } from '../../components/ui';
+import { Button, Counts, IconButton, Notice, SkeletonLines, useToast } from '../../components/ui';
 import { t } from '../../i18n';
 import { cn } from '../../lib/cn';
 import { core } from '../../lib/core/client';
@@ -18,15 +19,31 @@ import { useSyncStatus } from '../sync/useSyncStatus';
 import { CardForm, type CardSelection } from './CardForm';
 import { MiniReview } from './review/MiniReview';
 import { previewLine } from './text';
+import { VocabSection } from './VocabSection';
 
 export const bookPanelKey = (uid: string) => ['bookPanel', uid] as const;
+/** The panel info for the page shown (its `chapterDeck` depends on it); invalidated through `bookPanelKey`. */
+export const bookPanelPageKey = (uid: string, page: number) => ['bookPanel', uid, page] as const;
+/** How long the page must rest before the panel asks for its chapter's deck. */
+export const PAGE_DEBOUNCE_MS = 400;
 export const bookCardsKey = (uid: string) => ['bookCards', uid] as const;
 
-/** Decks of the book "Revisar aqui" can study (existing ones). */
+/** Decks of the book "Revisar aqui" can study (existing ones): the current chapter's subdeck, then the book's. */
 export function reviewDecks(info: BookPanelInfo): { deckId: number; name: string; role: 'vocab' | 'content' }[] {
-  return [info.vocabDeck, info.contentDeck]
+  const seen = new Set<number>();
+  return [info.chapterDeck, info.vocabDeck, info.contentDeck]
     .filter((d): d is BookDeckInfo & { deckId: number } => !!d && d.exists && d.deckId !== null)
+    .filter((d) => !seen.has(d.deckId) && !!seen.add(d.deckId))
     .map((d) => ({ deckId: d.deckId, name: d.name, role: d.role }));
+}
+
+function useDebounced<T>(value: T, ms: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), ms);
+    return () => clearTimeout(id);
+  }, [value, ms]);
+  return debounced;
 }
 
 function dueTotal(d: BookDeckInfo): number {
@@ -87,14 +104,25 @@ export function BookPanelContent({
   const qc = useQueryClient();
   const toast = useToast();
   usePanelRefresh(bookUid);
-  const info = useQuery({ queryKey: bookPanelKey(bookUid), queryFn: () => core.bookPanelInfo(bookUid) });
+  // The chapter's subdeck follows the page shown: asked again once the page rests (the rest stays on screen).
+  const shownPage = useDebounced(page, PAGE_DEBOUNCE_MS);
+  const info = useQuery({
+    queryKey: bookPanelPageKey(bookUid, shownPage),
+    queryFn: () => core.bookPanelInfo(bookUid, shownPage),
+    placeholderData: keepPreviousData,
+  });
   const cards = useQuery({ queryKey: bookCardsKey(bookUid), queryFn: () => core.ankiBookCards(bookUid) });
   const [review, setReview] = useState<number | null>(null);
 
   const save = async (patch: BookPanelPatch) => {
     try {
       const next = await core.bookPanelSet(bookUid, patch);
-      qc.setQueryData(bookPanelKey(bookUid), next);
+      // The answer has no page: keep the chapter deck already shown, then ask again.
+      qc.setQueryData<BookPanelInfo>(bookPanelPageKey(bookUid, shownPage), (old) => ({
+        ...next,
+        chapterDeck: old?.chapterDeck ?? next.chapterDeck,
+      }));
+      void qc.invalidateQueries({ queryKey: bookPanelKey(bookUid) });
       return next;
     } catch (e) {
       toast.show(t('bookPanel.saveFailed', { erro: errorMessage(e) }), { tone: 'error' });
@@ -168,6 +196,14 @@ export function BookPanelContent({
       <Section title={t('bookPanel.decks')}>
         <div className="flex flex-col gap-3">
           <DeckRow label={t('bookPanel.deckVocab')} deck={data.vocabDeck} onReview={startReview} />
+          {data.chapterDeck?.exists && data.chapterDeck.deckId !== data.vocabDeck.deckId && (
+            <DeckRow
+              label={t('vocabReading.chapterDeck')}
+              deck={data.chapterDeck}
+              onReview={startReview}
+              testId="book-deck-chapter"
+            />
+          )}
           <ContentDeckRow
             deck={data.contentDeck}
             onReview={startReview}
@@ -176,17 +212,7 @@ export function BookPanelContent({
         </div>
       </Section>
       <Section title={t('bookPanel.vocab')}>
-        <p className="text-base text-(--pc-muted)">{t('bookPanel.vocabNotScanned')}</p>
-        <Tooltip content={t('bookPanel.vocabSoon')}>
-          <span
-            tabIndex={0}
-            aria-disabled="true"
-            className="mt-0.5 inline-block cursor-default text-base text-link opacity-50"
-          >
-            {t('bookPanel.vocabReport')}
-          </span>
-        </Tooltip>
-        <p className="mt-1 text-xs text-(--pc-muted)">{t('bookPanel.vocabSoon')}</p>
+        <VocabSection bookUid={bookUid} vocab={data.vocab} />
       </Section>
       <PageCards bookUid={bookUid} page={page} cards={cards.data ?? null} loading={cards.isPending} />
     </div>
@@ -242,16 +268,18 @@ function DeckRow({
   deck,
   onReview,
   action,
+  testId,
 }: {
   label: string;
   deck: BookDeckInfo;
   onReview: (deckId: number) => void;
   action?: ReactNode;
+  testId?: string;
 }) {
   const exists = deck.exists && deck.deckId !== null;
   const due = dueTotal(deck);
   return (
-    <div data-testid={`book-deck-${deck.role}`} className="flex flex-col gap-0.5">
+    <div data-testid={testId ?? `book-deck-${deck.role}`} className="flex flex-col gap-0.5">
       <div className="flex items-center gap-1">
         <span className="min-w-0 flex-1 truncate text-xs text-(--pc-muted)">{label}</span>
         {action}

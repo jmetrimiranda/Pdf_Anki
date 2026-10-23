@@ -83,12 +83,31 @@ const COMMANDS: &[&str] = &[
     "code_runner_test",
     "code_import_markdown",
     "code_import_commit",
+    "vocab_settings_get",
+    "vocab_settings_set",
+    "vocab_folder",
+    "vocab_mapping_samples",
+    "vocab_mapping_get",
+    "vocab_mapping_set",
+    "vocab_outline",
+    "vocab_range_check",
+    "vocab_scan_start",
+    "vocab_rescan",
+    "vocab_report",
+    "vocab_override_set",
+    "vocab_generate_deck",
+    "vocab_marks",
+    "vocab_add_word",
+    "vocab_data_info",
+    "job_status",
+    "job_cancel",
     "dev_smoke",
     "dev_log",
 ];
 
 fn main() {
     ensure_anki_web_dir();
+    ensure_vocab_data_dir();
     let manifest = tauri_build::AppManifest::new().commands(COMMANDS);
     if let Err(e) = tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest)) {
         panic!("tauri-build failed: {e:#}");
@@ -104,6 +123,23 @@ fn ensure_anki_web_dir() {
     if !dir.join("sveltekit/index.html").is_file() {
         println!(
             "cargo:warning=Anki web assets missing in {}: run scripts/fetch-anki-web.sh",
+            dir.display()
+        );
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            panic!("could not create {}: {e}", dir.display());
+        }
+    }
+}
+
+/// `tauri.conf.json` bundles `../../data/generated/vocab/` (spec 12.2: WordNet, frequency list and
+/// stopwords offline). `scripts/build-wordnet.sh` fills it (the `beforeBuildCommand` runs it); a plain
+/// `cargo build`/`cargo test` without it still compiles, and scanning then answers
+/// `vocab_data_missing`.
+fn ensure_vocab_data_dir() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/generated/vocab");
+    if !dir.join("vocab-data.json").is_file() {
+        println!(
+            "cargo:warning=Vocabulary data missing in {}: run scripts/build-wordnet.sh",
             dir.display()
         );
         if let Err(e) = std::fs::create_dir_all(&dir) {

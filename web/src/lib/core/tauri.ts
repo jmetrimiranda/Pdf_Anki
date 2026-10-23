@@ -12,6 +12,7 @@ import {
   type AnkiSyncStatus,
   type CoreClient,
   type DeepLink,
+  type JobProgress,
   type StudyOwnerChange,
   type Unlisten,
 } from './types';
@@ -85,10 +86,52 @@ export const tauriClient: CoreClient = {
       }),
     ),
 
-  bookPanelInfo: (uid) => call('book_panel_info', { uid }),
+  bookPanelInfo: (uid, page) => call('book_panel_info', { uid, page: page ?? null }),
   bookPanelSet: (uid, patch) => call('book_panel_set', { uid, patch }),
   ankiBookCards: (uid) => call('anki_book_cards', { uid }),
   vocabDefine: (word, bookUid) => call('vocab_define', { word, bookUid }),
+
+  vocabSettingsGet: () => call('vocab_settings_get'),
+  vocabSettingsSet: (patch) => call('vocab_settings_set', { patch }),
+  vocabFolder: (rootDeckId) => call('vocab_folder', { rootDeckId }),
+  vocabMappingSamples: (rootDeckId, excludedDeckIds, notetypeId, field) =>
+    call('vocab_mapping_samples', { rootDeckId, excludedDeckIds, notetypeId, field }),
+  vocabMappingGet: () => call('vocab_mapping_get'),
+  vocabMappingSet: (notetypeId, field) => call('vocab_mapping_set', { notetypeId, field }),
+  vocabOutline: (uid) => call('vocab_outline', { uid }),
+  vocabRangeCheck: (uid, range) => call('vocab_range_check', { uid, range }),
+  vocabScanStart: (uid, rootDeckId, excludedDeckIds, range, config) =>
+    call('vocab_scan_start', { uid, rootDeckId, excludedDeckIds, range, config }),
+  vocabRescan: (uid) => call('vocab_rescan', { uid }),
+  vocabReport: (uid) => call('vocab_report', { uid }),
+  vocabOverrideSet: (lemmas, status) => call('vocab_override_set', { lemmas, status }),
+  vocabGenerateDeck: (uid, scanUid, lemmas, options) => call('vocab_generate_deck', { uid, scanUid, lemmas, options }),
+  vocabMarks: (uid, pages) => call('vocab_marks', { uid, pages }),
+  vocabAddWord: (uid, lemma, page, form) => call('vocab_add_word', { uid, lemma, page, form }),
+  vocabDataInfo: () => call('vocab_data_info'),
+
+  jobStatus: (jobId) => call('job_status', { jobId }),
+  jobCancel: (jobId) => call<void>('job_cancel', { jobId }),
+  onJobProgress: (jobId, cb) => {
+    // Subscribe first, then ask once: a job that ended before the listener was ready is still reported.
+    let stopped = false;
+    const deliver = (p: JobProgress) => {
+      if (!stopped && p && typeof p === 'object' && p.jobId === jobId) cb(p);
+    };
+    const unlisten = subscription(async () => {
+      const stop = await listen<JobProgress>(`job://${jobId}`, (e) => deliver(e.payload));
+      call<JobProgress | null>('job_status', { jobId })
+        .then((p) => {
+          if (p) deliver(p);
+        })
+        .catch(() => undefined);
+      return stop;
+    });
+    return () => {
+      stopped = true;
+      unlisten();
+    };
+  },
 
   ankiNotetypes: () => call('anki_notetypes'),
   ankiAddDefaults: (deckId) => call('anki_add_defaults', { deckId }),

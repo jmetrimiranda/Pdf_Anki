@@ -64,6 +64,7 @@ export function fakeCore(overrides: Partial<LeitorCore> = {}): LeitorCore & { ca
     sessionStart: vi.fn(rec('start')),
     sessionHeartbeat: vi.fn(rec('heartbeat')),
     sessionStop: vi.fn(rec('stop')),
+    vocabMarks: vi.fn(async () => []),
     log: vi.fn(),
     ...overrides,
   };

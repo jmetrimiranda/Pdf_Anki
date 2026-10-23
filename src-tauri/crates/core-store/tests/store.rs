@@ -49,7 +49,10 @@ fn migrations_are_idempotent_on_reopen() {
         let mut store = Store::open(&path).unwrap();
         assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
         tables = table_count(&store);
-        assert_eq!(tables, 17, "16 tables + book_prefs (V3)");
+        assert_eq!(
+            tables, 19,
+            "16 tables + book_prefs (V3) + book_lemma_page and book_lemma_state (V4)"
+        );
         store.add_book(&new_book(b"x")).unwrap();
         let mode: String = store
             .connection()

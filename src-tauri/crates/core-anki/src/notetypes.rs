@@ -4,6 +4,11 @@
 //! Rules (spec 9): idempotent per type (looked up by exact name), an existing type is NEVER
 //! modified (changing fields/templates of an existing type forces a full sync), so every type is
 //! complete from its first creation.
+//!
+//! "Vocabulário · Livro" got its `Família` field (and the back line [`FAMILY_LINE`]) on 2026-10-23, before any real
+//! collection was prepared. Local test collections prepared earlier keep the old 9-field type: "Preparar coleção"
+//! reports it as existing and leaves it alone (reset the app data to recreate it); [`crate::vocab::add_vocab_notes`]
+//! matches fields by name, so it still works with the old type (without the family line).
 
 use std::sync::Arc;
 
@@ -39,6 +44,16 @@ pub const SOURCE_CSS: &str = "\n.leitor-fonte{font-size:.8em;opacity:.75;margin-
 
 /// Code types: long code lines scroll inside their block instead of being cut at narrow widths.
 pub const CODE_CSS: &str = "\n.card pre{text-align:left;overflow-x:auto;max-width:100%}\n";
+
+/// The field of "Vocabulário · Livro" with the known word a derivative comes from (spec 12.3 I, 12.6).
+pub const FAMILY_FIELD: &str = "Família";
+
+/// The back line of "Vocabulário · Livro" (decision of 2026-10-23), shown only when `Família` is filled.
+pub const FAMILY_LINE: &str = "{{#Família}}Da família de: {{Família}}{{/Família}}";
+
+/// CSS of the family line: small and muted; the empty wrapper takes no space.
+pub const FAMILY_CSS: &str =
+    "\n.familia{font-size:.85em;opacity:.7;margin-top:.5em}\n.familia:empty{display:none}\n";
 
 const SOURCE_BLOCK: &str = "{{#Fonte}}<div class=\"leitor-fonte\">{{Fonte}}</div>{{/Fonte}}";
 
@@ -130,6 +145,8 @@ pub fn definition(name: &str) -> Result<Notetype> {
                 "Exemplo",
                 SOURCE_FIELD,
                 "Frequência",
+                // The known word a derivative comes from ("learn" for "learner", spec 12.3 I).
+                FAMILY_FIELD,
                 // Non-empty value enables the optional pt → en card (off by default, spec 12.6).
                 "Card 2",
             ],
@@ -141,7 +158,7 @@ pub fn definition(name: &str) -> Result<Notetype> {
                         .to_string(),
                     format!(
                         "{{{{FrontSide}}}}<hr id=answer><div>{{{{Definição}}}}</div>\
-                         <div>{{{{Tradução}}}}</div>{SOURCE_BLOCK}"
+                         <div>{{{{Tradução}}}}</div><div class=\"familia\">{FAMILY_LINE}</div>{SOURCE_BLOCK}"
                     ),
                 ),
                 (
@@ -158,6 +175,9 @@ pub fn definition(name: &str) -> Result<Notetype> {
     nt.config.css.push_str(SOURCE_CSS);
     if name == CODE_PROGRAM || name == CODE_COMMAND {
         nt.config.css.push_str(CODE_CSS);
+    }
+    if name == VOCAB_BOOK {
+        nt.config.css.push_str(FAMILY_CSS);
     }
     Ok(nt)
 }

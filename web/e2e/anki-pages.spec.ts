@@ -9,7 +9,10 @@ const frameOf = (page: Page, title: string) => page.frameLocator(`iframe[title="
 
 test('Opções opens deck-options/<id> in the Anki page frame; Fechar asks the page', async ({ page }) => {
   await page.goto('/anki');
-  const row = page.getByRole('tree', { name: 'Decks' }).getByRole('treeitem', { name: /^Oxford,/ });
+  const row = page
+    .getByRole('tree', { name: 'Decks' })
+    .getByRole('treeitem', { name: /^Oxford,/ })
+    .first();
   await row.hover();
   await row.getByRole('button', { name: 'Ações do deck Oxford' }).click();
   await page.getByRole('menuitem', { name: 'Opções' }).click();

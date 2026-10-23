@@ -7,8 +7,9 @@ import { cn } from '../../lib/cn';
 import { useMediaQuery } from '../../lib/useMediaQuery';
 import { AiDialog, BookPanelContent, DefinePopover, type CardSelection, type DefineRequest } from '../book-panel';
 import type { PdfcraftTheme } from './bridge';
-import type { LeitorSelection, PanelRequest } from './controller';
+import type { LeitorSelection, MarkClick, PanelRequest } from './controller';
 import { leitor, useLeitorSelector } from './instance';
+import { VocabPopover } from './VocabPopover';
 
 /**
  * PdfCraft's neutral tokens (third_party/pdfcraft/crates/ui-egui/src/theme.rs, light/dark palettes at the pinned
@@ -110,6 +111,7 @@ export function BookPanel({
   const [aiOpen, setAiOpen] = useState(false);
   const [define, setDefine] = useState<DefineRequest | null>(null);
   const [reviewRequest, setReviewRequest] = useState(false);
+  const [markClick, setMarkClick] = useState<MarkClick | null>(null);
 
   /** Where a popover opened without a menu anchor points: the panel's top-left corner (or its rail). */
   const panelAnchor = useCallback(() => {
@@ -146,11 +148,14 @@ export function BookPanel({
   );
 
   useEffect(() => leitor.onPanelRequest(handle), [handle]);
+  // A click on a highlighted word (spec 12.7): the popover over it.
+  useEffect(() => leitor.onMarkClick(setMarkClick), []);
 
   // A form or a review belongs to the book it was opened for.
   useEffect(() => {
     setCard((c) => (c && c.uid !== bookUid ? null : c));
     setReviewRequest(false);
+    setMarkClick((m) => (m && m.id !== bookUid ? null : m));
   }, [bookUid]);
 
   // Capture/test parameters, applied once the book they name is in front.
@@ -253,6 +258,7 @@ export function BookPanel({
     <>
       <AiDialog open={aiOpen} onOpenChange={setAiOpen} />
       <DefinePopover request={define} onClose={() => setDefine(null)} />
+      <VocabPopover click={markClick} onClose={() => setMarkClick(null)} />
     </>
   );
   if (!overlay)

@@ -75,7 +75,7 @@ pub struct BookDeckInfo {
 }
 
 /// `book_panel_info` / `book_panel_set`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BookPanelInfo {
     pub book_uid: String,
@@ -91,6 +91,24 @@ pub struct BookPanelInfo {
     pub last_kind: Option<BookCardKind>,
     /// Deck last reviewed with "Revisar aqui" (`None` when unset or deleted).
     pub review_deck_id: Option<i64>,
+    /// The book's latest finished vocabulary scan ("Vocabulário 94% →"), `None` when never scanned.
+    pub vocab: Option<BookPanelVocab>,
+    /// The per-chapter subdeck (`<vocab deck>::Cap NN`) of the chapter at the page shown, when it exists.
+    pub chapter_deck: Option<BookDeckInfo>,
+}
+
+/// The vocabulary summary of the panel (spec 10.1).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookPanelVocab {
+    pub scan_uid: String,
+    /// 0..=1.
+    pub coverage_known: f64,
+    pub coverage_with_learning: f64,
+    /// The scanned range ("Cap 3", "p. 21-45"), `None` for the whole book.
+    pub range_label: Option<String>,
+    /// Epoch ms.
+    pub scanned_at: i64,
 }
 
 /// Partial update of the panel: a missing field is left alone; `null` clears it.
@@ -120,10 +138,29 @@ where
 #[serde(rename_all = "camelCase")]
 pub struct WordDefinition {
     pub word: String,
+    /// From the bundled WordNet (morphy); the provisional rules of Phase 4 when the data is missing.
     pub lemma: String,
+    /// WordNet part of speech of the lemma.
+    pub pos: Option<core_vocab::Pos>,
+    /// Status of the lemma in the book's latest scan (`None` when not scanned or not in the report).
+    pub status: Option<core_vocab::Status>,
+    /// The known word of the same family (spec 12.3 I), from the latest scan.
+    pub family: Option<core_vocab::BaseRef>,
+    /// First-sense WordNet definition, offline.
+    pub wordnet_definition: Option<String>,
+    /// Where the definition the popover shows comes from.
+    pub definition_source: Option<DefinitionSource>,
     pub vocab_root_deck_id: Option<i64>,
     pub vocab_root_name: Option<String>,
     pub note: Option<VocabNote>,
+}
+
+/// Source of the definition shown by "Definir palavra".
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DefinitionSource {
+    Note,
+    Wordnet,
 }
 
 /// What the collection says about the book's decks (computed on the actor in one job).
@@ -131,6 +168,7 @@ struct DeckFacts {
     root: Option<(i64, String)>,
     vocab: BookDeckInfo,
     content: Option<BookDeckInfo>,
+    chapter: Option<BookDeckInfo>,
     last_deck_alive: bool,
     review_deck_alive: bool,
 }
@@ -141,10 +179,7 @@ fn deck_not_found() -> AppError {
 
 /// The vocabulary deck's full name for a book (decision recorded in docs/decisoes.md).
 pub fn vocab_deck_name(root_name: Option<&str>, title: &str) -> String {
-    match root_name {
-        Some(root) => format!("{root}::Livros::{title}"),
-        None => format!("Livros::{title}"),
-    }
+    core_vocab::vocab_deck_names(root_name, title, &core_vocab::ResolvedRange::all(1), false).book
 }
 
 /// Name of an existing normal deck, `None` when missing.
@@ -172,14 +207,68 @@ impl AppState {
 
     /// The book's decks, counts and preferences (spec 10.1).
     pub async fn book_panel_info(&self, uid: &str) -> Result<BookPanelInfo, AppError> {
-        let (book, prefs, root_id) = self.with_store(|s| {
+        self.book_panel_info_with(uid, None).await
+    }
+
+    /// Same as [`book_panel_info`](Self::book_panel_info) with the 0-based page shown, which picks the chapter
+    /// subdeck. Reads the outline of the book (blocks the first time the document opens).
+    pub async fn book_panel_info_at(
+        &self,
+        uid: &str,
+        page: Option<u32>,
+    ) -> Result<BookPanelInfo, AppError> {
+        let chapter = page.and_then(|p| self.vocab_chapter_at(uid, p));
+        self.book_panel_info_with(uid, chapter).await
+    }
+
+    /// The 1-based chapter at a 0-based page (spec 12.4 chapters of the current outline), only for scanned books
+    /// (per-chapter subdecks come from a scan). Blocks: the document may have to open.
+    pub fn vocab_chapter_at(&self, uid: &str, page: u32) -> Option<u32> {
+        let scanned = self
+            .with_store(|s| s.latest_vocab_scan(uid, true))
+            .ok()
+            .flatten()
+            .is_some();
+        if !scanned {
+            return None;
+        }
+        let book = self.vocab_book(uid).ok()?;
+        let (count, outline) = self.vocab_outline_nodes(&book).ok()?;
+        core_vocab::chapters(&outline, count)
+            .into_iter()
+            .find(|c| (c.start_page..=c.end_page).contains(&page))
+            .map(|c| c.index)
+    }
+
+    /// The panel with the chapter (1-based) whose subdeck to show.
+    pub async fn book_panel_info_with(
+        &self,
+        uid: &str,
+        chapter: Option<u32>,
+    ) -> Result<BookPanelInfo, AppError> {
+        let (book, prefs, root_id, scan) = self.with_store(|s| {
             let book = s
                 .get_book(uid)?
                 .ok_or_else(|| core_store::StoreError::BookNotFound(uid.to_owned()))?;
             let prefs = s.book_prefs(uid)?;
             let root = s.setting_as::<Option<i64>>(keys::VOCAB_ROOT_DECK_ID)?;
-            Ok((book, prefs, root))
+            let scan = s.latest_vocab_scan(uid, true)?;
+            Ok((book, prefs, root, scan))
         })?;
+        let vocab = scan.and_then(|row| {
+            let m = row.metrics?;
+            Some(BookPanelVocab {
+                scan_uid: row.uid,
+                coverage_known: m.cov_known,
+                coverage_with_learning: m.cov_with_learning,
+                range_label: row
+                    .range
+                    .get("label")
+                    .and_then(|l| l.as_str())
+                    .map(str::to_owned),
+                scanned_at: row.created_at,
+            })
+        });
         let title = book.title.clone();
         let content_id = book.content_deck_id;
         let (last_id, review_id) = (prefs.last_card_deck_id, prefs.review_deck_id);
@@ -209,6 +298,22 @@ impl AppState {
                         counts: None,
                     },
                 };
+                let chapter = match (chapter, &vocab.deck_id) {
+                    (Some(n), Some(_)) => {
+                        let name = format!("{}::{}", vocab.name, core_vocab::chapter_subdeck(n));
+                        match book::deck_by_name(col, &name)? {
+                            Some(id) => Some(BookDeckInfo {
+                                role: BookDeckRole::Vocab,
+                                deck_id: Some(id),
+                                name: deck_name(col, id)?.unwrap_or(name),
+                                exists: true,
+                                counts: book::deck_counts(col, id)?,
+                            }),
+                            None => None,
+                        }
+                    }
+                    _ => None,
+                };
                 let content = match content_id {
                     None => None,
                     Some(id) => Some(match deck_name(col, id)? {
@@ -232,6 +337,7 @@ impl AppState {
                     root,
                     vocab,
                     content,
+                    chapter,
                     last_deck_alive: deck_exists(col, last_id)?,
                     review_deck_alive: deck_exists(col, review_id)?,
                 })
@@ -250,6 +356,8 @@ impl AppState {
                 .as_deref()
                 .and_then(BookCardKind::parse),
             review_deck_id: review_id.filter(|_| facts.review_deck_alive),
+            vocab,
+            chapter_deck: facts.chapter,
         })
     }
 
@@ -329,7 +437,23 @@ impl AppState {
             .then(|| core_vocab::single_word(trimmed))
             .flatten()
             .ok_or_else(|| AppError::new("invalid_input", "Selecione uma só palavra."))?;
-        let lemma = core_vocab::lemma(&single);
+        // The lexicon is loaded off the runtime by the command; when the data is missing, the Phase 4 rules answer.
+        let lex = self.vocab.data.lexicon_opt();
+        let lemma = core_vocab::lemma_with(&single, lex.as_deref());
+        let wordnet = lex.as_ref().and_then(|l| l.definition(&lemma, None));
+        let pos = wordnet.as_ref().map(|(p, _)| *p).or_else(|| {
+            lex.as_ref()
+                .and_then(|l| l.parts_of_speech(&lemma).first().copied())
+        });
+        // Status and family from the book's latest scan.
+        let scanned = match book_uid {
+            Some(uid) => self
+                .vocab_report(uid)
+                .ok()
+                .flatten()
+                .and_then(|r| r.rows.iter().find(|row| row.lemma == lemma).cloned()),
+            None => None,
+        };
         let root_id = self.vocab_root_setting()?;
         // A malformed or unknown uid only loses the fallback (the word and lemma still answer).
         let book_title = match book_uid {
@@ -364,9 +488,21 @@ impl AppState {
                 })
                 .await?
         };
+        let definition_source = if note.as_ref().is_some_and(|n| n.definition.is_some()) {
+            Some(DefinitionSource::Note)
+        } else if wordnet.is_some() {
+            Some(DefinitionSource::Wordnet)
+        } else {
+            None
+        };
         Ok(WordDefinition {
             word: single,
             lemma,
+            pos,
+            status: scanned.as_ref().map(|r| r.status),
+            family: scanned.and_then(|r| r.family),
+            wordnet_definition: wordnet.map(|(_, d)| d),
+            definition_source,
             vocab_root_deck_id: root.as_ref().map(|(id, _)| *id),
             vocab_root_name: root.map(|(_, name)| name),
             note,

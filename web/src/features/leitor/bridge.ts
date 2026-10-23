@@ -7,9 +7,10 @@ import type { Rect } from '../../lib/core/types';
 export const INFO_KEY = 'LeitorBookUid';
 /**
  * Lowest `bridge` version in `pdfcraft:ready` the app works with: 2 = the Phase 1 messages (ids, active, page,
- * activity…) plus selection, menu items, goto/find (Phase 4).
+ * activity…) plus selection, menu items, goto/find (Phase 4); 3 = marks (`pdfcraft:marks`, `clear-marks`,
+ * `mark-click`, Phase 6).
  */
-export const MIN_BRIDGE = 2;
+export const MIN_BRIDGE = 3;
 /** Longest selection text accepted from PdfCraft. */
 export const MAX_TEXT = 20_000;
 /** Most rects in one selection/menu message. */
@@ -19,6 +20,14 @@ export const MAX_MENU_ITEMS = 16;
 /** Longest `find` text sent with `pdfcraft:goto` (and accepted back in `pdfcraft:found`). */
 export const MAX_FIND = 500;
 const MENU_KEY_RE = /^[a-z][a-z0-9-]{0,31}$/;
+/** Mark set names (`pdfcraft:marks`): short, lowercase. */
+const MARK_SET_RE = /^[a-z][a-z0-9-]{0,31}$/;
+/** Most marks the app sends for one page of one set (PdfCraft keeps up to 4 000). */
+export const MAX_PAGE_MARKS = 2_000;
+/** Most rects of one mark (PdfCraft keeps up to 8). */
+export const MAX_MARK_RECTS = 8;
+/** Most pages in one `pdfcraft:marks` message. */
+export const MAX_MARK_PAGES = 20;
 export const MAX_BYTES = 2 * 1024 ** 3;
 export const MAX_NAME = 512;
 const UID_RE = /^[0-9a-f]{64}$/;
@@ -32,6 +41,27 @@ export type { Rect };
 export interface MenuItem {
   key: string;
   label: string;
+}
+
+/** The marks of one page for `BridgeClient.sendMarks`: an underline in `color` under each rect of each mark. */
+export interface PageMarks {
+  /** 0-based page. */
+  page: number;
+  marks: readonly { rects: readonly Rect[]; color: string }[];
+}
+
+/** Color of the `rects: []` entry that clears a page (not drawn). */
+const CLEAR_COLOR = '#000000';
+
+/** One entry of `pdfcraft:marks`: an underline under each rect (none: alone, it clears its page). */
+export interface OutMark {
+  /** 0-based page. */
+  page: number;
+  /** Page view space points (y down), `[x, y, w, h]`. */
+  rects: Rect[];
+  style: 'underline';
+  /** `#rrggbb`. */
+  color: string;
 }
 
 export type BridgeIn =
@@ -61,7 +91,14 @@ export type BridgeIn =
   /** Result of the find of a `pdfcraft:goto`. */
   | { type: 'pdfcraft:found'; id: string | null; page: number; query: string; found: boolean }
   /** Answer to `pdfcraft:selection-now`, after the `pdfcraft:selection` that was waiting (if any). */
-  | { type: 'pdfcraft:selection-sent'; seq: number | null };
+  | { type: 'pdfcraft:selection-sent'; seq: number | null }
+  /**
+   * A click on one of the app's marks: `index` is its position among the marks of `page` in `set` (in the order
+   * sent); `rect` the mark on screen, CSS px relative to the iframe.
+   */
+  | { type: 'pdfcraft:mark-click'; id: string; set: string; index: number; page: number; rect: Rect }
+  /** PdfCraft drew the marks of `set` on `page` for the first time since they changed (`count` of them). */
+  | { type: 'pdfcraft:marks-shown'; id: string; set: string; page: number; count: number };
 
 export type BridgeInType = BridgeIn['type'];
 
@@ -71,7 +108,14 @@ export type BridgeOut =
   | { type: 'pdfcraft:menu-items'; items: MenuItem[] }
   | { type: 'pdfcraft:goto'; id: string; page: number; find?: string }
   /** Send the debounced selection now (a shortcut right after selecting); answered by `pdfcraft:selection-sent`. */
-  | { type: 'pdfcraft:selection-now'; seq: number };
+  | { type: 'pdfcraft:selection-now'; seq: number }
+  /**
+   * Replaces the marks of `set` on each page that has marks in `marks` (other pages keep theirs). Temporary: drawn
+   * above the page, never saved, never in undo, never dirty.
+   */
+  | { type: 'pdfcraft:marks'; id: string; set: string; marks: OutMark[] }
+  /** Removes every mark of `set` from the document. */
+  | { type: 'pdfcraft:clear-marks'; id: string; set: string };
 
 export const INCOMING_TYPES: readonly BridgeInType[] = [
   'pdfcraft:ready',
@@ -88,6 +132,8 @@ export const INCOMING_TYPES: readonly BridgeInType[] = [
   'pdfcraft:menu-shown',
   'pdfcraft:found',
   'pdfcraft:selection-sent',
+  'pdfcraft:mark-click',
+  'pdfcraft:marks-shown',
 ];
 
 export type ParseResult = { ok: true; msg: BridgeIn } | { ok: false; reason: string };
@@ -127,15 +173,20 @@ function parseText(v: unknown): string | null {
   return v;
 }
 
+/** How many marks the app sent for `page` of `set` in document `id` (undefined: none sent). */
+export type MarkCount = (id: string, set: string, page: number) => number | undefined;
+
 /**
  * Validates one message against the protocol. `known(id)` says whether the app opened that id; messages about
  * other ids are rejected. `menuKeys`: the keys of the items the app registered (`pdfcraft:menu-items`); menu
- * messages about any other key are rejected. Pure: no side effects.
+ * messages about any other key are rejected. `markCount`: the marks the app sent (mark clicks about other sets,
+ * pages or indexes are rejected). Pure: no side effects.
  */
 export function parseMessage(
   data: unknown,
   known: (id: string) => boolean,
   menuKeys: ReadonlySet<string> = new Set(),
+  markCount: MarkCount = () => undefined,
 ): ParseResult {
   const bad = (reason: string): ParseResult => ({ ok: false, reason });
   if (!isRecord(data)) return bad('not an object');
@@ -259,7 +310,36 @@ export function parseMessage(
       if (data.seq !== undefined && data.seq !== null && !isIndex(data.seq)) return bad('bad seq');
       return { ok: true, msg: { type: 'pdfcraft:selection-sent', seq: isIndex(data.seq) ? data.seq : null } };
     }
+    case 'pdfcraft:mark-click': {
+      if (id === null) return bad('mark-click without id');
+      if (typeof data.set !== 'string' || !MARK_SET_RE.test(data.set)) return bad('bad set');
+      if (!isIndex(data.page)) return bad('bad page');
+      if (!isIndex(data.index)) return bad('bad index');
+      const count = markCount(id, data.set, data.page);
+      if (count === undefined) return bad('no marks sent for that page');
+      if (data.index >= count) return bad('index out of range');
+      if (!isRect(data.rect)) return bad('bad rect');
+      const rect: Rect = [data.rect[0], data.rect[1], data.rect[2], data.rect[3]];
+      return {
+        ok: true,
+        msg: { type: 'pdfcraft:mark-click', id, set: data.set, index: data.index, page: data.page, rect },
+      };
+    }
+    case 'pdfcraft:marks-shown': {
+      if (id === null) return bad('marks-shown without id');
+      if (typeof data.set !== 'string' || !MARK_SET_RE.test(data.set)) return bad('bad set');
+      if (!isIndex(data.page) || !isIndex(data.count)) return bad('bad page or count');
+      return {
+        ok: true,
+        msg: { type: 'pdfcraft:marks-shown', id, set: data.set, page: data.page, count: data.count },
+      };
+    }
   }
+}
+
+/** A `#rrggbb` color. */
+export function isHexColor(v: unknown): v is string {
+  return typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v);
 }
 
 /** Whitespace collapsed, trimmed and cut to `MAX_FIND` characters; null when nothing is left. */
@@ -315,6 +395,8 @@ export class BridgeClient {
   private readonly dirtyIds = new Set<string>();
   /** Keys of the items registered with `setMenuItems` (menu messages about other keys are dropped). */
   private menuKeys: ReadonlySet<string> = new Set();
+  /** Marks sent and not cleared: `id` → `set` → page → how many (to validate `pdfcraft:mark-click`). */
+  private readonly sentMarks = new Map<string, Map<string, Map<number, number>>>();
   private st: Omit<BridgeState, 'openIds' | 'dirtyIds'> = {
     ready: false,
     version: null,
@@ -354,13 +436,14 @@ export class BridgeClient {
   reset() {
     this.openIds.clear();
     this.dirtyIds.clear();
+    this.sentMarks.clear();
     this.st = { ready: false, version: null, bridge: 0, activeId: null, page: 0, pageCount: 0, theme: this.st.theme };
   }
 
   private readonly listener = (event: MessageEvent) => {
     const frame = this.opts.frame();
     if (event.origin !== this.opts.origin || !frame || event.source !== frame) return;
-    const parsed = parseMessage(event.data, (id) => this.openIds.has(id), this.menuKeys);
+    const parsed = parseMessage(event.data, (id) => this.openIds.has(id), this.menuKeys, this.markCount);
     if (!parsed.ok) {
       this.opts.warn?.(`leitor bridge: dropped message (${parsed.reason})`);
       return;
@@ -380,6 +463,7 @@ export class BridgeClient {
         if (msg.id) {
           this.openIds.delete(msg.id);
           this.dirtyIds.delete(msg.id);
+          this.sentMarks.delete(msg.id);
         }
         break;
       case 'pdfcraft:active':
@@ -416,7 +500,11 @@ export class BridgeClient {
   forget(id: string) {
     this.openIds.delete(id);
     this.dirtyIds.delete(id);
+    this.sentMarks.delete(id);
   }
+
+  /** Marks the app sent for `page` of `set` in `id` and didn't clear (undefined: none). */
+  readonly markCount: MarkCount = (id, set, page) => this.sentMarks.get(id)?.get(set)?.get(page);
 
   private post(msg: BridgeOut, transfer?: Transferable[]): boolean {
     const frame = this.opts.frame();
@@ -471,5 +559,53 @@ export class BridgeClient {
   /** Asks PdfCraft to send the selection still in its 300 ms debounce now; it answers `pdfcraft:selection-sent`. */
   selectionNow(seq: number): boolean {
     return this.post({ type: 'pdfcraft:selection-now', seq });
+  }
+
+  /**
+   * Draws temporary underlines over pages of the open document `id`: each page listed gets exactly `marks` in set
+   * `set` (an empty list clears the page; other pages keep theirs). A mark's index (in `pdfcraft:mark-click`) is its
+   * position in its page's list. At most `MAX_MARK_PAGES` pages, `MAX_PAGE_MARKS` marks per page and
+   * `MAX_MARK_RECTS` rects per mark; invalid rects are left out (the mark keeps its index).
+   */
+  sendMarks(id: string, set: string, pages: readonly PageMarks[]): boolean {
+    if (!this.openIds.has(id) || !MARK_SET_RE.test(set)) return false;
+    const counts = new Map<number, number>();
+    const out: OutMark[] = [];
+    for (const p of pages) {
+      if (!isIndex(p.page) || counts.has(p.page) || counts.size >= MAX_MARK_PAGES) continue;
+      const list = p.marks.slice(0, MAX_PAGE_MARKS);
+      counts.set(p.page, list.length);
+      // A page entry with no rects alone clears the page.
+      if (list.length === 0) out.push({ page: p.page, rects: [], style: 'underline', color: CLEAR_COLOR });
+      for (const m of list) {
+        const rects = m.rects
+          .filter(isRect)
+          .slice(0, MAX_MARK_RECTS)
+          .map((r) => [r[0], r[1], r[2], r[3]] as Rect);
+        const color = isHexColor(m.color) ? m.color.toLowerCase() : CLEAR_COLOR;
+        out.push({ page: p.page, rects, style: 'underline', color });
+      }
+    }
+    if (out.length === 0) return false;
+    const ok = this.post({ type: 'pdfcraft:marks', id, set, marks: out });
+    if (ok) {
+      let sets = this.sentMarks.get(id);
+      if (!sets) this.sentMarks.set(id, (sets = new Map()));
+      let sent = sets.get(set);
+      if (!sent) sets.set(set, (sent = new Map()));
+      for (const [page, n] of counts) {
+        if (n > 0) sent.set(page, n);
+        else sent.delete(page);
+      }
+    }
+    return ok;
+  }
+
+  /** Removes every mark of `set` from `id`. */
+  clearMarks(id: string, set: string): boolean {
+    if (!MARK_SET_RE.test(set)) return false;
+    this.sentMarks.get(id)?.delete(set);
+    if (!this.openIds.has(id)) return false;
+    return this.post({ type: 'pdfcraft:clear-marks', id, set });
   }
 }

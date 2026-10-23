@@ -136,6 +136,21 @@ export function LeitorHost() {
 
   useEffect(() => core.onWindowCloseRequested(() => controller.onCloseRequested()), [controller]);
 
+  // The collection changed (import, sync, a generated deck, the Anki pages): the highlighted words may have changed.
+  useEffect(() => core.onAnkiChanged(() => controller.refreshVocab()), [controller]);
+
+  // `/leitor?livro=<uid>&realce=1` turns "Realçar vocabulário" on for that book (captures, tests).
+  const realce = useRouterState({
+    select: (s) => {
+      const search = s.location.search as Record<string, unknown>;
+      const on = search.realce === 1 || search.realce === '1' || search.realce === true;
+      return on && typeof search.livro === 'string' ? search.livro : null;
+    },
+  });
+  useEffect(() => {
+    if (visible && realce) controller.setHighlight(realce, true);
+  }, [controller, visible, realce]);
+
   if (!snap.mounted) return null;
   return (
     <div

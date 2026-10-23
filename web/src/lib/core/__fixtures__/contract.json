@@ -55,14 +55,23 @@
   ],
   "BookPanelInfo": [
     "bookUid",
+    "chapterDeck",
     "contentDeck",
     "lastDeckId",
     "lastKind",
     "reviewDeckId",
     "title",
+    "vocab",
     "vocabDeck",
     "vocabRootDeckId",
     "vocabRootName"
+  ],
+  "BookPanelVocab": [
+    "coverageKnown",
+    "coverageWithLearning",
+    "rangeLabel",
+    "scanUid",
+    "scannedAt"
   ],
   "BrowseRow": [
     "buried",
@@ -221,6 +230,21 @@
     "items",
     "warnings"
   ],
+  "JobError": [
+    "code",
+    "message"
+  ],
+  "JobProgress": [
+    "bookUid",
+    "done",
+    "error",
+    "jobId",
+    "kind",
+    "reused",
+    "scanUid",
+    "stage",
+    "total"
+  ],
   "LocalCppStatus": [
     "clangFormat",
     "compiler"
@@ -250,6 +274,16 @@
   "RemoteCppStatus": [
     "tokenSet",
     "url"
+  ],
+  "ResolvedRange": [
+    "display",
+    "items",
+    "kind",
+    "label",
+    "pages",
+    "slug",
+    "subdeck",
+    "text"
   ],
   "RunnerTestResult": [
     "message",
@@ -335,12 +369,192 @@
   "Values.newCardButtons": [
     "<⁨1⁩min(s)|<⁨6⁩min(s)|<⁨10⁩min(s)"
   ],
+  "VocabChapter": [
+    "coverageKnown",
+    "coverageWithLearning",
+    "endPage",
+    "index",
+    "knownTokens",
+    "label",
+    "startPage",
+    "totalTokens"
+  ],
+  "VocabConfig": [
+    "countYoung",
+    "derivedPolicy",
+    "functionWordsKnown",
+    "knownIvlDays",
+    "suspendedPolicy"
+  ],
+  "VocabCurvePoint": [
+    "coverage",
+    "n"
+  ],
+  "VocabDataInfo": [
+    "available",
+    "frequency",
+    "schemaVersion",
+    "stopwords",
+    "wordnet"
+  ],
+  "VocabDataSource": [
+    "license",
+    "name",
+    "url",
+    "version"
+  ],
+  "VocabDeckNaming": [
+    "baseName",
+    "bookTag",
+    "fullName",
+    "rangeTag",
+    "subdeck"
+  ],
+  "VocabDeckResult": [
+    "created",
+    "deckId",
+    "deckName",
+    "decks",
+    "noteIds",
+    "skippedExisting",
+    "skippedPrevious"
+  ],
+  "VocabFolder": [
+    "decks",
+    "notetypes",
+    "root"
+  ],
+  "VocabFolderDeck": [
+    "cardCount",
+    "deckId",
+    "depth",
+    "name",
+    "noteCount"
+  ],
+  "VocabFolderNotetype": [
+    "fields",
+    "mappedField",
+    "name",
+    "noteCount",
+    "notetypeId",
+    "samples",
+    "suggestedField"
+  ],
+  "VocabFolderRoot": [
+    "deckId",
+    "name"
+  ],
+  "VocabJob": [
+    "jobId",
+    "scanUid"
+  ],
+  "VocabLemmaRef": [
+    "lemma",
+    "status"
+  ],
+  "VocabMapping": [
+    "field",
+    "notetypeId"
+  ],
+  "VocabMark": [
+    "form",
+    "lemma",
+    "rects",
+    "status"
+  ],
+  "VocabMetrics": [
+    "coverageKnown",
+    "coverageWithLearning",
+    "curve",
+    "formsLemmas",
+    "knownTokens",
+    "learningTokens",
+    "properLemmas",
+    "totalTokens",
+    "unknownLemmas",
+    "unknownLemmasRepeated",
+    "wordsTo95",
+    "wordsTo98"
+  ],
+  "VocabOutline": [
+    "items",
+    "pageCount"
+  ],
+  "VocabOutlineItem": [
+    "children",
+    "endPage",
+    "id",
+    "page",
+    "startPage",
+    "title"
+  ],
+  "VocabPageMarks": [
+    "marks",
+    "page"
+  ],
+  "VocabReport": [
+    "author",
+    "bookUid",
+    "chapters",
+    "config",
+    "deck",
+    "folder",
+    "metrics",
+    "range",
+    "rows",
+    "scanUid",
+    "scannedAt",
+    "title"
+  ],
+  "VocabReportFolder": [
+    "deckCount",
+    "rootDeckId",
+    "rootName"
+  ],
+  "VocabRow": [
+    "base",
+    "chapter",
+    "defaultSelected",
+    "example",
+    "examplePage",
+    "exampleSpan",
+    "existingNoteId",
+    "family",
+    "firstPage",
+    "form",
+    "group",
+    "lemma",
+    "occurrences",
+    "pages",
+    "pos",
+    "position",
+    "rare",
+    "status",
+    "statusSource",
+    "zipf"
+  ],
+  "VocabSettings": [
+    "config",
+    "excludedDeckIds",
+    "rootDeckId",
+    "rootName"
+  ],
+  "VocabWordAdded": [
+    "deckId",
+    "deckName",
+    "noteId"
+  ],
   "WordDefinition": [
+    "definitionSource",
+    "family",
     "lemma",
     "note",
+    "pos",
+    "status",
     "vocabRootDeckId",
     "vocabRootName",
-    "word"
+    "word",
+    "wordnetDefinition"
   ],
   "WordDefinition.note": [
     "deckName",

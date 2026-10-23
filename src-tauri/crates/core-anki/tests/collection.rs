@@ -247,6 +247,7 @@ async fn prepare_collection_creates_the_five_types_once() -> anyhow::Result<()> 
                 "Exemplo",
                 "Fonte",
                 "Frequência",
+                "Família",
                 "Card 2",
             ],
             &["Inglês → Português", "Português → Inglês"],
@@ -464,6 +465,7 @@ fn fixture_builds_twice_with_every_deck_and_media() -> anyhow::Result<()> {
 fn fixture_with_isolation_probe() -> anyhow::Result<()> {
     let f = common::fixture_with(FixtureOptions {
         isolation_probe: true,
+        ..Default::default()
     })?;
     assert!(f.info.decks.contains_key(fixture::DECK_ISOLATION));
     assert!(f.info.first_card.contains_key(fixture::DECK_ISOLATION));

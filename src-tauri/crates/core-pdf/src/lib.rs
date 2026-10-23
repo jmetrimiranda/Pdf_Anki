@@ -2,6 +2,8 @@
 //! PdfCraft's own web UI embedded in the app, so this crate does only what is not on screen:
 //! text with positions (UAX #29 words mapped to glyph rects, for vocabulary and marks), covers
 //! and metadata for the library, the `LeitorBookUid` Info entry, and "looks scanned" detection.
+//! It also reads the whole book's text in parallel for vocabulary scanning, and fingerprints the text of a
+//! file version (so an annotation-only save keeps the cached lemma table).
 //! It is the only crate that knows PdfCraft and uses only its lower layers (`pdfcraft-render`,
 //! `-cos`, `-organize`), never the engine, so it builds wherever those do (iOS included).
 //!
@@ -15,6 +17,7 @@ mod actor;
 mod core;
 mod encode;
 mod error;
+mod extract;
 mod info;
 mod types;
 mod words;
@@ -22,6 +25,9 @@ mod words;
 pub use crate::core::PdfCore;
 pub use encode::encode_rgba as encode_png;
 pub use error::PdfError;
+pub use extract::{
+    ExtractOptions, MAX_EXTRACT_THREADS, PageText, extract_book_text, text_fingerprint,
+};
 pub use info::{LEITOR_BOOK_UID_KEY, read_info, stamp_info};
 pub use types::{
     DocHandle, DocInfo, OutlineItem, PageSize, PageWord, PageWords, PdfMeta, Rect, TextStats,

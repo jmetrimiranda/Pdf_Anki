@@ -825,3 +825,49 @@ window.devicePixelRatio` (a escala de interface do PdfCraft faz ponto ≠ px CSS
   coluna), Alt+roda (rolagem do egui, `motion.rs`). Teclas simples sem modificador: `V`, `H`, Espaço (ferramentas); nenhuma usa `C`.
 - `Alt+C` está livre: nenhum `Key::C` em ui-egui (o que importa porque `consume_key` do egui deixa passar um Alt a
   mais — `prepare.rs` comenta isso) e nenhum atalho do registro com `C` sem Ctrl (`Ctrl+C` = Copy exige Ctrl).
+
+## 13. Ponte v3 — marcas de vocabulário (fork `leitor-bridge`, Fase 6)
+
+`pdfcraft:ready` passa a mandar `bridge: 3`. Marcas são uma **sobreposição temporária** desenhada pelo PdfCraft acima
+da página: **não** são anotações, nunca vão para o PDF (bytes salvos idênticos com e sem marcas — testado), nunca
+deixam o documento sujo (`pdfcraft:dirty` não muda), nunca entram no desfazer/refazer, não são exportadas. Ficam
+guardadas no `DocView` da aba (sobrevivem à troca de aba e a "arquivo mudou no disco"), somem quando a aba fecha.
+
+Retângulos de página: `[x, y, largura, altura]` em pontos do **view space** (y para baixo, página como mostrada sem a
+rotação de visualização) — o mesmo espaço de `pdfcraft:selection` e de `TextGlyph.rect`/`page_words` do `core-pdf`.
+A ponte converte para `[x0, y0, x1, y1]` (`apps/pdfcraft-web/src/bridge.rs::mark_rect`).
+
+### App → PdfCraft
+
+| Mensagem | Campos | Comportamento |
+|---|---|---|
+| `pdfcraft:marks` | `{ id, set, marks: [{ page, rects, style, color }] }` | `id` obrigatório (id desconhecido → ignorado; mande depois de `pdfcraft:active` daquele id). `set` 1–64 caracteres (grupo de marcas que o app troca junto, ex. `vocab`). Para **cada página que aparece** em `marks`, as marcas de `(id, set)` nessa página são **substituídas** pelas entradas dessa página, na ordem do array; páginas não mencionadas ficam como estão; uma entrada `{ page, rects: [] }` (sozinha) limpa a página. **`index`** de uma marca = posição dela entre as entradas **da mesma página** naquele set (local à página, na ordem enviada). `page` inteiro ≥ 0 (senão a entrada é descartada; páginas além do total são ignoradas). `style`: `'underline'` (padrão se ausente); outro valor → a entrada é ignorada **mas mantém o índice** (não desenha, não recebe clique). `color`: `#rrggbb` ou `#rrggbbaa`; inválido → coral `#d85a30`. Retângulos com NaN/inf/lado negativo são descartados (a marca mantém o índice). Limites: ≤ 16 sets por documento (um 17º set novo é ignorado), ≤ 4 000 marcas por página e set, ≤ 8 retângulos por marca, ≤ 200 000 retângulos no documento (o excesso é descartado). O set alterado por último fica por cima. |
+| `pdfcraft:clear-marks` | `{ id, set }` | Remove todas as marcas daquele set no documento. |
+
+### PdfCraft → app
+
+| Mensagem | Campos | Quando |
+|---|---|---|
+| `pdfcraft:mark-click` | `{ id, set, index, page, rect }` | Clique primário (pressionar + soltar sem arrastar) com a ferramenta **Select** (padrão) ou **Hand**, num ponto dentro de um retângulo de marca inflado em 2 pt (view space). `rect` = união dos retângulos da marca em **px CSS relativos ao viewport do iframe** (mesma conversão de `anchor`/`menu-shown`). Marcas de vários sets sobrepostas: vence o set alterado por último; dentro do set, o menor índice. O clique **continua normal** (limpa a seleção como sempre; um arrasto seleciona texto e não gera `mark-click`). Ferramentas que criam conteúdo (carimbo, comentário, formulário…) não geram. |
+| `pdfcraft:marks-shown` | `{ id, set, page, count }` | Uma vez por alteração: quando as marcas de `set` em `page` foram **desenhadas pela primeira vez** depois de mudarem (ou seja, quando a página aparece na tela depois do `pdfcraft:marks`). `count` = número de marcas da página no set (como indexadas, incluindo as ignoradas). Serve para testes/app esperarem sem `sleep`. |
+
+### Desenho
+
+- Só sublinhado (spec §4: linha de 2 px, nunca fundo preenchido): linha de **2 px CSS** (`2 × devicePixelRatio / pixels_per_point`
+  pontos egui, então a escala da interface do PdfCraft não engrossa), meio ponto abaixo da base de cada retângulo,
+  na cor dada. Segue zoom, rotação de visualização (a linha fica "embaixo" no sentido de leitura da página) e rolagem.
+- Ordem de pintura: depois do raster da página (que já inclui as anotações) e antes das sobreposições do próprio
+  PdfCraft (alças de comentário, resultados de localizar, seleção, menus). Só páginas visíveis.
+
+### API Rust (ui-egui, `crates/ui-egui/src/host.rs`)
+
+- `HostRequest::Marks { tag, set, pages: Vec<(usize, Vec<HostMark>)> }` e `HostRequest::ClearMarks { tag, set }`
+  (`HostRequest` continua `#[non_exhaustive]`; deixou de ser `Eq` por causa dos `f32`, continua `PartialEq`).
+- `HostMark { rects: Vec<[f32; 4]> /* [x0,y0,x1,y1] view space */, color: egui::Color32 }`.
+- `HostEvent::MarkClick { tag, set, index, page, rect /* tela, pontos egui */ }`, `HostEvent::MarksShown { tag, set, page, count }`.
+- Constantes: `MAX_HOST_MARK_SETS` (16), `MAX_HOST_MARKS_PER_PAGE` (4 000), `MAX_HOST_MARK_RECTS` (8),
+  `MAX_HOST_MARK_RECTS_TOTAL` (200 000).
+- Ganchos: campo `DocView::host_marks` (`canvas.rs`), pintura e teste de clique no laço de páginas de `document_area`;
+  nenhuma mudança no engine/documento.
+- Ponte web (`apps/pdfcraft-web/src/bridge.rs`): `MarkEntry`, `marks()`, `mark_set()`, `mark_color()`, `mark_rect()`,
+  `DEFAULT_MARK_COLOR`, `MAX_MARK_SET_CHARS` (64), `MAX_MARK_ENTRIES` (200 000 entradas lidas), `MAX_MARK_ENTRY_RECTS` (8).

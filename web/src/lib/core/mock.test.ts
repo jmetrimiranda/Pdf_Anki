@@ -183,7 +183,7 @@ describe('mock core client', () => {
     await mockClient.positionSet(farm.bookUid, 7, 0.8);
     expect(await mockClient.positionGet(farm.bookUid)).toMatchObject({ page: 7, progress: 0.8 });
     await mockClient.positionSet(farm.bookUid, 99, 5);
-    expect(await mockClient.positionGet(farm.bookUid)).toMatchObject({ page: 9, progress: 1 });
+    expect(await mockClient.positionGet(farm.bookUid)).toMatchObject({ page: farm.pages - 1, progress: 1 });
     expect(await mockClient.positionGet((await bookByTitle('Apostila digitalizada')).bookUid)).toBeNull();
 
     await mockClient.readingSessionStart(farm.bookUid, 7);
@@ -194,6 +194,28 @@ describe('mock core client', () => {
       ['heartbeat', 8, null],
       ['stop', null, 'tab'],
     ]);
+  });
+
+  it('lays words out with Helvetica’s widths, from the file’s own text when it was imported', async () => {
+    const bytes = makePdf({
+      pages: 2,
+      title: 'Importado',
+      textPerPage: (i) => `Page ${i + 1}\nThe windmill was WIDE.`,
+    });
+    const path = '/tmp/importado.pdf';
+    mockHandle.setNextExportPath(path);
+    expect(await mockClient.pickExportPath('importado.pdf')).toBe(path);
+    await mockClient.exportBytes(path, bytes.buffer as ArrayBuffer);
+    const added = await mockClient.libraryAdd(path);
+    const words = await mockClient.docWords(added.book.bookUid, 1);
+    expect(words.text).toBe('Page 2\nThe windmill was WIDE.\n');
+    const wide = words.words.find((w) => w.text === 'WIDE')!;
+    const the = words.words.find((w) => w.text === 'The')!;
+    // T 611 + h 556 + e 556 = 1723/1000 em at 11 pt.
+    expect(the.rects[0]![2]).toBeCloseTo(1.723 * 11, 5);
+    expect(the.rects[0]![0]).toBe(72);
+    // W 944 + I 278 + D 722 + E 667.
+    expect(wide.rects[0]![2]).toBeCloseTo(2.611 * 11, 5);
   });
 
   it('returns words whose offsets index the page text; none for a scanned book', async () => {

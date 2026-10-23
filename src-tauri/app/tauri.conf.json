@@ -7,7 +7,7 @@
     "frontendDist": "../../web/dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "pnpm --filter @leitor/web dev",
-    "beforeBuildCommand": "pnpm --filter @leitor/web exec bash ../scripts/build-pdfcraft-web.sh && pnpm --filter @leitor/web exec bash ../scripts/fetch-anki-web.sh && pnpm --filter @leitor/web exec bash ../scripts/fetch-pyodide.sh && pnpm --filter @leitor/web build"
+    "beforeBuildCommand": "pnpm --filter @leitor/web exec bash ../scripts/build-pdfcraft-web.sh && pnpm --filter @leitor/web exec bash ../scripts/fetch-anki-web.sh && pnpm --filter @leitor/web exec bash ../scripts/fetch-pyodide.sh && pnpm --filter @leitor/web exec bash ../scripts/build-wordnet.sh && pnpm --filter @leitor/web build"
   },
   "app": {
     "windows": [
@@ -104,7 +104,8 @@
       }
     ],
     "resources": {
-      "../resources/anki-web/": "anki-web/"
+      "../resources/anki-web/": "anki-web/",
+      "../../data/generated/vocab/": "vocab/"
     }
   }
 }

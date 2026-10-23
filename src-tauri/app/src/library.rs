@@ -410,7 +410,12 @@ impl AppState {
                 .get_book(uid)?
                 .ok_or_else(|| core_store::StoreError::BookNotFound(uid.to_owned()))?;
             let position = s.get_reading_position(uid)?;
-            Ok(LibraryEntry { book, position })
+            let vocab_scanned = s.latest_vocab_scan(uid, true)?.is_some();
+            Ok(LibraryEntry {
+                book,
+                position,
+                vocab_scanned,
+            })
         })
     }
 
@@ -609,7 +614,7 @@ impl AppState {
         Ok(self.pdf().page_words(doc, page)?)
     }
 
-    fn book_doc(&self, book: &Book) -> Result<DocHandle, AppError> {
+    pub(crate) fn book_doc(&self, book: &Book) -> Result<DocHandle, AppError> {
         self.cached_doc(&book.book_uid, &book.file_hash, || {
             let bytes = Arc::new(self.read_current(book)?);
             Ok(self.pdf().open(bytes, None)?)

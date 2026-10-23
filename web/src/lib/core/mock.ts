@@ -1,7 +1,8 @@
 // In-browser stand-in for the Rust core: used by `vite --mode mock`, Playwright and Vitest.
 // The library lives in memory and is persisted in sessionStorage ('leitor.mock'), so reloading the
 // page simulates restarting the app. PDFs are real files produced by `makePdf`.
-import { layoutPageText, makePdf, PDF_PAGE_SIZE, pdfBytesToLatin1 } from '../pdf/minimalPdf';
+import { HELVETICA_ASCENT, helveticaAdvance } from '../pdf/helvetica';
+import { layoutPageText, makePdf, PDF_PAGE_SIZE, pdfBytesToLatin1, readMinimalPdf } from '../pdf/minimalPdf';
 import {
   ankiState,
   buildDeckTree,
@@ -26,6 +27,16 @@ import {
 } from './mock/bookPanel';
 import { ankiSyncMock, mockSyncHandle, resetSync, syncCollectionReplaced, type MockSyncHandle } from './mock/ankiSync';
 import { codeMock, mockSetCppAvailable, resetCodeMock } from './mock/code';
+import { FARM_PAGES, farmChapterParagraphs, farmOutline } from './mock/vocabCorpus';
+import {
+  createVocabMock,
+  mockVocabHandle,
+  resetVocab,
+  vocabScanned,
+  type MockVocabHandle,
+  type VocabBookSource,
+} from './mock/vocab';
+import type { RawOutlineItem } from './mock/vocabEngine';
 import {
   CoreError,
   type AddedBook,
@@ -88,8 +99,12 @@ const TEXTS: Record<Exclude<TextKind, 'scanned'>, string[]> = {
 function pageText(spec: BookSpec, i: number): string {
   if (spec.kind === 'scanned') return '';
   const paras = TEXTS[spec.kind];
-  const body = Array.from({ length: 6 }, (_, k) => paras[(i + k) % paras.length]).join('\n');
-  return `${spec.title} — ${i + 1}\n${i === 0 ? `${spec.marker}\n` : ''}${body}`;
+  // Animal Farm: the three opening paragraphs, then two of the page's chapter (mock/vocabCorpus.ts).
+  const body =
+    spec.kind === 'farm'
+      ? [...Array.from({ length: 3 }, (_, k) => paras[(i + k) % paras.length]!), ...farmChapterParagraphs(i)]
+      : Array.from({ length: 6 }, (_, k) => paras[(i + k) % paras.length]);
+  return `${spec.title} — ${i + 1}\n${i === 0 ? `${spec.marker}\n` : ''}${body.join('\n')}`;
 }
 
 function originalBytes(spec: BookSpec): Uint8Array {
@@ -98,7 +113,7 @@ function originalBytes(spec: BookSpec): Uint8Array {
     title: spec.title,
     ...(spec.author ? { author: spec.author } : {}),
     textPerPage: (i) => pageText(spec, i),
-    outline: spec.kind !== 'scanned',
+    ...(spec.kind === 'farm' ? { outlineItems: farmOutline() } : { outline: spec.kind !== 'scanned' }),
   });
 }
 
@@ -250,7 +265,7 @@ function seedState(): MockState {
     now - 2 * DAY,
   );
   const farm = newRec(
-    { pages: 10, title: 'Animal Farm', author: 'George Orwell', kind: 'farm', marker: 'seed-farm' },
+    { pages: FARM_PAGES, title: 'Animal Farm', author: 'George Orwell', kind: 'farm', marker: 'seed-farm' },
     now - DAY,
     { collectionFolder: 'Inglês' },
   );
@@ -258,7 +273,7 @@ function seedState(): MockState {
     books: [ros, scanned, farm],
     positions: {
       [ros.book.bookUid]: { page: 4, offset: 0, cfi: null, progress: 5 / 12, updatedAt: now - 60_000 },
-      [farm.book.bookUid]: { page: 1, offset: 0, cfi: null, progress: 2 / 10, updatedAt: now - DAY + 60_000 },
+      [farm.book.bookUid]: { page: 1, offset: 0, cfi: null, progress: 2 / FARM_PAGES, updatedAt: now - DAY + 60_000 },
     },
     versions: {},
     savedVersions: [],
@@ -332,7 +347,8 @@ function liveRec(uid: string): BookRec {
 }
 
 function entry(rec: BookRec): LibraryEntry {
-  return structuredClone({ ...rec.book, position: state.positions[rec.book.bookUid] ?? null });
+  const uid = rec.book.bookUid;
+  return structuredClone({ ...rec.book, position: state.positions[uid] ?? null, vocabScanned: vocabScanned(uid) });
 }
 
 function currentBytes(rec: BookRec): Uint8Array {
@@ -340,25 +356,59 @@ function currentBytes(rec: BookRec): Uint8Array {
   return saved ? fromBase64(saved) : originalBytes(rec.spec);
 }
 
-/** Simple monospace-ish word boxes over the lines `makePdf` draws (Helvetica ≈ 0.5 em per char). */
+/** Text lines and outline read back from saved/imported bytes, by file hash (`null`: not a `makePdf`-shaped file). */
+const parsedVersions = new Map<string, ReturnType<typeof readMinimalPdf>>();
+
+function parsedCurrent(rec: BookRec): ReturnType<typeof readMinimalPdf> {
+  const saved = state.versions[rec.book.bookUid];
+  if (!saved) return null;
+  const key = rec.book.fileHash;
+  if (!parsedVersions.has(key)) {
+    if (parsedVersions.size > 16) parsedVersions.clear();
+    parsedVersions.set(key, readMinimalPdf(fromBase64(saved)));
+  }
+  return parsedVersions.get(key) ?? null;
+}
+
+/** The text of page `page` as `makePdf` draws it: the saved/imported file's own lines when readable, else the spec's. */
+function pageSource(rec: BookRec, page: number): string {
+  const parsed = parsedCurrent(rec);
+  if (parsed) return (parsed.pages[page] ?? []).join('\n');
+  return pageText(rec.spec, page);
+}
+
+const WORDS = new Intl.Segmenter('en', { granularity: 'word' });
+
+/**
+ * Word boxes over the lines `makePdf` draws, with Helvetica's real glyph widths (lib/pdf/helvetica.ts) so they line
+ * up with what PdfCraft renders; words are Unicode (UAX #29) words, like `core-pdf`.
+ */
 function pageWords(rec: BookRec, page: number): PageWords {
   if (!Number.isInteger(page) || page < 0 || page >= rec.book.pages) {
     throw new CoreError('page_out_of_range', `A página ${page + 1} não existe neste documento.`);
   }
-  const lines = layoutPageText(pageText(rec.spec, page));
+  const lines = layoutPageText(pageSource(rec, page));
   let text = '';
   const words: PageWord[] = [];
   for (const line of lines) {
     const lineStart = text.length;
-    const charW = line.size * 0.5;
-    for (const m of line.text.matchAll(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)) {
-      const start = lineStart + m.index;
+    for (const seg of WORDS.segment(line.text)) {
+      if (!seg.isWordLike || !/[\p{L}\p{N}]/u.test(seg.segment)) continue;
+      const start = lineStart + seg.index;
+      const x = line.x + helveticaAdvance(line.text.slice(0, seg.index), line.size);
       words.push({
         index: words.length,
-        text: m[0],
+        text: seg.segment,
         start,
-        end: start + m[0].length,
-        rects: [[line.x + m.index * charW, line.baseline - line.size * 0.8, m[0].length * charW, line.size * 1.05]],
+        end: start + seg.segment.length,
+        rects: [
+          [
+            x,
+            line.baseline - line.size * HELVETICA_ASCENT,
+            helveticaAdvance(seg.segment, line.size),
+            line.size * (HELVETICA_ASCENT + 0.25),
+          ],
+        ],
       });
     }
     text += `${line.text}\n`;
@@ -674,6 +724,30 @@ const baseClient = {
   onWindowCloseRequested: () => () => undefined,
 } satisfies Partial<CoreClient>;
 
+/** The outline of the current version: read back from saved/imported bytes, else the one `makePdf` wrote. */
+function outlineOf(rec: BookRec): RawOutlineItem[] {
+  const parsed = parsedCurrent(rec);
+  if (parsed) return parsed.outline;
+  if (rec.spec.kind === 'farm') return farmOutline();
+  if (rec.spec.kind === 'scanned') return [];
+  return Array.from({ length: Math.min(rec.spec.pages, 50) }, (_, k) => ({ title: `Chapter ${k + 1}`, page: k }));
+}
+
+const vocabSource: VocabBookSource = {
+  book: (uid) => {
+    const b = liveRec(uid).book;
+    return { title: b.title, author: b.author, pages: b.pages, hasText: b.hasText, fileHash: b.fileHash };
+  },
+  pageText: (uid, page) => {
+    const rec = liveRec(uid);
+    return layoutPageText(pageSource(rec, page))
+      .map((l) => l.text)
+      .join('\n');
+  },
+  pageWords: (uid, page) => pageWords(liveRec(uid), page),
+  outline: (uid) => outlineOf(liveRec(uid)),
+};
+
 /** The whole mock core: library/reader (above) + the Anki parts, one file per feature package. */
 export const mockClient: CoreClient = {
   ...baseClient,
@@ -698,6 +772,7 @@ export const mockClient: CoreClient = {
       update(uid, { contentDeckId: deckId });
     },
   }),
+  ...createVocabMock(vocabSource),
 };
 
 // ---------------------------------------------------------------- e2e handle
@@ -725,6 +800,8 @@ export interface LeitorMockHandle extends MockSyncHandle {
   readonly anki: MockAnkiHandle;
   /** Sets the vocabulary folder (setting `vocab_root_deck_id`; chosen in the UI from Phase 6). */
   setVocabRoot(deckId: number | null): void;
+  /** The vocabulary scan mock (data availability, scan speed, table reads). */
+  readonly vocab: MockVocabHandle;
   /** Simulates the OS opening a `leitor://` URL while the app runs (`onDeepLink`); invalid URLs are ignored. */
   deepLink(url: string): void;
   /** URLs returned (parsed) by the next `pendingDeepLinks()` (launch by URL). */
@@ -867,6 +944,9 @@ export const mockHandle: LeitorMockHandle = {
   get anki() {
     return ankiHandle;
   },
+  get vocab() {
+    return mockVocabHandle;
+  },
   reset() {
     state = seedState();
     persist();
@@ -875,6 +955,7 @@ export const mockHandle: LeitorMockHandle = {
     resetStudyMock();
     resetBookPanel();
     resetCodeMock();
+    resetVocab();
   },
   setVocabRoot: (deckId) => mockSetVocabRoot(deckId),
   deepLink: (url) => mockDeepLink(url),

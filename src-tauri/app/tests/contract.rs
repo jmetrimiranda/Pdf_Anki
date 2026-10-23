@@ -347,6 +347,7 @@ fn serde_shapes_match_the_ts_contract() {
     record(&mut out, "DeepLink", &serde_json::to_value(link).unwrap());
     code_samples(&state, &info, &mut out);
     state.shutdown();
+    vocab_samples(&mut out);
 
     for required in [
         "StudyNext.card",
@@ -391,6 +392,34 @@ fn serde_shapes_match_the_ts_contract() {
         "ImportPreview",
         "ImportItem",
         "CodeImportResult",
+        "VocabSettings",
+        "VocabConfig",
+        "VocabFolder",
+        "VocabFolderRoot",
+        "VocabFolderDeck",
+        "VocabFolderNotetype",
+        "VocabMapping",
+        "VocabOutline",
+        "VocabOutlineItem",
+        "ResolvedRange",
+        "VocabJob",
+        "JobProgress",
+        "JobError",
+        "VocabReport",
+        "VocabReportFolder",
+        "VocabDeckNaming",
+        "VocabMetrics",
+        "VocabCurvePoint",
+        "VocabChapter",
+        "VocabRow",
+        "VocabLemmaRef",
+        "VocabPageMarks",
+        "VocabMark",
+        "VocabDeckResult",
+        "VocabWordAdded",
+        "VocabDataInfo",
+        "VocabDataSource",
+        "BookPanelVocab",
     ] {
         assert!(
             out.contains_key(required),
@@ -567,4 +596,210 @@ fn code_samples(
         "CodeImportResult",
         &serde_json::to_value(&imported).unwrap(),
     );
+}
+
+/// Vocabulary scanning (spec 12, 15): a book with an outline scanned against the fixture's vocabulary folder, its
+/// report (a row of each group), marks, a generated deck, "Adicionar ao deck do livro", jobs and the panel summary.
+fn vocab_samples(out: &mut BTreeMap<String, Vec<String>>) {
+    use core_vocab::{RangeSpec, RowGroup, ScanConfig};
+    use leitor_app::{JobKind, JobProgress, JobStage, VocabDeckOptions};
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let info = fixture::build(
+        &data.join("anki"),
+        FixtureOptions {
+            vocab: true,
+            ..FixtureOptions::default()
+        },
+    )
+    .unwrap();
+    let state = Arc::new(AppState::with_secret_store(
+        data,
+        Arc::new(core_store::SystemClock),
+        Arc::new(MemoryStore::default()),
+    ));
+    common::use_lexicon(&state);
+    let root = info.decks[fixture::DECK_VOCAB];
+
+    let settings = state
+        .vocab_settings_set(
+            serde_json::from_value(serde_json::json!({ "rootDeckId": root })).unwrap(),
+        )
+        .unwrap();
+    let settings = val(&settings);
+    record(out, "VocabSettings", &settings);
+    record(out, "VocabConfig", &settings["config"]);
+    let folder = val(&state.vocab_folder(root).unwrap());
+    record(out, "VocabFolder", &folder);
+    record(out, "VocabFolderRoot", &folder["root"]);
+    for d in folder["decks"].as_array().unwrap() {
+        record(out, "VocabFolderDeck", d);
+    }
+    for n in folder["notetypes"].as_array().unwrap() {
+        record(out, "VocabFolderNotetype", n);
+    }
+    state
+        .vocab_mapping_set(info.notetypes["vocabWord"], "Word".into())
+        .unwrap();
+    for m in state.vocab_mapping_get().unwrap() {
+        record(out, "VocabMapping", &val(&m));
+    }
+
+    let openings = [
+        "It was a day.",
+        "It was a cold day in the winter.",
+        "The day was long.",
+        "It was night again.",
+        "So it was.",
+        "Time went by.",
+    ];
+    let pages: Vec<String> = openings
+        .iter()
+        .map(|o| {
+            format!(
+                "{o} The animals of the farm work in the barn. All the learning of the pigs was quick. Then \
+                 Napoleon said that a slow learner would look up the word windmill."
+            )
+        })
+        .collect();
+    let pdf = common::write(
+        dir.path(),
+        "farm.pdf",
+        &common::book_pdf(
+            &pages,
+            "Animal Farm",
+            &[
+                common::mark("Cap 1", 0, vec![common::mark("Parte 1", 1, vec![])]),
+                common::mark("Cap 2", 3, vec![]),
+            ],
+        ),
+    );
+    let uid = state.library_add(&pdf, false).unwrap().book.book.book_uid;
+    let outline = val(&state.vocab_outline(&uid).unwrap());
+    record(out, "VocabOutline", &outline);
+    record(out, "VocabOutlineItem", &outline["items"][0]);
+    record(out, "VocabOutlineItem", &outline["items"][0]["children"][0]);
+    for range in [
+        RangeSpec::All,
+        RangeSpec::Pages {
+            text: "2-3, 5".into(),
+        },
+        RangeSpec::Outline {
+            ids: vec!["0".into()],
+        },
+    ] {
+        record(
+            out,
+            "ResolvedRange",
+            &val(&state.vocab_range_check(&uid, &range).unwrap()),
+        );
+    }
+    let job = state
+        .vocab_scan_start(&uid, root, vec![], RangeSpec::All, ScanConfig::default())
+        .unwrap();
+    record(out, "VocabJob", &val(&job));
+    let end = state
+        .job_wait(&job.job_id, Duration::from_secs(120))
+        .unwrap();
+    assert_eq!(end.stage, JobStage::Done, "{end:?}");
+    record(out, "JobProgress", &val(&end));
+    let failed = JobProgress {
+        job_id: "j".into(),
+        kind: JobKind::VocabScan,
+        book_uid: uid.clone(),
+        scan_uid: "s".into(),
+        stage: JobStage::Failed,
+        done: 0,
+        total: 0,
+        reused: false,
+        error: Some(leitor_app::jobs::JobError {
+            code: "vocab_needs_ocr".into(),
+            message: "OCR".into(),
+        }),
+    };
+    let failed = val(&failed);
+    record(out, "JobProgress", &failed);
+    record(out, "JobError", &failed["error"]);
+
+    let report = state.vocab_report(&uid).unwrap().unwrap();
+    let groups: BTreeSet<String> = report
+        .rows
+        .iter()
+        .map(|r| format!("{:?}", r.group))
+        .collect();
+    for g in [RowGroup::Main, RowGroup::Forms, RowGroup::Proper] {
+        assert!(
+            groups.contains(&format!("{g:?}")),
+            "no {g:?} row: {groups:?}"
+        );
+    }
+    let json = val(&report);
+    record(out, "VocabReport", &json);
+    record(out, "VocabReportFolder", &json["folder"]);
+    record(out, "ResolvedRange", &json["range"]);
+    record(out, "VocabConfig", &json["config"]);
+    record(out, "VocabDeckNaming", &json["deck"]);
+    record(out, "VocabMetrics", &json["metrics"]);
+    for p in json["metrics"]["curve"].as_array().unwrap() {
+        record(out, "VocabCurvePoint", p);
+    }
+    for c in json["chapters"].as_array().unwrap() {
+        record(out, "VocabChapter", c);
+    }
+    for r in json["rows"].as_array().unwrap() {
+        record(out, "VocabRow", r);
+        for k in ["base", "family"] {
+            if !r[k].is_null() {
+                record(out, "VocabLemmaRef", &r[k]);
+            }
+        }
+    }
+    let marks = val(&state.vocab_marks(&uid, &[0, 1]).unwrap());
+    for p in marks.as_array().unwrap() {
+        record(out, "VocabPageMarks", p);
+        for m in p["marks"].as_array().unwrap() {
+            record(out, "VocabMark", m);
+        }
+    }
+    let deck = state
+        .vocab_generate_deck(
+            &uid,
+            &report.scan_uid,
+            vec!["learner".into(), "barn".into()],
+            VocabDeckOptions::default(),
+        )
+        .unwrap();
+    record(out, "VocabDeckResult", &val(&deck));
+    if let Some(p) = state.vocab_running_job(&uid) {
+        state.job_wait(&p.job_id, Duration::from_secs(120));
+    }
+    let added = state.vocab_add_word(&uid, "pig", 1, "pigs").unwrap();
+    record(out, "VocabWordAdded", &val(&added));
+    let data_info = val(&state.vocab_data_info());
+    record(out, "VocabDataInfo", &data_info);
+    let source = leitor_app::vocab::VocabDataSource {
+        name: "Open English WordNet".into(),
+        version: "2025".into(),
+        license: "CC-BY-4.0".into(),
+        url: Some("https://en-word.net/".into()),
+    };
+    record(out, "VocabDataSource", &val(&source));
+    if !data_info["wordnet"].is_null() {
+        record(out, "VocabDataSource", &data_info["wordnet"]);
+    }
+    let panel = val(&block_on(state.book_panel_info_at(&uid, Some(0))).unwrap());
+    record(out, "BookPanelInfo", &panel);
+    record(out, "BookPanelVocab", &panel["vocab"]);
+    let def = val(&block_on(state.vocab_define("learners", Some(&uid))).unwrap());
+    record(out, "WordDefinition", &def);
+    if !def["family"].is_null() {
+        record(out, "VocabLemmaRef", &def["family"]);
+    }
+    state.shutdown();
+}
+
+fn val<T: serde::Serialize>(x: &T) -> Value {
+    serde_json::to_value(x).unwrap()
 }

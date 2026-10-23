@@ -19,6 +19,7 @@ import { LibraryPage } from './features/library/LibraryPage';
 import { AppShell } from './features/shell/AppShell';
 import { devRoutesEnabled } from './features/shell/devRoutes';
 import { NotFound } from './features/shell/NotFound';
+import { parseStep, type VocabStepParam } from './features/vocab/steps';
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -211,6 +212,50 @@ function GenericPageRoute(): ReactNode {
   return route ? <WebPageRoute route={route} /> : <NotFound />;
 }
 
+// ---------------------------------------------------------------- Vocabulário (spec 12): report and wizard
+
+const VocabReportPage = lazy(() =>
+  import('./features/vocab/VocabReportPage').then((m) => ({ default: m.VocabReportPage })),
+);
+const VocabWizardPage = lazy(() =>
+  import('./features/vocab/VocabWizardPage').then((m) => ({ default: m.VocabWizardPage })),
+);
+
+const vocabReportRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/vocabulario',
+  validateSearch: (s: Record<string, unknown>): { livro?: string } => ({ livro: parseText(s.livro) }),
+  component: VocabReportRoute,
+});
+
+function VocabReportRoute(): ReactNode {
+  const { livro } = vocabReportRoute.useSearch();
+  return (
+    <Lazy>
+      <VocabReportPage key={livro ?? ''} bookUid={livro} />
+    </Lazy>
+  );
+}
+
+const vocabWizardRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/vocabulario/escanear',
+  validateSearch: (s: Record<string, unknown>): { livro?: string; passo?: VocabStepParam } => ({
+    livro: parseText(s.livro),
+    passo: parseStep(s.passo),
+  }),
+  component: VocabWizardRoute,
+});
+
+function VocabWizardRoute(): ReactNode {
+  const { livro, passo } = vocabWizardRoute.useSearch();
+  return (
+    <Lazy>
+      <VocabWizardPage key={livro ?? ''} bookUid={livro} initialStep={passo} />
+    </Lazy>
+  );
+}
+
 // ---------------------------------------------------------------- Configurações (spec 5.2)
 
 const settingsRoute = createRoute({
@@ -245,6 +290,12 @@ const settingsAiRoute = createRoute({
   component: lazyRouteComponent(() => import('./features/settings/AiSettings'), 'AiSettings'),
 });
 
+const settingsAboutRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: 'sobre',
+  component: lazyRouteComponent(() => import('./features/settings/AboutSettings'), 'AboutSettings'),
+});
+
 const devUiRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/dev/ui',
@@ -271,7 +322,15 @@ const routeTree = rootRoute.addChildren([
     ankiInfoRoute,
     ankiGenericPageRoute,
   ]),
-  settingsRoute.addChildren([settingsIndexRoute, settingsAnkiRoute, settingsCodeRoute, settingsAiRoute]),
+  vocabReportRoute,
+  vocabWizardRoute,
+  settingsRoute.addChildren([
+    settingsIndexRoute,
+    settingsAnkiRoute,
+    settingsCodeRoute,
+    settingsAiRoute,
+    settingsAboutRoute,
+  ]),
   ...(devRoutesEnabled ? [devUiRoute, devSmokeRoute] : []),
 ]);
 

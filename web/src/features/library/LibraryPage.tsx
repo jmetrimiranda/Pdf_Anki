@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from '@tanstack/react-router';
 import { BookOpen, FileDown, LayoutGrid, List, Plus, Search, SearchX } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Button, EmptyState, Input, Kbd, Notice, SegmentedControl, Skeleton, useToast } from '../../components/ui';
@@ -117,6 +118,7 @@ export function LibraryPage() {
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['library'] });
 
+  const navigate = useNavigate();
   const update = useMutation({
     mutationFn: ({ uid, patch }: { uid: string; patch: BookPatch }) => core.libraryUpdate(uid, patch),
     onSuccess: async () => {
@@ -161,6 +163,12 @@ export function LibraryPage() {
         }
         case 'openExternal':
           await core.bookOpenExternal(book.bookUid);
+          break;
+        case 'vocabScan':
+          await navigate({ to: '/vocabulario/escanear', search: { livro: book.bookUid } });
+          break;
+        case 'vocabReport':
+          await navigate({ to: '/vocabulario', search: { livro: book.bookUid } });
           break;
       }
     } catch (err) {

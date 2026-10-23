@@ -34,6 +34,11 @@ pub enum StoreError {
 
     #[error("Dado corrompido no banco de dados do app: {0}")]
     Corrupt(String),
+
+    /// A notetype mapping would replace an active mapping of another role (`notetype_mapping` is keyed by the
+    /// notetype id alone). `role` is the pt-BR name of the existing role.
+    #[error("Este tipo de nota já é usado como {role}. Tire esse papel antes de usá-lo aqui.")]
+    MappingConflict { role: String },
 }
 
 impl StoreError {
@@ -48,6 +53,7 @@ impl StoreError {
             Self::InvalidSetting { .. } => "invalid_setting",
             Self::InvalidInput(_) => "invalid_input",
             Self::Corrupt(_) => "store_corrupt",
+            Self::MappingConflict { .. } => "mapping_conflict",
         }
     }
 }

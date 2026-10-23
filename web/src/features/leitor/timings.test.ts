@@ -124,7 +124,7 @@ describe('LeitorController wiring', () => {
     c.setVisible(true);
     c.setFrameWindow(frame.win as unknown as Window);
     advance(800);
-    deliver({ type: 'pdfcraft:ready', version: '0.9', bridge: 2 }, frame.win);
+    deliver({ type: 'pdfcraft:ready', version: '0.9', bridge: 3 }, frame.win);
     c.setVisible(false);
     c.setVisible(true);
     advance(20);

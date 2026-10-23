@@ -44,7 +44,12 @@ Mesa for software WebGL). Without VS Code: `scripts/dev.sh <cmd…>` runs a comm
 | Pyodide (Python code cards) | `scripts/fetch-pyodide.sh` (pinned 314.0.7, sha256-checked → `src-tauri/resources/pyodide/`, gitignored; Vite serves it at `/pyodide/` and copies it to `dist/pyodide/`; needed by `pnpm --dir web test`/`e2e:mock` and the build) |
 | C++ runner (local, isolated) | `docker compose -f compose.dev.yml --profile runner up -d --build --wait runner-dev runner-dev-proxy` (proxy on `leitor-dev` as `runner-dev-proxy:8080`, host `127.0.0.1:28090`, dev token `dev-runner-token`); isolation suite: `scripts/runner-test.sh [all\|core-cpp\|app]` (host, repo root; removes the containers) · runner unit tests: `cd server/runner && cargo test` · docs: `docs/tecnico/runner.md` |
 | Anki web assets location | bundled as Tauri resources (`<resource_dir>/anki-web`); `LEITOR_ANKI_WEB_DIR=<dir>` overrides; debug builds fall back to `src-tauri/resources/anki-web` |
-| Anki fixture collection | `cargo run -p core-anki --example seed_fixture -- <LEITOR_DATA_DIR>/anki [--isolation-probe] [--force]` (prints the deck/card ids as JSON) |
+| Anki fixture collection | `cargo run -p core-anki --example seed_fixture -- <LEITOR_DATA_DIR>/anki [--isolation-probe] [--vocab] [--force]` (prints the deck/card ids as JSON; `--vocab` adds the "Vocabulário" folder with "Inglês básico"/"Oxford" for the vocabulary scan) |
+| Vocabulary data (WordNet + Zipf + stopwords) | `scripts/build-wordnet.sh` (pinned sources, sha256-checked, `--force` to rebuild, "up to date" after) → `data/generated/vocab/` (gitignored; bundled as the Tauri resource `vocab/`) · converter self-test: `python3 -I scripts/vocab-data/build_vocab_db.py --self-test` · docs: `docs/tecnico/vocab-data.md` |
+| Vocabulary data lookup / tests | `LEITOR_VOCAB_DATA_DIR=<dir>` overrides the pack; otherwise `<resource_dir>/vocab`, then (debug builds) `data/generated/vocab`. Tests skip without the pack unless `LEITOR_REQUIRE_VOCAB_DATA=1` (or `CI`) makes it a failure; `LEITOR_TEST_SAMPLE_LEXICON=1` forces the small test lexicon |
+| Vocabulary performance (release) | `cargo test --release -p core-vocab --test perf -- --ignored` · `cargo test --release -p leitor-estudos --test vocab_perf -- --ignored --nocapture` (generated 300-page/100k-word PDF: full scan ≤ 20 s, second range ≤ 3 s without re-reading the PDF) |
+| Vocabulary 100-token sample (manual accuracy check, 12.8) | `cargo run -p leitor-estudos --example vocab_sample -- <book.pdf> [--n 100] [--seed S] [--anki-dir DIR --root 'Vocabulário'] > sample.csv` (columns token, lemma, pos, status, page, sentence + `lemma_ok`/`status_ok` to fill; use a COPY of a collection) |
+| Headless vocabulary scan | `LEITOR_DATA_DIR=<dir> cargo run -p leitor-estudos --example vocab_scan -- <book uid> <root deck> [pages]` (e.g. as `LEITOR_CAPTURE_SETUP`, with `LEITOR_CAPTURE_SEED_ARGS=--vocab`) |
 | Real app Anki probes (WebKitGTK, Xvfb, fixture) | `scripts/anki-real-app.sh isolation` (card iframe isolation) · `scripts/anki-real-app.sh pages` (Anki's pages over the `anki` protocol) → `web/test-results/anki-realapp/summary.txt` |
 | Record Anki page requests for the bridge tests | `scripts/record-anki-posts.sh` → `src-tauri/crates/core-anki/tests/fixtures/bridge/` (commit them) |
 | Real app captures with the fixture | `bash -c 'LEITOR_CAPTURE_SEED=1 scripts/capture.sh docs/capturas/fase-N /anki "/anki/opcoes/{deck:5000 palavras}"'` (env vars must be set inside `scripts/dev.sh`, which doesn't forward them); with a book: `python3 -I scripts/sample-book-pdf.py "/tmp/cap/Animal Farm.pdf"` and `LEITOR_CAPTURE_PDF="/tmp/cap/Animal Farm.pdf"` (imports it; `{book}` in a route = its uid, e.g. `/leitor?livro={book}&painel=card&trecho=…`); `LEITOR_CAPTURE_EMBEDDED=1` captures the production frontend (`vite build` + `tauri/custom-protocol`, real CSP; combine with `LEITOR_DEV_NETWORK=none` for offline) and `LEITOR_CAPTURE_SETUP` runs after the import (e.g. insert a `notetype_mapping` row) |
@@ -60,6 +65,8 @@ Mesa for software WebGL). Without VS Code: `scripts/dev.sh <cmd…>` runs a comm
   pinned upstream commit in docs/decisoes.md. Core crates and the reading screen always come from the **same** commit.
 - Edit only `apps/pdfcraft-web` and the smallest hook points in `crates/ui-egui` (bridge events). Follow PdfCraft's
   `AGENTS.md`/`CLAUDE.md` (Rust only, never panic, no GPL/AGPL code, their style and tests) so it can go upstream as a PR.
+- Build the fork's checks with `CARGO_TARGET_DIR=/workspaces/leitor-estudos/src-tauri/target/fork` (inside the
+  `leitor-target` volume), never in `third_party/pdfcraft/target` on the host disk.
 - Validate in the submodule: `cargo test`/`cargo clippy` of the touched crates and a wasm32 check
   (`cargo check --target wasm32-unknown-unknown -p pdfcraft-web`; `build-pdfcraft-web.sh` does it through trunk).
 - Commit inside the submodule, `git -C third_party/pdfcraft push fork leitor-bridge`, then commit the new submodule
@@ -80,3 +87,23 @@ Mesa for software WebGL). Without VS Code: `scripts/dev.sh <cmd…>` runs a comm
 - Untrusted input (PDF, EPUB, .apkg) never panics the app — errors become pt-BR messages.
 - UI text in pt-BR in `web/src/i18n/pt-BR.ts`; code, commands and commits in English.
 - Custom protocol URLs only through `protocolUrl(scheme, path)` (Windows uses `http://<scheme>.localhost/`).
+
+## Disk and heavy tasks (machine rules after the 2026-10-23 disk-full incident)
+
+- This machine is shared with other projects (Painel etc.). **Every heavy task** — cargo build/test/clippy of the
+  workspace, the PdfCraft web build, Playwright suites, `docker build`/`compose build`, the runner and sync test
+  scripts — runs through `scripts/heavy.sh "<what>" -- <command…>`: it waits for `~/.agent-heavy.lock`, refuses
+  to start below 25 GB free (measured as the normal user), and releases the lock even on failure. Hold the lock only
+  for the task itself, never for a whole phase. It also honours the queue: while `~/.agent-heavy.next` names another
+  agent it doesn't take the lock (that agent goes first and deletes the file), and after releasing the lock the Leitor
+  waits at least 2 minutes before taking it again. Light work (reading, editing, single small `cargo check -p` of one
+  crate, unit tests of `packages/checkers`) doesn't need it.
+- The full suite before a commit is `scripts/full-suite.sh` (each step takes the lock by itself; `pipefail` inside
+  every container; exit 0 only if every step passes; logs in `/tmp/leitor-suite/`).
+- Always `CARGO_INCREMENTAL=0` in suites. The dev profile uses `debug = "line-tables-only"`.
+- If the `leitor-target` volume is over 30 GB at the end of a phase, delete it after the phase commit
+  (`docker volume rm leitor-target`; keep `leitor-cargo-registry`, `leitor-cargo-git`, `leitor-pnpm-store`).
+- Never: `docker volume|system|container prune`, `rm -rf` outside this repository, or deleting anything that is not
+  the Leitor's (prefix `leitor-`). Clean what you create (temp volumes, stopped test containers, `test-results/`).
+- Never run formatters or rewriting tools on the whole project unless asked; `cargo fmt` only on the files you
+  changed (`rustfmt --edition 2024 <files>`), and formatting-only changes go in their own commit.

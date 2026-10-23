@@ -13,6 +13,7 @@ import {
 } from './bridge';
 import { SessionWiring, type StopReason } from './sessions';
 import { frameLoad, LeitorTimings } from './timings';
+import { VOCAB_SET, VocabMarks, type VocabMark, type VocabPageMarks } from './vocabMarks';
 
 /** What the controller needs from the core (adapted from `CoreClient` in index.ts; faked in tests). */
 export interface LeitorCore {
@@ -39,6 +40,8 @@ export interface LeitorCore {
   sessionStart(uid: string, page: number): Promise<void>;
   sessionHeartbeat(uid: string, page: number): Promise<void>;
   sessionStop(uid: string, reason: StopReason): Promise<void>;
+  /** vocab_marks(uid, pages): the vocabulary marks of those pages; `null` when the book was never scanned. */
+  vocabMarks(uid: string, pages: number[]): Promise<VocabPageMarks[] | null>;
   log(level: 'info' | 'warn' | 'error', message: string): void;
 }
 
@@ -87,6 +90,18 @@ export interface FoundResult {
   found: boolean;
 }
 
+/** A click on a highlighted word (`pdfcraft:mark-click` of the 'vocab' set) the popover shows. */
+export interface MarkClick {
+  id: string;
+  /** 0-based page. */
+  page: number;
+  /** The mark's index on the page (as sent). */
+  index: number;
+  mark: VocabMark;
+  /** The word on screen, viewport CSS px. */
+  anchor: { x: number; y: number; width: number; height: number };
+}
+
 /** The app's items PdfCraft last showed in a selection menu (iframe-relative CSS px rects; for tests). */
 export interface MenuShown {
   id: string | null;
@@ -114,7 +129,8 @@ export interface LeitorUi {
       | 'reader.openExternalFailed'
       | 'leitor.gotoNotFound'
       | 'bookPanel.selectFirst'
-      | 'bookPanel.notInLibrary',
+      | 'bookPanel.notInLibrary'
+      | 'vocabReading.marksFailed',
     tone: 'error' | 'success' | 'info',
     vars?: Record<string, string>,
   ): void;
@@ -241,6 +257,8 @@ export class LeitorController {
   readonly bridge: BridgeClient;
   readonly autosave: Autosave;
   readonly sessions: SessionWiring;
+  /** The vocabulary highlight (spec 12.7): `pdfcraft:marks` of the set 'vocab'. */
+  readonly vocab: VocabMarks;
   /** How long the tab takes to show up (window.__leitorTimings). */
   readonly timings: LeitorTimings;
   private ui: LeitorUi | null = null;
@@ -261,6 +279,7 @@ export class LeitorController {
   private readonly openFailures = new Map<string, string>();
   private frameElement: { getBoundingClientRect(): { left: number; top: number } } | null = null;
   private readonly panelListeners = new Set<(r: PanelRequest) => void>();
+  private readonly markListeners = new Set<(c: MarkClick) => void>();
   /** A request made while no panel was listening (e.g. the shortcut before the Leitor was ever shown). */
   private pendingRequest: PanelRequest | null = null;
   /** `pdfcraft:selection-now` requests waiting for their `pdfcraft:selection-sent`, by seq. */
@@ -313,6 +332,8 @@ export class LeitorController {
         const saved = await this.core.saveVersion(id, bytes, this.baseVersions.get(id));
         // The tab's content is now this version.
         this.baseVersions.set(id, saved.fileVersion);
+        // Its marks stay in PdfCraft (they are not part of the file); the core tells whether the words moved.
+        this.vocab.refresh(id);
         if (saved.keptNewer) {
           this.core.log('warn', `leitor: ${id} was saved over a newer version; the core kept that version`);
           this.ui?.toast('reader.keptNewer', 'info', { titulo: this.titles.get(id) ?? id.slice(0, 8) });
@@ -341,6 +362,18 @@ export class LeitorController {
       onStored: () => {
         this.ui?.libraryChanged();
         this.syncUnsaved();
+      },
+    });
+    this.vocab = new VocabMarks({
+      fetch: (uid, pages) => this.core.vocabMarks(uid, pages),
+      isOpen: (uid) => this.bridge.isOpen(uid),
+      sendMarks: (uid, set, pages) => this.bridge.sendMarks(uid, set, pages),
+      clearMarks: (uid, set) => this.bridge.clearMarks(uid, set),
+      storage: this.storage,
+      onError: (uid, e, first) => {
+        // Silent in the reader: a log line, and a toast only the first time.
+        this.warn(`vocab_marks ${uid.slice(0, 8)}`, e);
+        if (first) this.ui?.toast('vocabReading.marksFailed', 'error');
       },
     });
     this.sessions = new SessionWiring({
@@ -409,6 +442,7 @@ export class LeitorController {
   /** "Tentar de novo" after a startup failure: a fresh iframe. */
   restart() {
     this.bridge.reset();
+    this.vocab.reset();
     this.frameWindow = null;
     this.beginStart();
     this.set({
@@ -427,6 +461,7 @@ export class LeitorController {
   frameReloaded() {
     this.sessions.active(null, 0);
     this.bridge.reset();
+    this.vocab.reset();
     for (const id of [...this.openWaits.keys()]) this.resolveOpen(id, false);
     this.beginStart();
     this.set({
@@ -456,6 +491,8 @@ export class LeitorController {
     if (visible === this.snap.visible) return;
     this.set({ visible });
     if (visible && this.snap.status === 'ready') this.timings.shown(this.frameWindow);
+    // Back from another tab (a scan, a generated deck, "Já sei" in the report): the marks may have changed.
+    if (visible) this.vocab.refresh();
     if (!visible) {
       this.timings.hidden();
       // Leaving the Leitor tab (spec 6.4/6.5): save now, record the page, end the session.
@@ -514,6 +551,7 @@ export class LeitorController {
         return;
       case 'pdfcraft:failed':
         if (m.id) {
+          this.vocab.forget(m.id);
           this.openFailures.set(m.id, m.error);
           this.resolveOpen(m.id, false);
           return;
@@ -534,6 +572,7 @@ export class LeitorController {
         }
         this.schedulePosition(m.id, m.page, pageCount);
         this.sessions.activity(m.id, m.page);
+        this.vocab.view(m.id, m.page, pageCount);
         return;
       }
       case 'pdfcraft:activity':
@@ -581,6 +620,11 @@ export class LeitorController {
           if (m.seq === null || seq <= m.seq) this.endSelectionWait(seq);
         }
         return;
+      case 'pdfcraft:mark-click':
+        this.markClicked(m.id, m.set, m.page, m.index, m.rect);
+        return;
+      case 'pdfcraft:marks-shown':
+        return;
       case 'pdfcraft:found': {
         if (m.id === null) return;
         const result: FoundResult = { id: m.id, page: m.page, query: m.query, found: m.found };
@@ -618,6 +662,14 @@ export class LeitorController {
       return;
     }
     this.set({ selection: { id, page, text, rects } });
+  }
+
+  private markClicked(id: string, set: string, page: number, index: number, rect: Rect) {
+    if (set !== VOCAB_SET) return;
+    const mark = this.vocab.markAt(id, page, index);
+    const anchor = this.viewportAnchor(rect);
+    if (!mark || !anchor) return;
+    for (const fn of [...this.markListeners]) fn({ id, page, index, mark, anchor });
   }
 
   private viewportAnchor(anchor: Rect | null): PanelRequest['anchor'] {
@@ -667,6 +719,7 @@ export class LeitorController {
     this.sessions.active(id, page);
     if (id !== null) {
       this.resolveOpen(id, true);
+      this.vocab.view(id, page, pageCount);
       const known = this.knownPages.get(id);
       if (pageCount > 0 && known !== pageCount) {
         this.knownPages.set(id, pageCount);
@@ -791,6 +844,8 @@ export class LeitorController {
       const data = bytes as ArrayBuffer | Uint8Array;
       // A tab PdfCraft already has keeps the content it was opened from, even if the library got a newer version.
       if (!this.bridge.isOpen(uid) || !this.baseVersions.has(uid)) this.baseVersions.set(uid, info.fileVersion);
+      // A new tab holds no marks yet.
+      if (!this.bridge.isOpen(uid)) this.vocab.forget(uid);
       // When the id is already open the fork ignores the bytes, brings the tab to front and answers `active`.
       ok = await this.waitActive(uid, data.byteLength, () =>
         this.bridge.open({ id: uid, name: info.name, bytes: data, page }),
@@ -885,6 +940,24 @@ export class LeitorController {
       this.panelListeners.delete(cb);
     };
   };
+
+  /** The popover's listener for clicks on highlighted words (`pdfcraft:mark-click`); returns unsubscribe. */
+  onMarkClick = (cb: (c: MarkClick) => void): (() => void) => {
+    this.markListeners.add(cb);
+    return () => {
+      this.markListeners.delete(cb);
+    };
+  };
+
+  /** Turns the vocabulary highlight of `uid` on or off (remembered per book). */
+  setHighlight(uid: string, on: boolean) {
+    this.vocab.setOn(uid, on);
+  }
+
+  /** The marks of `uid` (every book when absent) changed in the core: send the visible pages again. */
+  refreshVocab(uid?: string) {
+    this.vocab.refresh(uid);
+  }
 
   /** The panel's mini-review ("Revisar aqui", spec 6.4/10.1) opened or closed: the reading session pauses. */
   setReviewing(on: boolean) {

@@ -23,6 +23,7 @@ function book(title: string, extra: Partial<LibraryEntry> = {}): LibraryEntry {
     localHash: null,
     downloaded: true,
     position: null,
+    vocabScanned: false,
     ...extra,
   };
 }
