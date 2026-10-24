@@ -1,5 +1,4 @@
-// pt-BR strings of the "Painel Anki do livro" (spec 10, 12.7) and of Configurações → IA. Keys start with
-// `bookPanel.` or `settings.ai.`.
+// pt-BR strings of the "Painel Anki do livro" (spec 10, 12.7). Keys start with `bookPanel.`.
 export const bookPanelMessages = {
   'bookPanel.cardFromSelection': 'Card da seleção',
   'bookPanel.cardFromSelectionHint': 'Criar um card com o trecho selecionado (Alt+C)',
@@ -66,9 +65,4 @@ export const bookPanelMessages = {
   'bookPanel.define.wordnet': 'WordNet',
   'bookPanel.define.noDefinition': 'Sem definição no WordNet para esta palavra.',
   'bookPanel.define.footer': 'Definição com IA chega numa próxima versão.',
-
-  'settings.ai.title': 'IA',
-  'settings.ai.provider': 'Provedor de IA: em breve…',
-  'settings.ai.hint':
-    'Aqui você vai escolher o provedor de IA e a chave de acesso para criar cards e definir palavras com IA.',
 } as const;

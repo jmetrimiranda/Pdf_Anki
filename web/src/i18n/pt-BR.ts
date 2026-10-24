@@ -1,5 +1,6 @@
 // Every user-facing string of the app (spec 0, item 6). Placeholders use {name}.
 // Feature sections live in ./pt-BR/*.ts and are composed below (no key may appear in two sections).
+import { aiMessages } from './pt-BR/ai';
 import { ankiNotesMessages } from './pt-BR/ankiNotes';
 import { ankiShellMessages } from './pt-BR/ankiShell';
 import { ankiStudyMessages } from './pt-BR/ankiStudy';
@@ -293,6 +294,7 @@ export const messageSections = {
   epub: epubMessages,
   epubReader: epubReaderMessages,
   ocr: ocrMessages,
+  ai: aiMessages,
 } as const;
 
 export const ptBR = {
@@ -311,6 +313,7 @@ export const ptBR = {
   ...epubMessages,
   ...epubReaderMessages,
   ...ocrMessages,
+  ...aiMessages,
 } as const;
 
 export type Messages = typeof ptBR;
