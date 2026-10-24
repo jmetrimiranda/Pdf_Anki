@@ -39,7 +39,9 @@ describe('Configurações → IA', () => {
     const row = screen.getByTestId('ai-key-anthropic');
     expect(within(row).getByTestId('ai-key-status').textContent).toBe('sem chave');
     // Providers without an adapter yet are listed as coming.
-    expect(within(screen.getByTestId('ai-key-gemini')).getByText('em breve')).toBeTruthy();
+    // The four providers have their adapter.
+    for (const id of ['anthropic', 'openai', 'gemini', 'deepseek'])
+      expect(within(screen.getByTestId(`ai-key-${id}`)).queryByText('em breve')).toBeNull();
     const input = within(row).getByLabelText('Cole a chave de Claude (Anthropic)') as HTMLInputElement;
     await user.type(input, 'test-key-anthropic-TEST');
     await user.click(within(row).getByRole('button', { name: 'Salvar chave' }));

@@ -49,9 +49,10 @@ describe('mock AI', () => {
     const s = await mockClient.aiSettingsGet();
     expect([s.enrich.provider, s.judge.provider, s.limitDayUsd, s.limitMonthUsd]).toEqual([null, null, 1, 5]);
     expect(await code(mockClient.aiSettingsSet({ enrich: { provider: 'anthropic' } }))).toBe('ai_consent_required');
+    expect(await code(mockClient.aiSettingsSet({ enrich: { provider: 'gemini' } }))).toBe('ai_consent_required');
     expect(
-      await code(mockClient.aiSettingsSet({ enrich: { provider: 'gemini' }, consent: ['gemini'] })),
-    ).toBe('ai_provider_unavailable');
+      (await mockClient.aiSettingsSet({ enrich: { provider: 'gemini' }, consent: ['gemini'] })).enrich.effectiveModel,
+    ).toBe('gemini-3.5-flash-lite');
     await claude();
     const on = await mockClient.aiSettingsGet();
     expect(on.enrich.effectiveModel).toBe('claude-haiku-5-5');

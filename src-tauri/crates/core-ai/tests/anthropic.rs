@@ -396,6 +396,7 @@ fn no_key_pattern_in_versioned_test_data() {
         "tests/recorded/anthropic",
         "tests/recorded/openai",
         "tests/recorded/deepseek",
+        "tests/recorded/gemini",
         "prompts",
     ] {
         for entry in std::fs::read_dir(format!("{root}/{dir}")).unwrap() {

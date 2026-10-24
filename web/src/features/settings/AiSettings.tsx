@@ -44,8 +44,11 @@ const PROVIDER_INFO: Record<AiProvider, { domain: string; policy: string | null;
     policy: 'https://developers.openai.com/api/docs/guides/your-data',
     note: 'settings.ai.consent.noteOpenai',
   },
-  // Filled in (and checked) with its adapter's commit.
-  gemini: { domain: 'generativelanguage.googleapis.com', policy: null },
+  gemini: {
+    domain: 'generativelanguage.googleapis.com',
+    policy: 'https://ai.google.dev/gemini-api/terms',
+    note: 'settings.ai.consent.noteGemini',
+  },
   deepseek: {
     domain: 'api.deepseek.com',
     policy: 'https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html',

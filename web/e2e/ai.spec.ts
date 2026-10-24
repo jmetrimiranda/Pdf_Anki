@@ -41,7 +41,7 @@ test('Configurações → IA: the key shows only its end, each activation asks, 
   await row.getByRole('button', { name: 'Testar chave' }).click();
   await expect(row).toContainText('Chave válida (modelo claude-haiku-5-5).');
   expect(await page.locator('body').innerText()).not.toContain('anthropic-TEST');
-  await expect(page.getByTestId('ai-key-gemini')).toContainText('em breve');
+  await expect(page.getByTestId('ai-key-gemini').getByRole('button', { name: 'Salvar chave' })).toBeVisible();
   // The "saved" toasts would cover the top of the capture.
   await expect(page.getByRole('button', { name: 'Dispensar' })).toHaveCount(0, { timeout: 15_000 });
   await fullShot(page, shot('ia-configuracoes', info.project.name));

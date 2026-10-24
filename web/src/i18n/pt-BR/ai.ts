@@ -48,6 +48,8 @@ export const aiMessages = {
   'settings.ai.consent.policy': 'Política de dados do provedor',
   'settings.ai.consent.noteOpenai':
     'O app pede à OpenAI para não guardar as respostas (store: false). Pela política da OpenAI, os dados da API não são usados para treinar modelos.',
+  'settings.ai.consent.noteGemini':
+    'No nível gratuito da API do Gemini, o Google usa o que é enviado e as respostas para melhorar os produtos dele; no nível pago, não. O app pede para não guardar as interações (store: false).',
   'settings.ai.consent.noteDeepseek':
     'Os servidores da DeepSeek ficam na China. O preço muda com o horário: mais caro de 01h a 04h e de 06h a 10h (UTC) em dias úteis; os limites de gasto usam sempre o preço mais alto.',
   'settings.ai.consent.activate': 'Ativar',

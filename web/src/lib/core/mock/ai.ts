@@ -39,7 +39,7 @@ const PROVIDERS: { id: AiProvider; label: string }[] = [
   { id: 'deepseek', label: 'DeepSeek' },
 ];
 /** Providers with an adapter in this version (like `core_ai::provider_for`). */
-const AVAILABLE: AiProvider[] = ['anthropic', 'openai', 'deepseek'];
+const AVAILABLE: AiProvider[] = ['anthropic', 'openai', 'gemini', 'deepseek'];
 
 // ---------------------------------------------------------------- price table (model-prices.toml)
 

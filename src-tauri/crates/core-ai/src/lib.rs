@@ -8,6 +8,7 @@ pub mod anthropic;
 pub mod cost;
 pub mod engine;
 pub mod error;
+pub mod gemini;
 mod http;
 pub mod limits;
 pub mod openai_chat;
@@ -26,12 +27,12 @@ pub use types::{
     ApiKey, Completion, CompletionRequest, Effort, Feature, Function, ProviderKind, Stop, Usage,
 };
 
-/// The real adapter of a provider (Gemini follows in its own commit, plan 6.5).
+/// The real adapter of each provider (plan 2.1).
 pub fn provider_for(kind: ProviderKind) -> Option<Box<dyn Provider>> {
     match kind {
         ProviderKind::Anthropic => Some(Box::new(anthropic::AnthropicProvider::default())),
         ProviderKind::Openai => Some(Box::new(openai_chat::OpenAiChatProvider::openai())),
         ProviderKind::Deepseek => Some(Box::new(openai_chat::OpenAiChatProvider::deepseek())),
-        ProviderKind::Gemini => None,
+        ProviderKind::Gemini => Some(Box::new(gemini::GeminiProvider::default())),
     }
 }
