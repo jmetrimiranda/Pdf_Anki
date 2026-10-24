@@ -19,12 +19,14 @@ network and images are off-limits). The accounts and passwords below are throwaw
   with `LEITOR_DEV_NETWORK=leitor-dev scripts/dev.sh …` and reach the server by service name.
 - Data: named volume `leitor-dev_ankisync-dev-data` mounted at `/data` (`SYNC_BASE`); `down -v` deletes it.
 - Health: `GET /health` (200) on both endpoints; both services have healthchecks, so `up --wait` returns when ready.
-- Accounts (`SYNC_USER1..13`, spec A.2), all with password `test`:
+- Accounts (`SYNC_USER1..15`, spec A.2), all with password `test`:
   - `test` — manual use (the running app, Configurações → Anki e sincronização).
   - `t1` … `t10` — the Rust integration suites (one account per test, so tests never share a server collection).
   - `t11` — reserved for the `pyclient.py` harness self-test (must stay unused by the Rust suites).
   - `t12` — optionally seeded by a Rust test (e.g. a review made by the app's client) and then read by the official
     Python client in `scripts/sync-test.sh crosscheck`.
+  - `t13` (core suite) and `t14` (app suite) — the dropped-download tests (a proxy cuts the connection in the middle
+    of the first full download).
 
 ## Up / down
 

@@ -130,10 +130,69 @@ fn looks_like_untrusted_cert(text: &str) -> bool {
     .any(|needle| text.contains(needle))
 }
 
+/// reqwest's texts (its `Display`, which rslib keeps as the info of `NetworkErrorKind::Other`)
+/// for a request that never got through or a body cut short: the network, not the server.
+/// HTTP status errors ("HTTP status …"), builder and redirect errors are not in the list.
+fn looks_like_transport_failure(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    [
+        "error sending request",
+        "request or response body error",
+        "connection closed",
+        "connection reset",
+        "connection aborted",
+        "broken pipe",
+        "unexpected eof",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+}
+
+/// A transfer cut midway, as rslib 26.09.3 reports it: the body stream of a sync request failed
+/// (`IoMonitor::wrap_stream` → "stream failure", read back through a `StreamReader` as an
+/// `io::Error` of kind `ConnectionAborted` → "reading stream"), and `From<HttpError> for
+/// AnkiError` keeps only `format!("{err:?}")` of that `HttpError` as a `SyncErrorKind::Other`.
+/// The io kind survives only in that `Debug` text, e.g.
+/// `HttpError { code: 303, context: "reading stream", source: Some(Custom { kind:
+/// ConnectionAborted, error: "stream failure (code=303)" }) }`.
+fn dropped_transfer(info: &str) -> Option<SyncFailure> {
+    let info = info.trim_start();
+    if !info.starts_with("HttpError {") {
+        return None;
+    }
+    // `Custom { kind: X, .. }`, `Kind(X)` and `Os { kind: X, .. }` are io::Error's Debug shapes.
+    let has_kind = |kind: &str| {
+        info.contains(&format!("kind: {kind}")) || info.contains(&format!("Kind({kind})"))
+    };
+    if has_kind("TimedOut") {
+        return Some(SyncFailure::Timeout);
+    }
+    let dropped = [
+        "ConnectionAborted",
+        "ConnectionReset",
+        "BrokenPipe",
+        "UnexpectedEof",
+    ]
+    .iter()
+    .any(|kind| has_kind(kind));
+    (dropped || info.contains("stream failure")).then_some(SyncFailure::Offline)
+}
+
 /// Maps an rslib error to a failure kind and its detail text (already free of URLs, see
 /// rslib's `From<&reqwest::Error>`).
+///
+/// A connection that failed or dropped midway (also in the middle of a full download) is
+/// [`SyncFailure::Offline`]: transient, retried with backoff and when the network returns.
+/// `flow::refine` then asks the server directly, which tells an untrusted
+/// certificate or a timeout apart.
 pub(crate) fn classify(err: &AnkiError) -> (SyncFailure, Option<String>) {
     let detail = || Some(err.message(pt_br()));
+    if let AnkiError::SyncError { source } = err
+        && matches!(source.kind, SyncErrorKind::Other)
+        && let Some(kind) = dropped_transfer(&source.info)
+    {
+        return (kind, None);
+    }
     match err {
         AnkiError::NetworkError { source } => match source.kind {
             NetworkErrorKind::Offline => (SyncFailure::Offline, None),
@@ -141,8 +200,12 @@ pub(crate) fn classify(err: &AnkiError) -> (SyncFailure, Option<String>) {
             NetworkErrorKind::Other if looks_like_untrusted_cert(&source.info) => {
                 (SyncFailure::TlsUntrusted, None)
             }
+            NetworkErrorKind::Other if looks_like_transport_failure(&source.info) => {
+                (SyncFailure::Offline, None)
+            }
             NetworkErrorKind::ProxyAuth | NetworkErrorKind::Other => (SyncFailure::Other, detail()),
         },
+
         AnkiError::SyncError { source } => match &source.kind {
             SyncErrorKind::AuthFailed => (SyncFailure::AuthFailed, None),
             SyncErrorKind::ServerMessage => (SyncFailure::ServerMessage, Some(source.info.clone())),
@@ -235,6 +298,21 @@ mod tests {
             ),
             (
                 net(NetworkErrorKind::Other, "error sending request for url ()"),
+                SyncFailure::Offline,
+            ),
+            (
+                net(NetworkErrorKind::Other, "request or response body error"),
+                SyncFailure::Offline,
+            ),
+            (
+                net(
+                    NetworkErrorKind::Other,
+                    "HTTP status client error (404 Not Found) for url ()",
+                ),
+                SyncFailure::Other,
+            ),
+            (
+                net(NetworkErrorKind::Other, "builder error"),
                 SyncFailure::Other,
             ),
             (net(NetworkErrorKind::ProxyAuth, ""), SyncFailure::Other),
@@ -288,6 +366,95 @@ mod tests {
         let (_, detail) = classify(&sync(SyncErrorKind::ServerMessage, "manutenção"));
         let message = SyncFailure::ServerMessage.message(detail.as_deref());
         assert_eq!(message, "manutenção");
+    }
+
+    /// The exact error of a connection dropped in the middle of a full download (CI run
+    /// 40085887656, through the TLS proxy), as rslib 26.09.3 builds it.
+    const CI_DROPPED_DOWNLOAD: &str = "HttpError { code: 303, context: \"reading stream\", \
+        source: Some(Custom { kind: ConnectionAborted, error: \"stream failure (code=303)\" }) }";
+
+    /// An `HttpError` the way rslib's `IoMonitor` builds it for a failed body stream, converted
+    /// by rslib's own `From<HttpError> for AnkiError`.
+    fn stream_error(source: std::io::Error) -> AnkiError {
+        use anki::sync::error::HttpError;
+        use reqwest::StatusCode;
+        AnkiError::from(HttpError {
+            code: StatusCode::SEE_OTHER,
+            context: "reading stream".into(),
+            source: Some(Box::new(source)),
+        })
+    }
+
+    #[test]
+    fn a_dropped_transfer_is_a_transient_network_failure() {
+        use std::io::{Error as IoError, ErrorKind};
+
+        // The CI shape, both as rslib converts it and as the text it keeps.
+        let ci = stream_error(IoError::new(
+            ErrorKind::ConnectionAborted,
+            "stream failure (code=303)",
+        ));
+        let AnkiError::SyncError { source } = &ci else {
+            panic!("rslib changed how it reports a stream failure: {ci:?}");
+        };
+        assert!(matches!(source.kind, SyncErrorKind::Other), "{ci:?}");
+        assert_eq!(source.info, CI_DROPPED_DOWNLOAD);
+        for err in [ci, sync(SyncErrorKind::Other, CI_DROPPED_DOWNLOAD)] {
+            let (kind, detail) = classify(&err);
+            assert_eq!(kind, SyncFailure::Offline, "{err:?}");
+            assert_eq!(detail, None);
+            assert!(kind.is_transient());
+        }
+
+        // Every io kind of a cut connection, custom and simple io errors alike.
+        for kind in [
+            ErrorKind::ConnectionAborted,
+            ErrorKind::ConnectionReset,
+            ErrorKind::BrokenPipe,
+            ErrorKind::UnexpectedEof,
+        ] {
+            for source in [IoError::new(kind, "x"), IoError::from(kind)] {
+                let err = stream_error(source);
+                assert_eq!(classify(&err).0, SyncFailure::Offline, "{err:?}");
+            }
+        }
+        for source in [
+            IoError::new(ErrorKind::TimedOut, "x"),
+            IoError::from(ErrorKind::TimedOut),
+        ] {
+            let err = stream_error(source);
+            assert_eq!(classify(&err).0, SyncFailure::Timeout, "{err:?}");
+            assert!(SyncFailure::Timeout.is_transient());
+        }
+        // An OS error (connection reset by peer) keeps its kind in the Debug text too.
+        let err = stream_error(IoError::from_raw_os_error(104));
+        if IoError::from_raw_os_error(104).kind() == ErrorKind::ConnectionReset {
+            assert_eq!(classify(&err).0, SyncFailure::Offline, "{err:?}");
+        }
+        // Any "stream failure" of a sync request is the network too.
+        let err = stream_error(IoError::other("stream failure (code=303)"));
+        assert_eq!(classify(&err).0, SyncFailure::Offline, "{err:?}");
+
+        // Not the network: other io kinds, other HttpErrors and plain "other" sync errors.
+        for err in [
+            stream_error(IoError::new(ErrorKind::InvalidData, "bad zstd")),
+            stream_error(IoError::new(ErrorKind::PermissionDenied, "x")),
+            sync(SyncErrorKind::Other, "missing original size"),
+            sync(
+                SyncErrorKind::Other,
+                "HttpError { code: 400, context: \"decoding zstd body\", source: None }",
+            ),
+            sync(SyncErrorKind::ServerMessage, CI_DROPPED_DOWNLOAD),
+        ] {
+            assert_ne!(classify(&err).0, SyncFailure::Offline, "{err:?}");
+        }
+        // The pt-BR message of the app's network failure, not rslib's Debug text.
+        let err = from_anki(&sync(SyncErrorKind::Other, CI_DROPPED_DOWNLOAD), &[]);
+        assert_eq!(err.code(), "anki.sync.offline");
+        assert_eq!(
+            err.to_string(),
+            "Sem conexão com o servidor de sincronização."
+        );
     }
 
     #[test]

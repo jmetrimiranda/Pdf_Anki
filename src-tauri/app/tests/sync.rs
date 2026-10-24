@@ -5,9 +5,10 @@
 //! `scripts/sync-test.sh app` (same env contract as `core-anki/tests/sync_server.rs`).
 //!
 //! Hard rule: only the local test server; any other host makes the tests panic before a request.
-//! Accounts used here (password `test`): t4, t9, t10 — never used by the core suite.
+//! Accounts used here (password `test`): t4, t9, t10, t14 — never used by the core suite.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -24,6 +25,7 @@ use leitor_app::secrets::{KeyringStore, MemoryStore, SecretStore, sync_account};
 use leitor_app::sync::SyncTimings;
 use leitor_app::{AnkiSyncStatus, AppState, ChangeReason, SyncNotice, SyncState, UiEvent};
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::task::JoinSet;
 
@@ -108,6 +110,24 @@ impl App {
     fn wait_settled(&self) -> AnkiSyncStatus {
         self.wait("the sync to finish", Duration::from_secs(60), |s| {
             s.state != SyncState::Syncing
+        })
+    }
+
+    /// Waits until a sync completed after `since` (the first sync of the account included),
+    /// riding out transient failures (a dropped connection, the server busy): those are retried
+    /// with backoff by the scheduler. Fails at once on a failure that is not retried.
+    fn wait_synced(&self, what: &str, since: Option<i64>) -> AnkiSyncStatus {
+        self.wait(what, Duration::from_secs(180), |s| {
+            let retried = s.next_retry_at.is_some();
+            assert!(
+                !matches!(s.state, SyncState::Off | SyncState::FullSyncRequired)
+                    && !(s.state == SyncState::Error && !retried),
+                "{what}: a failure that is not retried: {s:?}"
+            );
+            s.state == SyncState::Idle
+                && !s.first_sync_pending
+                && s.last_error.is_none()
+                && s.last_sync_at.is_some_and(|t| since.is_none_or(|p| t > p))
         })
     }
 
@@ -670,6 +690,7 @@ fn login_first_download_and_after_answer_sync() {
     if let (Some(tls_url), Some(ca)) = (env.tls_url.as_deref(), env.ca.as_deref()) {
         let pem = std::fs::read_to_string(ca).unwrap();
         let tls = App::new(SyncTimings::fast());
+        block_on(tls.state.anki_deck_create("Local TLS descartável".into())).unwrap();
         let err =
             block_on(
                 tls.state
@@ -686,9 +707,22 @@ fn login_first_download_and_after_answer_sync() {
         ))
         .unwrap();
         assert!(status.certificate_fingerprint.is_some());
-        let status = tls.wait_settled();
-        assert_eq!(status.state, SyncState::Idle, "{status:?}");
+        assert!(status.first_sync_pending);
+        // A connection dropped through the TLS proxy is retried (CI run 40085887656): wait for
+        // the first download itself, not for the first attempt.
+        let status = tls.wait_synced("the first download over TLS", None);
+        let tls_first_at = status.last_sync_at;
         assert!(has_deck(&tls.svc(), DECK_WORDS));
+        assert!(!has_deck(&tls.svc(), "Local TLS descartável"));
+        // Every attempt was a download, never an upload or a merge.
+        for s in tls.sync_events() {
+            assert_ne!(s.state, SyncState::FullSyncRequired, "{s:?}");
+        }
+        let check = Side::empty();
+        let down = block_on(check.svc.sync(&seed_creds, true)).unwrap();
+        assert!(matches!(down.outcome, SyncOutcome::FullDownloaded { .. }));
+        assert!(!has_deck(&check.svc, "Local TLS descartável"), "uploaded");
+        assert!(has_deck(&check.svc, DECK_WORDS));
         tls.state.anki_sync_logout().unwrap();
         // Logging in again without sending the certificate keeps using the saved one.
         let status =
@@ -698,7 +732,7 @@ fn login_first_download_and_after_answer_sync() {
             )
             .unwrap();
         assert!(status.certificate_fingerprint.is_some());
-        tls.wait_settled();
+        tls.wait_synced("the sync after logging in again", tls_first_at);
         tls.state.anki_sync_logout().unwrap();
     } else {
         println!("TLS part skipped: LEITOR_SYNC_TEST_TLS_URL / LEITOR_SYNC_TEST_CA not set");
@@ -768,6 +802,80 @@ fn offline_then_online_retries() {
         s.state == SyncState::Idle && s.last_sync_at.is_some_and(|t| t > first_at)
     });
     assert!(status.last_error.is_none() && status.next_retry_at.is_none());
+}
+
+/// A connection dropped in the middle of the first download (CI run 40085887656): the state is
+/// Offline with a retry scheduled, the first sync stays pending, and the automatic retry (fast
+/// timings) downloads; nothing is ever uploaded and the local copy survives until then.
+#[test]
+fn a_dropped_first_download_is_retried_automatically() {
+    let Some(env) = env() else { return };
+    let user = "t14";
+    let seed = Side::fixture();
+    let seed_creds = creds(&env.url, user);
+    seed_server(&seed, &seed_creds);
+    let ep = local_only(&env.url);
+    let target = format!("{}:{}", ep.host(), url_port(ep.as_str()));
+    let cutter = Cutter::new(CUT_AFTER_BYTES, 1);
+    let proxy = block_on(Proxy::start_with(0, target, Some(Arc::clone(&cutter))));
+    let via_proxy = format!("http://127.0.0.1:{}/", proxy.port);
+
+    let app = App::new(SyncTimings::fast());
+    block_on(app.state.anki_deck_create("Local descartável".into())).unwrap();
+    let status = block_on(
+        app.state
+            .anki_sync_login(via_proxy, user.into(), PASSWORD.into(), None),
+    )
+    .unwrap();
+    assert!(status.first_sync_pending);
+    let status = app.wait_synced("the retried first download", None);
+    assert_eq!(cutter.done(), 1, "the proxy cut the first download");
+    assert!(status.next_retry_at.is_none(), "{status:?}");
+
+    // The cut attempt: Offline (pt-BR network message), retry scheduled, still a first sync.
+    let events = app.sync_events();
+    let failed = events
+        .iter()
+        .find(|s| s.state == SyncState::Offline)
+        .unwrap_or_else(|| panic!("no Offline status after the cut: {events:?}"));
+    let error = failed.last_error.as_ref().expect("lastError");
+    assert_eq!(error.code, "anki_sync_offline", "{failed:?}");
+    assert_eq!(
+        error.message,
+        "Sem conexão com o servidor de sincronização."
+    );
+    assert!(failed.next_retry_at.is_some(), "{failed:?}");
+    assert!(failed.first_sync_pending, "{failed:?}");
+    assert!(
+        events
+            .iter()
+            .all(|s| s.state != SyncState::FullSyncRequired && s.state != SyncState::Error),
+        "{events:?}"
+    );
+
+    // The retry downloaded: the server's collection, the local one discarded, once.
+    let svc = app.svc();
+    assert!(has_deck(&svc, DECK_WORDS));
+    assert!(!has_deck(&svc, "Local descartável"));
+    assert_eq!(app.changed(ChangeReason::SyncFull), 1);
+    let backups: Vec<_> = app
+        .state
+        .anki_backups()
+        .unwrap()
+        .into_iter()
+        .filter(|b| b.kind == BackupKind::PreSync)
+        .collect();
+    assert_eq!(backups.len(), 2, "one backup per download attempt");
+    assert!(backups.iter().all(|b| Path::new(&b.path).is_file()));
+    // Nothing went up: the server still has the seeded collection.
+    let other = Side::empty();
+    let down = block_on(other.svc.sync(&seed_creds, true)).unwrap();
+    assert!(matches!(down.outcome, SyncOutcome::FullDownloaded { .. }));
+    assert!(!has_deck(&other.svc, "Local descartável"), "uploaded");
+    assert_eq!(
+        sql_i64(&other.svc, "select count() from cards"),
+        sql_i64(&seed.svc, "select count() from cards")
+    );
 }
 
 fn url_port(url: &str) -> u16 {
@@ -893,8 +1001,85 @@ struct Proxy {
     accept: Option<tokio::task::JoinHandle<()>>,
 }
 
+/// Response bytes after which a cutting proxy drops a connection: more than any small sync
+/// request (meta, login, the diagnosis), less than the fixture collection.
+const CUT_AFTER_BYTES: usize = 2048;
+
+/// How many connections the proxy still drops in the middle of a big response, and how many it
+/// dropped.
+struct Cutter {
+    after: usize,
+    left: AtomicUsize,
+    done: AtomicUsize,
+}
+
+impl Cutter {
+    fn new(after: usize, cuts: usize) -> Arc<Self> {
+        Arc::new(Self {
+            after,
+            left: AtomicUsize::new(cuts),
+            done: AtomicUsize::new(0),
+        })
+    }
+
+    fn done(&self) -> usize {
+        self.done.load(Ordering::SeqCst)
+    }
+
+    fn take(&self) -> bool {
+        self.left
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+    }
+
+    /// Relays both ways; the server → client side stops after `after` bytes when a cut is
+    /// taken, and then both sockets are closed in the middle of the response.
+    async fn relay(&self, inbound: TcpStream, outbound: TcpStream) {
+        let (mut in_read, mut in_write) = inbound.into_split();
+        let (mut out_read, mut out_write) = outbound.into_split();
+        let upstream = async {
+            let _ = tokio::io::copy(&mut in_read, &mut out_write).await;
+            let _ = out_write.shutdown().await;
+        };
+        let downstream = async {
+            let mut buf = vec![0u8; 8192];
+            let mut sent = 0usize;
+            loop {
+                let n = match out_read.read(&mut buf).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => n,
+                };
+                if sent + n > self.after && self.take() {
+                    let keep = self.after.saturating_sub(sent);
+                    let _ = in_write.write_all(&buf[..keep]).await;
+                    let _ = in_write.flush().await;
+                    self.done.fetch_add(1, Ordering::SeqCst);
+                    return;
+                }
+                if in_write.write_all(&buf[..n]).await.is_err() {
+                    return;
+                }
+                sent += n;
+            }
+        };
+        tokio::pin!(upstream);
+        tokio::pin!(downstream);
+        tokio::select! {
+            // Cut (or the server closed): returning drops every half, closing both sockets.
+            () = &mut downstream => {}
+            // The client finished sending: keep relaying the answer.
+            () = &mut upstream => (&mut downstream).await,
+        }
+    }
+}
+
 impl Proxy {
     async fn start(port: u16, target: String) -> Self {
+        Self::start_with(port, target, None).await
+    }
+
+    /// With a cutter, connections are dropped in the middle of a big response.
+    async fn start_with(port: u16, target: String, cutter: Option<Arc<Cutter>>) -> Self {
         let socket = TcpSocket::new_v4().unwrap();
         socket.set_reuseaddr(true).unwrap();
         socket.bind(([127, 0, 0, 1], port).into()).unwrap();
@@ -905,9 +1090,16 @@ impl Proxy {
         let accept = tokio::spawn(async move {
             while let Ok((mut inbound, _)) = listener.accept().await {
                 let target = target.clone();
+                let cutter = cutter.clone();
                 conns.lock().await.spawn(async move {
                     if let Ok(mut outbound) = TcpStream::connect(&target).await {
-                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                        match cutter {
+                            Some(cutter) => cutter.relay(inbound, outbound).await,
+                            None => {
+                                let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound)
+                                    .await;
+                            }
+                        }
                     }
                 });
             }

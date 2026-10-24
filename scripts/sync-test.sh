@@ -7,7 +7,7 @@
 #                 "shows up in Anki desktop" criterion)
 #     all         the three above
 # The server is recreated empty (down -v) first and removed with its volume on exit, unless KEEP_SERVER=1.
-# Accounts (compose.dev.yml): test (manual), t1..t10 (Rust tests), t11 (crosscheck self-test, must stay unused by
+# Accounts (compose.dev.yml): test (manual), t1..t10, t13, t14 (Rust tests), t11 (crosscheck self-test, must stay unused by
 # the Rust suites), t12 (Rust test that leaves a review for the crosscheck, optional).
 # Never talks to anything but the local server. Docs: docs/tecnico/anki-sync-dev.md.
 set -uo pipefail

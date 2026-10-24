@@ -12,13 +12,14 @@
 //! Hard rule: only the local test server. Any other host makes the tests panic before a request.
 //! Each test uses its own account (password `test`) and starts by checking it is empty. Accounts
 //! used here: t1 (login + TLS, the server collection stays empty until the TLS test uploads),
-//! t2, t3, t5, t6, t7, t8 and t12 (left with a review for the official-client crosscheck).
-//! t4, t9, t10 are free for the app suite; t11 belongs to the Python crosscheck.
+//! t2, t3, t5, t6, t7, t8, t13 and t12 (left with a review for the official-client crosscheck).
+//! t4, t9, t10, t14 are free for the app suite; t11 belongs to the Python crosscheck.
 
 mod common;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anki::notetype::NoteField;
@@ -37,6 +38,7 @@ use core_anki::{
     SyncEndpoint, SyncFailure, SyncOutcome, SyncReport, anki,
 };
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::task::JoinSet;
 
@@ -653,6 +655,107 @@ async fn offline_then_reconnect() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A connection dropped in the middle of the first full download (CI run 40085887656 through
+/// the TLS proxy): a transient Offline failure, the local collection intact and usable (rslib
+/// only replaces it after the whole download was written to a temp file and checked), the
+/// `PreSync` backup restorable, nothing uploaded, and the next attempt downloads.
+#[tokio::test]
+async fn dropped_download_keeps_the_collection_and_retries() -> anyhow::Result<()> {
+    let Some(env) = env() else { return Ok(()) };
+    let creds = login(&config(&env.url, None), "t13").await?;
+    assert_clean(&creds).await?;
+    let a = fixture_side()?;
+    seed_server(&a, &creds).await?;
+
+    let cutter = Cutter::new(CUT_AFTER_BYTES, 1);
+    let proxy = Proxy::start(0, target_of(&env.url)?, Mode::Cut(Arc::clone(&cutter))).await?;
+    let mut via_proxy = creds.clone();
+    via_proxy.config = config(&format!("http://127.0.0.1:{}/", proxy.port), None);
+    via_proxy.config.io_timeout_secs = 5;
+
+    // B: a local collection with a note of its own; the first sync downloads over it.
+    const CARDS: &str = "select count() from cards";
+    let b = fixture_side()?;
+    add_basic(&b, "somente-local-B").await?;
+    let cards_before = b.i64(CARDS).await?;
+    let res = b.svc.sync(&via_proxy, true).await;
+    assert_eq!(cutter.done(), 1, "the proxy cut the download: {res:?}");
+    assert_eq!(sync_kind(&res), Some(SyncFailure::Offline), "{res:?}");
+    assert!(SyncFailure::Offline.is_transient());
+    let Err(err) = &res else { unreachable!() };
+    assert_eq!(
+        err.to_string(),
+        "Sem conexão com o servidor de sincronização."
+    );
+    assert!(!b.svc.sync_running());
+
+    // The local collection is untouched, open and consistent; no temp file left behind.
+    assert_eq!(count_notes(&b, "somente-local-B").await?, 1);
+    assert_eq!(b.i64(CARDS).await?, cards_before);
+    let integrity: String = b
+        .svc
+        .call(|col| {
+            Ok(col
+                .storage
+                .db()
+                .query_row("pragma integrity_check", [], |r| r.get(0))
+                .map_err(anki::prelude::AnkiError::from)?)
+        })
+        .await?;
+    assert_eq!(integrity, "ok");
+    assert!(b.svc.deck_tree().await?.find(DECK_WORDS).is_some());
+    let leftovers: Vec<_> = std::fs::read_dir(b.dir())?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+
+    // The backup taken before the download is a restorable copy of the local collection.
+    let backups: Vec<_> = backup::list(&backup::backups_dir(b.svc.paths()))?
+        .into_iter()
+        .filter(|x| x.kind == BackupKind::PreSync)
+        .collect();
+    assert_eq!(backups.len(), 1, "{backups:?}");
+    let restored = empty_side()?;
+    restored
+        .svc
+        .import_colpkg(Path::new(&backups[0].path))
+        .await?;
+    assert_eq!(count_notes(&restored, "somente-local-B").await?, 1);
+
+    // Nothing was uploaded: the server still has A's collection.
+    let c = empty_side()?;
+    download_into(&c, &creds).await?;
+    assert_eq!(count_notes(&c, "somente-local-B").await?, 0);
+    assert_eq!(c.i64(CARDS).await?, a.i64(CARDS).await?);
+
+    // The retry (still a first sync) downloads through the same proxy.
+    let report = b.svc.sync(&via_proxy, true).await?;
+    assert!(
+        matches!(report.outcome, SyncOutcome::FullDownloaded { .. }),
+        "{report:?}"
+    );
+    assert_eq!(cutter.done(), 1);
+    assert_eq!(count_notes(&b, "somente-local-B").await?, 0);
+    assert_eq!(b.i64(CARDS).await?, a.i64(CARDS).await?);
+    assert_eq!(b.deck_names().await?, a.deck_names().await?);
+    assert_eq!(b.pre_sync_backups()?, 2, "one backup per download attempt");
+    proxy.stop_owned().await;
+    Ok(())
+}
+
+/// `host:port` of the server behind `url`, for the proxies.
+fn target_of(url: &str) -> anyhow::Result<String> {
+    let ep = SyncEndpoint::parse(url)?;
+    let parsed = url::Url::parse(ep.as_str())?;
+    Ok(format!(
+        "{}:{}",
+        ep.host(),
+        parsed.port_or_known_default().unwrap_or(80)
+    ))
+}
+
 #[tokio::test]
 async fn tls_with_dev_ca_logs_in_and_syncs() -> anyhow::Result<()> {
     let Some(env) = env() else { return Ok(()) };
@@ -712,13 +815,90 @@ async fn tls_without_ca_or_with_untrusted_ca_is_rejected() -> anyhow::Result<()>
 // ---------------------------------------------------------------------------------------------
 // A TCP proxy that can be stopped and restarted on the same port (offline simulation).
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone)]
 enum Mode {
     Forward,
     /// Accepts connections and never answers.
     Blackhole,
     /// Forwards, after waiting this long on each new connection.
     Delay(Duration),
+    /// Forwards, but closes a connection once the server sent it more than the cutter's limit
+    /// (only the full download is that big), as long as the cutter has cuts left.
+    Cut(Arc<Cutter>),
+}
+
+/// Response bytes after which [`Mode::Cut`] drops a connection: more than any small sync
+/// request (meta, login, the diagnosis), less than the fixture collection.
+const CUT_AFTER_BYTES: usize = 2048;
+
+/// How many connections [`Mode::Cut`] still drops, and how many it dropped.
+struct Cutter {
+    after: usize,
+    left: AtomicUsize,
+    done: AtomicUsize,
+}
+
+impl Cutter {
+    fn new(after: usize, cuts: usize) -> Arc<Self> {
+        Arc::new(Self {
+            after,
+            left: AtomicUsize::new(cuts),
+            done: AtomicUsize::new(0),
+        })
+    }
+
+    fn done(&self) -> usize {
+        self.done.load(Ordering::SeqCst)
+    }
+
+    /// Takes one cut, if any is left.
+    fn take(&self) -> bool {
+        self.left
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+    }
+
+    /// Relays both ways; the server → client side stops after `after` bytes when a cut is
+    /// taken, and then both sockets are closed in the middle of the response.
+    async fn relay(&self, inbound: TcpStream, outbound: TcpStream) {
+        let (mut in_read, mut in_write) = inbound.into_split();
+        let (mut out_read, mut out_write) = outbound.into_split();
+        let upstream = async {
+            let _ = tokio::io::copy(&mut in_read, &mut out_write).await;
+            let _ = out_write.shutdown().await;
+        };
+        let downstream = async {
+            let mut buf = vec![0u8; 8192];
+            let mut sent = 0usize;
+            loop {
+                let n = match out_read.read(&mut buf).await {
+                    Ok(0) | Err(_) => return false,
+                    Ok(n) => n,
+                };
+                if sent + n > self.after && self.take() {
+                    let keep = self.after.saturating_sub(sent);
+                    let _ = in_write.write_all(&buf[..keep]).await;
+                    let _ = in_write.flush().await;
+                    self.done.fetch_add(1, Ordering::SeqCst);
+                    return true;
+                }
+                if in_write.write_all(&buf[..n]).await.is_err() {
+                    return false;
+                }
+                sent += n;
+            }
+        };
+        tokio::pin!(upstream);
+        tokio::pin!(downstream);
+        tokio::select! {
+            // Cut (or the server closed): returning drops every half, closing both sockets.
+            _ = &mut downstream => {}
+            // The client finished sending: keep relaying the answer.
+            () = &mut upstream => {
+                let _ = (&mut downstream).await;
+            }
+        }
+    }
 }
 
 struct Proxy {
@@ -739,11 +919,17 @@ impl Proxy {
         let accept = tokio::spawn(async move {
             while let Ok((mut inbound, _)) = listener.accept().await {
                 let target = target.clone();
+                let mode = mode.clone();
                 conns.lock().await.spawn(async move {
                     if let Mode::Delay(wait) = mode {
                         tokio::time::sleep(wait).await;
                     }
                     match mode {
+                        Mode::Cut(cutter) => {
+                            if let Ok(outbound) = TcpStream::connect(&target).await {
+                                cutter.relay(inbound, outbound).await;
+                            }
+                        }
                         Mode::Forward | Mode::Delay(_) => {
                             if let Ok(mut outbound) = TcpStream::connect(&target).await {
                                 let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound)

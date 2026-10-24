@@ -23,7 +23,7 @@ services:
         ANKI_VERSION: "26.9.3"
     image: leitor-ankisync-dev:26.9.3
     environment:
-      # Throwaway local test accounts (spec A.2). test:test is the manual account; t1..t12 are one per test.
+      # Throwaway local test accounts (spec A.2). test:test is the manual account; t1..t14 are one per test.
       SYNC_USER1: "test:test"
       SYNC_USER2: "t1:test"
       SYNC_USER3: "t2:test"
@@ -37,6 +37,8 @@ services:
       SYNC_USER11: "t10:test"
       SYNC_USER12: "t11:test"
       SYNC_USER13: "t12:test"
+      SYNC_USER14: "t13:test"
+      SYNC_USER15: "t14:test"
       RUST_LOG: "anki=info"
     volumes:
       - ankisync-dev-data:/data

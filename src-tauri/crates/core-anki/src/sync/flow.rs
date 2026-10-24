@@ -336,11 +336,13 @@ impl AnkiService {
 }
 
 /// Turns a vague "other" network failure into Offline / Timeout / TlsUntrusted by asking the
-/// server directly.
+/// server directly. An Offline failure is checked too: rslib reports a failed TLS handshake and
+/// a dropped connection with the same "error sending request"; when the server answers now, the
+/// failure stays Offline (a transfer cut midway, retried with backoff).
 pub(crate) async fn refine(cfg: &SyncConfig, err: Error) -> Error {
     match err {
         Error::Sync {
-            kind: SyncFailure::Other,
+            kind: SyncFailure::Other | SyncFailure::Offline,
             ..
         } => match diagnose(cfg).await {
             Some(kind) => sync_error(kind, None),
