@@ -1,0 +1,18 @@
+{
+  "id": "msg_01RecordedEnrich",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-5-5",
+  "content": [
+    { "type": "text", "text": "{\"itens\":[{\"lema\":\"windmill\",\"classe\":\"noun\",\"definicao\":\"a building with sails that the wind turns\",\"traducao\":\"moinho de vento\"},{\"lema\":\"pasture\",\"classe\":\"noun\",\"definicao\":\"land with grass where animals feed\",\"traducao\":\"pasto\"}]}" }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 230,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 88,
+    "service_tier": "standard"
+  }
+}

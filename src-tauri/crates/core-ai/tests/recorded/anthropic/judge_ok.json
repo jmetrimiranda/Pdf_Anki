@@ -1,0 +1,20 @@
+{
+  "id": "msg_01RecordedJudge",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-5-5",
+  "content": [
+    { "type": "thinking", "thinking": "", "signature": "recorded" },
+    { "type": "text", "text": "{\"veredito\":\"quase\",\"explicacao\":\"O comando está certo, mas faltou o sudo.\",\"nota_sugerida\":2}" }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 412,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 96,
+    "output_tokens_details": { "thinking_tokens": 41 },
+    "service_tier": "standard"
+  }
+}

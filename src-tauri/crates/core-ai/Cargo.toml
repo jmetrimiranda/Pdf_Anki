@@ -1,5 +1,6 @@
 [package]
 name = "core-ai"
+description = "Optional AI providers (spec 13): one provider interface, per-provider adapters, prices, spending caps"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,4 +11,18 @@ workspace = true
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+hex.workspace = true
+# Same reqwest 0.12 as the rest of the graph (rustls only). All AI calls leave from Rust, never the webview.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# Already in the graph (0.8.2): the price table.
+toml = "0.8"
+
+[dev-dependencies]
+tokio = { workspace = true }
+# Already in the graph: the fake provider servers that replay recorded API responses.
+axum = "0.8"
