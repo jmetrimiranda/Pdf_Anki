@@ -31,6 +31,7 @@ pub fn provider_for(kind: ProviderKind) -> Option<Box<dyn Provider>> {
     match kind {
         ProviderKind::Anthropic => Some(Box::new(anthropic::AnthropicProvider::default())),
         ProviderKind::Openai => Some(Box::new(openai_chat::OpenAiChatProvider::openai())),
-        ProviderKind::Gemini | ProviderKind::Deepseek => None,
+        ProviderKind::Deepseek => Some(Box::new(openai_chat::OpenAiChatProvider::deepseek())),
+        ProviderKind::Gemini => None,
     }
 }
