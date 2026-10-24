@@ -46,6 +46,11 @@ if ! { scripts/fetch-ocr-models.sh && scripts/fetch-foliate.sh --check; } >"$LOG
   failed+=("prep"); echo "--- FALHOU: prep, log em $LOGS/prep.log"
 fi
 
+# Workflow files: quotes inside bash -c '…' blocks and bash -n of every run: script (light, no lock).
+echo "=== ci-workflows"
+python3 scripts/check-ci.py >"$LOGS/ci-workflows.log" 2>&1 || { failed+=("ci-workflows"); cat "$LOGS/ci-workflows.log"; }
+tail -1 "$LOGS/ci-workflows.log"
+
 step rust "dev 'cd src-tauri && export CARGO_INCREMENTAL=0 LEITOR_REQUIRE_VOCAB_DATA=1 LEITOR_REQUIRE_OCR_MODELS=1 && cargo fmt --all --check \
   && cargo clippy -j 12 --workspace --all-targets -- -D warnings \
   && ../scripts/with-keyring.sh cargo test -j 12 --workspace'" 150

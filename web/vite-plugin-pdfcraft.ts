@@ -170,8 +170,9 @@ export default function pdfcraft(opts: PdfcraftPluginOptions = {}): Plugin {
       const out = path.resolve(config.root, config.build.outDir, 'pdfcraft');
       if (!hasPdfcraftBuild(src)) {
         const msg = `PdfCraft web build missing in ${src}: rode scripts/build-pdfcraft-web.sh`;
-        if (config.mode === 'mock' || config.env.VITE_MOCK === '1') {
-          config.logger.warn(`[pdfcraft] ${msg} (mock build: skipped)`);
+        // Mock builds, and checks of the bundle itself (CI's foliate check) that opt out explicitly.
+        if (config.mode === 'mock' || config.env.VITE_MOCK === '1' || process.env.LEITOR_PDFCRAFT_OPTIONAL === '1') {
+          config.logger.warn(`[pdfcraft] ${msg} (skipped: mock build or LEITOR_PDFCRAFT_OPTIONAL=1)`);
           return;
         }
         throw new Error(msg);
