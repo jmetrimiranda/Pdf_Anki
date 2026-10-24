@@ -26,6 +26,7 @@ core-epub.workspace = true
 core-vocab.workspace = true
 core-store.workspace = true
 core-ai.workspace = true
+core-libsync.workspace = true
 # Code cards (spec 11): HTML <-> code, the Markdown importer; C++ local (desktop) and remote runner.
 core-code.workspace = true
 core-cpp.workspace = true
@@ -74,6 +75,8 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["net"] }
 # The fake AI provider of tests/ai.rs (already in the lock through core-ai's tests).
 axum = "0.8"
+# The real library server, in process, for tests/library_sync.rs (its own workspace; same rusqlite).
+leitor-library-sync = { path = "../../server/library-sync" }
 # Synthetic PDFs for the integration tests (spec 20); nothing large is committed.
 pdfcraft-testkit.workspace = true
 pdfcraft-cos.workspace = true

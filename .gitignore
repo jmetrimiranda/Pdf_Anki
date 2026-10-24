@@ -61,3 +61,8 @@ collection.media/
 # Dev TLS material for the local Anki sync server (scripts/ankisync-dev-certs.sh)
 /server/ankisync-dev/certs/*
 !/server/ankisync-dev/certs/.gitkeep
+
+# H110 sync stack: local state of the deploy (infra/sync-server/deploy.sh)
+.deploy-history
+.env.*
+!.env.example

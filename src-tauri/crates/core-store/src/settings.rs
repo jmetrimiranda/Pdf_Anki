@@ -63,6 +63,12 @@ pub mod keys {
     pub const AI_BACKGROUND_PAUSED: &str = "ai_background_paused";
     /// Providers the user agreed to send data to: `{"<provider>": <epoch ms>}`.
     pub const AI_CONSENT: &str = "ai_consent";
+    /// Library sync (spec 16): the server, the library user and this device's name. The token is in the keychain.
+    pub const LIBRARY_SYNC_URL: &str = "library_sync_url";
+    pub const LIBRARY_SYNC_USER: &str = "library_sync_user";
+    pub const LIBRARY_SYNC_DEVICE: &str = "library_sync_device";
+    /// Epoch ms of the last complete library sync.
+    pub const LIBRARY_SYNC_LAST_AT: &str = "library_sync_last_at";
     pub const PAINEL_URL: &str = "painel_url";
     pub const PAINEL_INTEGRATION_ENABLED: &str = "painel_integration_enabled";
 }
@@ -226,6 +232,18 @@ const SPECS: &[Spec] = &[
     spec(AI_BACKGROUND_ENRICH, Kind::Bool, false, || false.into()),
     spec(AI_BACKGROUND_PAUSED, Kind::Bool, false, || false.into()),
     spec(AI_CONSENT, Kind::Object, false, empty_object),
+    spec(LIBRARY_SYNC_URL, Kind::Text, true, null),
+    spec(LIBRARY_SYNC_USER, Kind::Text, true, null),
+    spec(LIBRARY_SYNC_DEVICE, Kind::Text, true, null),
+    spec(
+        LIBRARY_SYNC_LAST_AT,
+        Kind::Int {
+            min: 0,
+            max: i64::MAX,
+        },
+        true,
+        null,
+    ),
     spec(PAINEL_URL, Kind::Text, true, null),
     spec(PAINEL_INTEGRATION_ENABLED, Kind::Bool, false, || {
         false.into()

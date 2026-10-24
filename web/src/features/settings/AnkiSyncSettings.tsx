@@ -8,6 +8,7 @@ import type { AnkiSyncStatus } from '../../lib/core/types';
 import { formatSyncedAgo } from '../../lib/format';
 import { useNarrow } from '../../lib/useMediaQuery';
 import { errorMessage } from '../anki/decks/DeckDialogs';
+import { LibrarySyncSettings } from './LibrarySyncSettings';
 import { useSyncUi } from '../sync/SyncProvider';
 import { needsLoginAgain } from '../sync/SyncPill';
 import { setSyncStatus, useNow, useSyncNow, useSyncStatus } from '../sync/useSyncStatus';
@@ -383,6 +384,7 @@ export function AnkiSyncSettings() {
         </Card>
       )}
       <p className="text-xs text-muted">{t('settings.anki.help')}</p>
+      <LibrarySyncSettings />
     </div>
   );
 }

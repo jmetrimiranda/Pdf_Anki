@@ -1205,6 +1205,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-libsync"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "hex",
+ "leitor-library-sync",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "core-pdf"
 version = "0.1.0"
 dependencies = [
@@ -3368,10 +3385,12 @@ dependencies = [
  "core-code",
  "core-cpp",
  "core-epub",
+ "core-libsync",
  "core-pdf",
  "core-store",
  "core-vocab",
  "keyring",
+ "leitor-library-sync",
  "pdfcraft-cos",
  "pdfcraft-organize",
  "pdfcraft-testkit",
@@ -3394,6 +3413,23 @@ dependencies = [
  "unicode-segmentation",
  "uuid",
  "webkit2gtk",
+]
+
+[[package]]
+name = "leitor-library-sync"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "futures-util",
+ "hex",
+ "rand 0.9.5",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

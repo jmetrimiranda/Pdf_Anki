@@ -357,6 +357,11 @@ fn serde_shapes_match_the_ts_contract() {
     state.shutdown();
     vocab_samples(&mut out);
     ai_samples(&mut out);
+    record(
+        &mut out,
+        "LibrarySyncStatus",
+        &val(&state.library_sync_status().unwrap()),
+    );
 
     for required in [
         "StudyNext.card",
@@ -449,6 +454,7 @@ fn serde_shapes_match_the_ts_contract() {
         "AiWordSense",
         "AiQueueInfo",
         "AiQueueItem",
+        "LibrarySyncStatus",
     ] {
         assert!(
             out.contains_key(required),

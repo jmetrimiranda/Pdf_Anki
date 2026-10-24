@@ -14,6 +14,7 @@ import {
   type CoreClient,
   type DeepLink,
   type JobProgress,
+  type LibrarySyncStatus,
   type StudyOwnerChange,
   type Unlisten,
 } from './types';
@@ -244,6 +245,14 @@ export const tauriClient: CoreClient = {
   aiQueueRetry: () => call('ai_queue_retry'),
   aiQueueAddNote: (noteId, sentence) => call('ai_queue_add_note', { noteId, sentence }),
   onAiQueue: (cb) => subscription(() => listen<AiQueueInfo>('ai://queue', (e) => cb(e.payload))),
+
+  librarySyncStatus: () => call('library_sync_status'),
+  librarySyncLogin: (url, user, password, device) => call('library_sync_login', { url, user, password, device }),
+  librarySyncLogout: () => call('library_sync_logout'),
+  librarySyncNow: () => call('library_sync_now'),
+  librarySyncClearConflicts: () => call('library_sync_clear_conflicts'),
+  libraryDownload: (uid) => call('library_download', { uid }),
+  onLibrarySync: (cb) => subscription(() => listen<LibrarySyncStatus>('library://sync', (e) => cb(e.payload))),
 
   libraryList: () => call('library_list'),
   libraryAdd: (path, opts) => call('library_add', { path, replace: !!opts?.replace }),

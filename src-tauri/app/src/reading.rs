@@ -75,6 +75,8 @@ impl AppState {
             None => tracker.stop(s, reason),
         })?;
         if let Some(c) = &closed {
+            // A book closed: the library syncs (spec 16).
+            self.library_sync_kick();
             tracing::debug!(
                 book_uid = %c.book_uid,
                 reason = ?c.reason,

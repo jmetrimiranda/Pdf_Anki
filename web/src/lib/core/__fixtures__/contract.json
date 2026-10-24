@@ -381,6 +381,17 @@
     "stage",
     "total"
   ],
+  "LibrarySyncStatus": [
+    "conflicts",
+    "device",
+    "lastError",
+    "lastSyncAt",
+    "loggedIn",
+    "progress",
+    "running",
+    "url",
+    "user"
+  ],
   "LocalCppStatus": [
     "clangFormat",
     "compiler"

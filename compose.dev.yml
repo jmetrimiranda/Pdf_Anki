@@ -71,6 +71,25 @@ services:
     ports:
       - "127.0.0.1:${LEITOR_ANKISYNC_TLS_PORT:-28443}:8443"
 
+  # Library sync server (server/library-sync, docs/planos/fase-9a.md) behind the "library" profile, for
+  # scripts/library-sync-test.sh only (two app clients against the real server in a container). Test password only.
+  library-sync-dev:
+    ulimits:
+      core: 0  # no core dumps on the host (kernel core_pattern is global; docs/decisoes.md)
+    profiles: ["library"]
+    build:
+      context: server/library-sync
+    image: leitor-library-sync-dev
+    read_only: true
+    environment:
+      LIBRARY_SYNC_USER: "leitor"
+      LIBRARY_SYNC_PASSWORD: "senha-de-teste-longa"
+    volumes:
+      - library-sync-dev-data:/data
+    networks:
+      leitor-dev:
+        aliases: [library-sync-dev]
+
   # C++ runner: only on runner-internal (internal: true, no route out), read-only root, tmpfs /work. The server runs
   # as 10001 and the jobs as 10002 (the image's setpriv entrypoint): CAP_SETUID/CAP_SETGID are the only capabilities,
   # kept only so the server can start jobs as the other uid. Mirrors the VPS (server/compose.leitor.yml).
@@ -134,4 +153,5 @@ networks:
     internal: true
 
 volumes:
+  library-sync-dev-data:
   ankisync-dev-data:

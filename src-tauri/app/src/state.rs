@@ -61,6 +61,8 @@ pub struct AppState {
     pub(crate) epubs: crate::epub::EpubCache,
     /// AI: reservations of the calls in flight and the provider adapters (spec 13).
     pub(crate) ai: crate::ai::AiHub,
+    /// Library sync between devices (spec 16).
+    pub(crate) library_sync: crate::library_sync::LibrarySyncHub,
 }
 
 impl AppState {
@@ -102,6 +104,7 @@ impl AppState {
             ocr: crate::ocr::OcrHub::default(),
             epubs: Default::default(),
             ai: crate::ai::AiHub::default(),
+            library_sync: Default::default(),
         }
     }
 
@@ -287,6 +290,8 @@ impl AppState {
                 }
                 // The background AI enrichment picks up what was left in its queue.
                 state.ai_queue_start();
+                // The library sync: a run now (when connected), then every 5 minutes.
+                state.library_sync_start();
             });
         if let Err(e) = spawned {
             tracing::warn!(%e, "could not start the warm-up thread");
@@ -302,6 +307,7 @@ impl AppState {
         self.abort_sync();
         self.sync.wake();
         self.ai_queue_kick_for_shutdown();
+        self.library_sync_kick();
         if let Some(h) = lock(&self.anki_handles).take() {
             h.study.close();
         }

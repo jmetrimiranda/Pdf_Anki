@@ -53,8 +53,9 @@ function entry(extra: Partial<LibraryEntry>): LibraryEntry {
     collectionFolder: null,
     addedAt: 0,
     updatedAt: 0,
-    localPath: null,
-    localHash: null,
+    // On this device (a book from another PC would offer "Baixar" instead of its progress).
+    localPath: 'books/f/v1-h.pdf',
+    localHash: 'h',
     downloaded: true,
     position: null,
     vocabScanned: false,

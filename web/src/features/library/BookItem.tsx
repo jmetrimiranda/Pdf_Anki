@@ -1,4 +1,5 @@
 import {
+  CloudDownload,
   BookOpen,
   ChartColumn,
   Download,
@@ -20,7 +21,37 @@ import { BookCover } from './BookCover';
 import { progressOf } from './filter';
 
 export type BookAction =
-  'open' | 'rename' | 'move' | 'export' | 'openExternal' | 'remove' | 'vocabScan' | 'vocabReport' | 'ocr';
+  | 'open'
+  | 'rename'
+  | 'move'
+  | 'export'
+  | 'openExternal'
+  | 'remove'
+  | 'vocabScan'
+  | 'vocabReport'
+  | 'ocr'
+  | 'download';
+
+/** The book's current file is on this device (else it came from another PC: "Baixar", spec 16). */
+export function onDevice(book: LibraryEntry): boolean {
+  return book.localPath !== null && book.localHash === book.fileHash;
+}
+
+function DownloadButton({ book, onAction }: { book: LibraryEntry; onAction: (a: BookAction) => void }) {
+  return (
+    <Button
+      size="sm"
+      variant="neutral"
+      icon={CloudDownload}
+      data-testid="book-download"
+      aria-label={t('librarySync.downloadLabel', { titulo: book.title })}
+      title={t('librarySync.notHere')}
+      onClick={() => onAction('download')}
+    >
+      {t('librarySync.download')}
+    </Button>
+  );
+}
 
 export type LibraryView = 'grid' | 'list';
 
@@ -197,7 +228,10 @@ export function BookItem({
             </span>
           </span>
         </button>
-        <div className="flex shrink-0 items-center gap-1.5">{badges}</div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {badges}
+          {!onDevice(book) && <DownloadButton book={book} onAction={onAction} />}
+        </div>
         {showOcr && (
           <div
             data-testid="ocr-line"
@@ -243,7 +277,7 @@ export function BookItem({
       )}
       <div className="mt-auto flex items-end gap-2">
         <div className="min-w-0 flex-1">
-          <Progress book={book} />
+          {onDevice(book) ? <Progress book={book} /> : <DownloadButton book={book} onAction={onAction} />}
         </div>
         <BookMenu book={book} offerOcr={offerOcr} onAction={onAction} />
       </div>

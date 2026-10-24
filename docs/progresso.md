@@ -287,8 +287,33 @@ Plano: `docs/planos/fase-8.md` (com as respostas do usuário de 24/10/2026). Ord
 
 ## Fase 9 — Sincronização entre PCs Linux (9a)
 
-- ⬜ Servidor no H110 (`infra/sync-server/`: Anki sync + servidor da biblioteca + Caddy + cloudflared, túnel "leitor").
-- ⬜ Livros, posição, destaques/anotações, vocabulário e coleção do Anki entre dois PCs; offline nos dois sem perda.
+Plano: `docs/planos/fase-9a.md`. Servidor no H110: `infra/sync-server/README.md`.
+
+- ✅ Servidor da biblioteca `server/library-sync` (Rust + axum + SQLite): login do aparelho → token próprio
+  revogável (só o hash no servidor), registros com último-vence e cursor do servidor (com época e `cursor_ahead`),
+  livros enviados em partes de 32 MB e baixados em faixas (limite de 100 MB do Cloudflare), 409 em conflito de
+  arquivo, lista dos arquivos atuais, limpeza diária. Testes: 10.
+- ✅ Cliente `core-libsync` (teste com um arquivo de 101 MB: 4 partes na ida, 4 faixas na volta) e app
+  (`library_sync.rs`): arquivos daqui sobem antes, depois puxar (livros primeiro), lista de arquivos do servidor,
+  depois enviar; primeiro sync só baixa; cópia de conflito com carimbo próprio; "Baixar"; agenda (início, ao fechar
+  um livro, a cada 5 min, "Sincronizar agora"). Migração V6.
+- ✅ Testes com dois aparelhos (PC A e PC B, `tests/library_sync.rs`) contra o servidor no próprio teste (roda no
+  CI): troca de livros, posição, destaques/anotações EPUB, palavras; mudanças de B voltam para A; offline nos dois
+  e reconexão sem perda; posição mais recente vence; anotações somam; exclusões propagam; primeiro sync só baixa e
+  não sobrescreve o servidor; conflito de PDF → cópia; renomear num aparelho desatualizado não volta o arquivo.
+  Contra o servidor em container: `scripts/library-sync-test.sh` (livro de 101 MB) — PASS.
+- ✅ Interface: Configurações → Anki e sincronização → "Biblioteca entre aparelhos" (conectar, último sync, progresso,
+  erro, cópias de conflito, "Sincronizar agora", "Desconectar"); "Baixar" na biblioteca; abrir um livro que só está
+  no servidor baixa antes.
+- ✅ `infra/sync-server/` para o H110 (compose, Caddy por hostname, cloudflared com o túnel "leitor", `deploy.sh`
+  com saúde e volta, `set-secret.sh`).
+- 🔶 Subir no H110 (comandos com `sudo` e túnel no Cloudflare: o usuário) e o teste real entre dois PCs.
+- Pendências da 3ª verificação (combinado: sem 4ª rodada):
+  - Depois de restaurar um backup **antigo** do volume do servidor, cada livro que um PC tem numa versão mais nova
+    que a do backup volta para a versão do backup e a versão do PC vira cópia de conflito (nada se perde, mas pede
+    arrumação manual). Melhor: no recomeço, subir o arquivo com a base que o servidor tem agora, quando for uma
+    versão que o próprio PC já tinha confirmado.
+  - Um "sincronizar" pedido enquanto outra sincronização roda é ignorado e espera o próximo ciclo (até 5 min).
 - 9b (integração com o Painel) saiu do escopo (decisão de 24/10/2026).
 
 ## Fase 10 — Acabamento iPad/iPhone

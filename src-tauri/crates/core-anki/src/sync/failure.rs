@@ -87,7 +87,10 @@ impl SyncFailure {
             SyncFailure::ServerMessage => detail
                 .unwrap_or("O servidor de sincronização recusou o pedido.")
                 .into(),
-            SyncFailure::UploadTooLarge => "A coleção é grande demais para o servidor.".into(),
+            SyncFailure::UploadTooLarge => "A coleção passou do limite de envio do servidor (no túnel da \
+                Cloudflare, 100 MB por envio). Baixe a coleção do servidor em vez de enviar, ou diminua-a \
+                (por exemplo, apagando mídia não usada) e tente de novo."
+                .into(),
             SyncFailure::ResyncRequired => "A coleção precisa de uma sincronização completa. \
                 Sincronize de novo para escolher a direção."
                 .into(),

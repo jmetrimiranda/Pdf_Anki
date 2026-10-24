@@ -18,6 +18,7 @@ mod files;
 pub mod grants;
 pub mod jobs;
 pub mod library;
+pub mod library_sync;
 pub mod ocr;
 pub mod open_paths;
 mod protocol;
@@ -197,6 +198,9 @@ fn emit_ui_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: UiEvent) {
         UiEvent::StudyOwner(change) => app.emit_to("main", anki::STUDY_OWNER_EVENT, change),
         UiEvent::DeepLink(link) => app.emit_to("main", deep_link::DEEP_LINK_EVENT, &link),
         UiEvent::AiQueue(info) => app.emit_to("main", ai_queue::AI_QUEUE_EVENT, &info),
+        UiEvent::LibrarySync(status) => {
+            app.emit_to("main", library_sync::LIBRARY_SYNC_EVENT, &status)
+        }
         UiEvent::Job(progress) => app.emit_to(
             "main",
             &format!("{}{}", jobs::JOB_EVENT_PREFIX, progress.job_id),
@@ -291,6 +295,12 @@ macro_rules! app_commands {
             commands::ai_queue_remove,
             commands::ai_queue_retry,
             commands::ai_queue_add_note,
+            commands::library_sync_status,
+            commands::library_sync_login,
+            commands::library_sync_logout,
+            commands::library_sync_now,
+            commands::library_download,
+            commands::library_sync_clear_conflicts,
             commands::anki_sync_status,
             commands::anki_sync_login,
             commands::anki_sync_logout,

@@ -336,7 +336,7 @@ impl Store {
                                      file_name = ?6, pages = ?7, has_text = ?8,
                                      ocr_status = 'none',
                                      file_version = file_version + (file_hash <> ?9),
-                                     file_hash = ?9, updated_at = ?10, deleted = 0
+                                     file_hash = ?9, updated_at = max(?10, updated_at + 1), deleted = 0
                      WHERE book_uid = ?1",
                     params![
                         new.book_uid,
@@ -428,7 +428,7 @@ impl Store {
         }
         let file_version = book.file_version.saturating_add(1);
         tx.execute(
-            "UPDATE book SET file_hash = ?2, file_version = ?3, updated_at = ?4 WHERE book_uid = ?1",
+            "UPDATE book SET file_hash = ?2, file_version = ?3, updated_at = max(?4, updated_at + 1) WHERE book_uid = ?1",
             params![book_uid, file_hash, file_version, now_ms()],
         )?;
         upsert_book_file(&tx, book_uid, Some(local_path), file_hash, false)?;
@@ -491,7 +491,7 @@ impl Store {
         tx.execute(
             "UPDATE book SET title = ?2, author = ?3, language = ?4,
                              content_deck_id = ?5, collection_folder = ?6, pages = ?7,
-                             has_text = ?8, ocr_status = ?9, updated_at = ?10
+                             has_text = ?8, ocr_status = ?9, updated_at = max(?10, updated_at + 1)
              WHERE book_uid = ?1",
             params![
                 book_uid,
@@ -523,10 +523,10 @@ impl Store {
         }
         let now = now_ms();
         for sql in [
-            "UPDATE book SET deleted = 1, updated_at = ?2 WHERE book_uid = ?1",
-            "UPDATE epub_annotation SET deleted = 1, updated_at = ?2
+            "UPDATE book SET deleted = 1, updated_at = max(?2, updated_at + 1) WHERE book_uid = ?1",
+            "UPDATE epub_annotation SET deleted = 1, updated_at = max(?2, updated_at + 1)
              WHERE book_uid = ?1 AND deleted = 0",
-            "UPDATE reading_position SET deleted = 1, updated_at = ?2
+            "UPDATE reading_position SET deleted = 1, updated_at = max(?2, updated_at + 1)
              WHERE book_uid = ?1 AND deleted = 0",
         ] {
             tx.execute(sql, params![book_uid, now])?;
@@ -534,6 +534,11 @@ impl Store {
         // Device-local, no tombstone needed.
         tx.execute(
             "DELETE FROM book_prefs WHERE book_uid = ?1",
+            params![book_uid],
+        )?;
+        // The file the library server confirmed is forgotten: a re-added book is sent again if needed.
+        tx.execute(
+            "DELETE FROM library_sync_file WHERE book_uid = ?1",
             params![book_uid],
         )?;
         tx.commit()?;
@@ -615,12 +620,18 @@ impl Store {
                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                ON CONFLICT (book_uid) DO UPDATE
                SET page = excluded.page, "offset" = excluded."offset", cfi = excluded.cfi,
-                   progress = excluded.progress, updated_at = excluded.updated_at, deleted = 0"#,
+                   progress = excluded.progress, updated_at = max(excluded.updated_at, updated_at + 1), deleted = 0"#,
             params![book_uid, pos.page, pos.offset, pos.cfi, pos.progress, now],
+        )?;
+        // Never before the version it replaces (a synced one may carry another device's later clock).
+        let updated_at: i64 = tx.query_row(
+            "SELECT updated_at FROM reading_position WHERE book_uid = ?1",
+            params![book_uid],
+            |r| r.get(0),
         )?;
         tx.commit()?;
         Ok(ReadingPosition {
-            updated_at: now,
+            updated_at,
             ..pos.clone()
         })
     }

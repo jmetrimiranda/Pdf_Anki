@@ -1365,6 +1365,30 @@ export interface AiQueueInfo {
   items: AiQueueItem[];
 }
 
+// ---------------------------------------------------------------- library sync (spec 16, docs/planos/fase-9a.md)
+
+export interface LibrarySyncProgress {
+  /** `files` (sending books), `pull`, `push` or `download`. */
+  stage: 'files' | 'pull' | 'push' | 'download';
+  done: number;
+  total: number;
+}
+
+export interface LibrarySyncStatus {
+  url: string | null;
+  user: string | null;
+  /** This device's name on the server. */
+  device: string;
+  loggedIn: boolean;
+  running: boolean;
+  /** Epoch ms of the last complete run. */
+  lastSyncAt: number | null;
+  lastError: { code: string; message: string } | null;
+  progress: LibrarySyncProgress | null;
+  /** Conflict copies the last run made (titles). */
+  conflicts: string[];
+}
+
 export interface CoreClient {
   readonly kind: 'tauri' | 'mock';
 
@@ -1595,6 +1619,19 @@ export interface CoreClient {
   aiQueueAddNote(noteId: number, sentence: string): Promise<AiQueueInfo>;
   /** `ai://queue`: the background queue changed. */
   onAiQueue(cb: (q: AiQueueInfo) => void): Unlisten;
+
+  // Library sync between devices (spec 16): the device token stays in the keychain.
+  librarySyncStatus(): Promise<LibrarySyncStatus>;
+  /** The password only goes to the library server. */
+  librarySyncLogin(url: string, user: string, password: string, device: string): Promise<LibrarySyncStatus>;
+  librarySyncLogout(): Promise<LibrarySyncStatus>;
+  librarySyncNow(): Promise<LibrarySyncStatus>;
+  /** The user read the conflict notice. */
+  librarySyncClearConflicts(): Promise<LibrarySyncStatus>;
+  /** "Baixar": the server's current file of a book. */
+  libraryDownload(uid: string): Promise<LibraryEntry>;
+  /** `library://sync`: a run started, progressed or ended. */
+  onLibrarySync(cb: (s: LibrarySyncStatus) => void): Unlisten;
 
   // Library
   libraryList(): Promise<LibraryEntry[]>;

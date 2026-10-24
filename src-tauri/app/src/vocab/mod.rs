@@ -516,6 +516,13 @@ impl AppState {
     }
 
     /// "Já sei" / "Ignorar" / "Nome próprio" (or `None`: back to automatic), for every book.
+    /// Every live "Já sei" / "Ignorar" / "Nome próprio" (lemma, status).
+    pub fn vocab_override_list(
+        &self,
+    ) -> Result<Vec<(String, core_store::VocabOverrideStatus)>, AppError> {
+        self.with_store(|s| s.vocab_overrides())
+    }
+
     pub fn vocab_override_set(
         &self,
         lemmas: Vec<String>,

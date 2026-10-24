@@ -1,0 +1,28 @@
+[package]
+name = "core-libsync"
+description = "Client of the library sync server (spec 16, docs/planos/fase-9a.md): records, files in parts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
+# Same reqwest 0.12 as the rest of the graph (rustls only).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
+tempfile.workspace = true
+# The real server, in process (its own workspace; same rusqlite as the app).
+leitor-library-sync = { path = "../../../server/library-sync" }
+axum = "0.8"

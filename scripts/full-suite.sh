@@ -64,6 +64,10 @@ step perf "dev 'cd src-tauri && export CARGO_INCREMENTAL=0 LEITOR_REQUIRE_VOCAB_
   && cargo test -j 12 --release -p core-pdf --features testkit --test ocr -- --ignored --nocapture \
   && cargo test -j 12 --release -p core-epub --test text -- --ignored --nocapture'" 90
 
+# The library sync server (its own Cargo project; target dir in the build volume, never on the host disk).
+step library-sync "dev 'cd server/library-sync && export CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/workspaces/leitor-estudos/src-tauri/target/library-sync \
+  && cargo fmt --check && cargo clippy -j 12 --locked --all-targets -- -D warnings && cargo test -j 12 --locked'" 30
+
 step cpp-root-and-user "as_root 'cargo test -j 12 -p core-cpp \
   && chown -R dev:dev /usr/local/cargo/registry /usr/local/cargo/git \
   && setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/dev CARGO_HOME=/usr/local/cargo \
@@ -95,6 +99,7 @@ step playwright "dev 't() { timeout --kill-after=30s 30m \"\$@\"; }; export LEIT
 
 step runner 'scripts/runner-test.sh all' 45
 step sync 'scripts/sync-test.sh all' 45
+step library-sync-server 'scripts/library-sync-test.sh' 30
 
 # Build volume size (rule: clean it at the end of a phase when it is over 30 GB).
 size="$(docker run --rm -v leitor-target:/t alpine du -sh /t 2>/dev/null | cut -f1)"

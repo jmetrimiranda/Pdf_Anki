@@ -217,14 +217,14 @@ impl Store {
                     "INSERT INTO notetype_mapping (anki_notetype_id, role, fields, updated_at, deleted)
                      VALUES (?1, ?2, ?3, ?4, 0)
                      ON CONFLICT (anki_notetype_id) DO UPDATE SET role = excluded.role,
-                         fields = excluded.fields, updated_at = excluded.updated_at, deleted = 0",
+                         fields = excluded.fields, updated_at = max(excluded.updated_at, updated_at + 1), deleted = 0",
                     params![notetype_id, role.as_str(), json, updated_at],
                 )?;
             }
             None => {
                 // Only a code mapping is removed here; a vocab mapping belongs to another feature.
                 self.conn.execute(
-                    "UPDATE notetype_mapping SET deleted = 1, updated_at = ?2
+                    "UPDATE notetype_mapping SET deleted = 1, updated_at = max(?2, updated_at + 1)
                      WHERE anki_notetype_id = ?1 AND deleted = 0
                        AND role IN ('code_command', 'code_program')",
                     params![notetype_id, updated_at],
@@ -281,7 +281,7 @@ impl Store {
             if previous.is_some() {
                 self.conn.execute(
                     "UPDATE code_note_extra SET accepted = '[]', requires = '[]', deleted = 1,
-                         updated_at = ?2
+                         updated_at = max(?2, updated_at + 1)
                      WHERE note_id = ?1",
                     params![note_id, updated_at],
                 )?;
@@ -294,7 +294,7 @@ impl Store {
                 "INSERT INTO code_note_extra (note_id, accepted, requires, updated_at, deleted)
                  VALUES (?1, ?2, ?3, ?4, 0)
                  ON CONFLICT (note_id) DO UPDATE SET accepted = excluded.accepted,
-                     requires = excluded.requires, updated_at = excluded.updated_at, deleted = 0",
+                     requires = excluded.requires, updated_at = max(excluded.updated_at, updated_at + 1), deleted = 0",
                 params![
                     note_id,
                     to_json(&accepted)?,

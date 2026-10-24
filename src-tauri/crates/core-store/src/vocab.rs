@@ -778,14 +778,14 @@ impl Store {
                     tx.execute(
                         "INSERT INTO vocab_override (lemma, status, updated_at, deleted) VALUES (?1, ?2, ?3, 0)
                          ON CONFLICT (lemma) DO UPDATE SET status = excluded.status,
-                             updated_at = excluded.updated_at, deleted = 0",
+                             updated_at = max(excluded.updated_at, updated_at + 1), deleted = 0",
                         params![lemma, status.as_str(), updated_at],
                     )?;
                 }
                 None => {
                     if previous.is_some_and(|p| p.1 == 0) {
                         tx.execute(
-                            "UPDATE vocab_override SET deleted = 1, updated_at = ?2 WHERE lemma = ?1",
+                            "UPDATE vocab_override SET deleted = 1, updated_at = max(?2, updated_at + 1) WHERE lemma = ?1",
                             params![lemma, updated_at],
                         )?;
                     }
@@ -852,7 +852,7 @@ impl Store {
             "INSERT INTO notetype_mapping (anki_notetype_id, role, fields, updated_at, deleted)
              VALUES (?1, 'vocab', ?2, ?3, 0)
              ON CONFLICT (anki_notetype_id) DO UPDATE SET role = excluded.role,
-                 fields = excluded.fields, updated_at = excluded.updated_at, deleted = 0",
+                 fields = excluded.fields, updated_at = max(excluded.updated_at, updated_at + 1), deleted = 0",
             params![notetype_id, json, updated_at],
         )?;
         Ok(())
@@ -869,7 +869,7 @@ impl Store {
             )
             .optional()?;
         self.conn.execute(
-            "UPDATE notetype_mapping SET deleted = 1, updated_at = ?2
+            "UPDATE notetype_mapping SET deleted = 1, updated_at = max(?2, updated_at + 1)
              WHERE anki_notetype_id = ?1 AND deleted = 0 AND role = 'vocab'",
             params![notetype_id, next_updated_at(previous)],
         )?;

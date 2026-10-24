@@ -158,7 +158,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)
              ON CONFLICT (uid) DO UPDATE
              SET kind = excluded.kind, cfi = excluded.cfi, text = excluded.text, color = excluded.color,
-                 comment = excluded.comment, updated_at = excluded.updated_at, deleted = 0",
+                 comment = excluded.comment, updated_at = max(excluded.updated_at, updated_at + 1), deleted = 0",
             params![
                 a.uid, a.book_uid, a.kind, a.cfi, a.text, a.color, a.comment, now
             ],
@@ -186,7 +186,7 @@ impl Store {
         };
         let now = now_ms().max(previous.saturating_add(1));
         let n = self.conn.execute(
-            "UPDATE epub_annotation SET deleted = 1, updated_at = ?2 WHERE uid = ?1 AND deleted = 0",
+            "UPDATE epub_annotation SET deleted = 1, updated_at = max(?2, updated_at + 1) WHERE uid = ?1 AND deleted = 0",
             params![uid, now],
         )?;
         Ok(n > 0)

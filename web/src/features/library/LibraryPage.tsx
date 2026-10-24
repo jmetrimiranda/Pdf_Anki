@@ -12,7 +12,8 @@ import { leitor } from '../leitor';
 import { OcrDialog, ocrEligible } from '../ocr';
 import { useShell } from '../shell/context';
 import { MoveDialog, RemoveDialog, RenameDialog, type BookDialogState } from './BookDialogs';
-import { BookItem, type BookAction, type LibraryView } from './BookItem';
+import { useLibrarySyncStatus } from '../settings/LibrarySyncSettings';
+import { BookItem, onDevice, type BookAction, type LibraryView } from './BookItem';
 import { collectionsOf, exportName, filterBooks, sortBooks, type CollectionFilter } from './filter';
 import { errorMessage } from './useBookImport';
 
@@ -110,6 +111,8 @@ function LoadingGrid({ view }: { view: LibraryView }) {
 export function LibraryPage() {
   const shell = useShell();
   const toast = useToast();
+  // A sync that ends (here or in the background) refreshes the list: books from other PCs appear.
+  useLibrarySyncStatus();
   const narrow = useNarrow();
   const queryClient = useQueryClient();
   const library = useQuery(q.library());
@@ -160,11 +163,27 @@ export function LibraryPage() {
     setDialog(null);
   }
 
+  async function download(book: LibraryEntry) {
+    const id = toast.show(t('librarySync.downloading', { titulo: book.title }), { durationMs: 600_000 });
+    try {
+      await core.libraryDownload(book.bookUid);
+      await invalidate();
+      toast.show(t('librarySync.downloaded', { titulo: book.title }), { tone: 'success' });
+    } finally {
+      toast.dismiss(id);
+    }
+  }
+
   async function act(book: LibraryEntry, action: BookAction) {
     try {
       switch (action) {
         case 'open':
+          // A book from another PC: its file comes down first (spec 16).
+          if (!onDevice(book)) await download(book);
           await leitor.openBook(book.bookUid);
+          break;
+        case 'download':
+          await download(book);
           break;
         case 'rename':
         case 'move':

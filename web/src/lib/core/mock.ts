@@ -66,6 +66,7 @@ import {
   type BackupInfo,
   type DeckTree,
   type LibraryEntry,
+  type LibrarySyncStatus,
   type PageWord,
   type PageWords,
   type ReadingPosition,
@@ -243,6 +244,8 @@ interface MockState {
   nextExportPath?: string | null;
   /** Paths chosen in the save dialog and not yet written (one export each, like `export_pick_path`). */
   exportGrants?: string[];
+  /** The library sync (spec 16): the "server" is simulated, books are always there. */
+  librarySync?: { url: string | null; user: string | null; device: string; loggedIn: boolean; lastSyncAt: number | null };
 }
 
 const STORAGE_KEY = 'leitor.mock';
@@ -878,6 +881,98 @@ const vocabSource: VocabBookSource = {
 };
 
 /** The whole mock core: library/reader (above) + the Anki parts, one file per feature package. */
+// ---------------------------------------------------------------- library sync (spec 16)
+
+/** The library password the simulated server accepts (e2e/unit tests). */
+export const MOCK_LIBRARY_PASSWORD = 'senha-de-teste-longa';
+const librarySyncListeners = new Set<(s: LibrarySyncStatus) => void>();
+
+function librarySync() {
+  state.librarySync ??= { url: null, user: null, device: 'pc-de-teste', loggedIn: false, lastSyncAt: null };
+  return state.librarySync;
+}
+
+function librarySyncStatus(): LibrarySyncStatus {
+  const l = librarySync();
+  return { ...l, running: false, lastError: null, progress: null, conflicts: [] };
+}
+
+function emitLibrarySync() {
+  const s = librarySyncStatus();
+  for (const cb of [...librarySyncListeners]) cb(structuredClone(s));
+}
+
+/** Like `core_libsync::normalize_url`. */
+function libraryUrl(raw: string): string {
+  const url = raw.trim().replace(/\/+$/, '');
+  const rest = url.replace(/^https?:\/\//, '');
+  if (rest === url || !rest || /[\s?#@]/.test(rest)) {
+    throw new CoreError('library_bad_url', `Endereço do servidor inválido: ${raw.trim() || 'use https://…'}`);
+  }
+  return url;
+}
+
+function notLoggedIn(): CoreError {
+  return new CoreError(
+    'library_not_logged_in',
+    'Conecte este aparelho ao servidor da biblioteca em Configurações → Anki e sincronização.',
+  );
+}
+
+const librarySyncClient: Pick<
+  CoreClient,
+  | 'librarySyncStatus'
+  | 'librarySyncLogin'
+  | 'librarySyncLogout'
+  | 'librarySyncNow'
+  | 'librarySyncClearConflicts'
+  | 'libraryDownload'
+  | 'onLibrarySync'
+> = {
+  librarySyncStatus: () => later(librarySyncStatus),
+  librarySyncLogin: (url, user, password, device) =>
+    later(() => {
+      const u = libraryUrl(url);
+      if (!user.trim() || !password) throw new CoreError('invalid_input', 'Informe o usuário e a senha da biblioteca.');
+      if (password !== MOCK_LIBRARY_PASSWORD)
+        throw new CoreError('library_bad_login', 'Usuário ou senha da biblioteca incorretos.');
+      Object.assign(librarySync(), { url: u, user: user.trim(), device: device.trim() || 'pc-de-teste', loggedIn: true });
+      persist();
+      emitLibrarySync();
+      return librarySyncStatus();
+    }),
+  librarySyncLogout: () =>
+    later(() => {
+      librarySync().loggedIn = false;
+      persist();
+      emitLibrarySync();
+      return librarySyncStatus();
+    }),
+  librarySyncNow: () =>
+    later(() => {
+      if (!librarySync().loggedIn) throw notLoggedIn();
+      librarySync().lastSyncAt = Date.now();
+      persist();
+      emitLibrarySync();
+      return librarySyncStatus();
+    }),
+  librarySyncClearConflicts: () => later(librarySyncStatus),
+  libraryDownload: (uid) =>
+    later(() => {
+      if (!librarySync().loggedIn) throw notLoggedIn();
+      const rec = liveRec(uid);
+      const b = rec.book;
+      Object.assign(b, {
+        localPath: `books/${uid}/v${b.fileVersion}-${b.fileHash.slice(0, 8)}.${b.format}`,
+        localHash: b.fileHash,
+        downloaded: true,
+      });
+      persist();
+      return entry(rec);
+    }),
+  onLibrarySync: (cb) => listenTo(librarySyncListeners, cb),
+};
+
 export const mockClient: CoreClient = {
   ...baseClient,
   ...createAnkiDecksMock({
@@ -910,6 +1005,7 @@ export const mockClient: CoreClient = {
     },
   }),
   ...createAiMock(),
+  ...librarySyncClient,
   ...createOcrMock({
     book: (uid) => {
       const b = liveRec(uid).book;
@@ -961,6 +1057,8 @@ export interface LeitorMockHandle extends MockSyncHandle {
   deepLink(url: string): void;
   /** URLs returned (parsed) by the next `pendingDeepLinks()` (launch by URL). */
   setPendingDeepLinks(urls: string[]): void;
+  /** Library sync: the book's file is on the server only (the library offers "Baixar"). */
+  libraryRemoteOnly(uid: string): void;
 }
 
 /** `window.__leitorMock.anki`: inspects and drives the mock Anki collection. */
@@ -1078,6 +1176,11 @@ const ankiHandle: MockAnkiHandle = {
 };
 
 export const mockHandle: LeitorMockHandle = {
+  libraryRemoteOnly(uid: string) {
+    const b = liveRec(uid).book;
+    Object.assign(b, { localPath: null, localHash: null, downloaded: false });
+    persist();
+  },
   get books() {
     return sortedEntries();
   },

@@ -1,0 +1,46 @@
+[package]
+name = "leitor-library-sync"
+description = "Leitor de Estudos: library sync server (spec 16, docs/planos/fase-9a.md). Standalone, not part of src-tauri."
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "AGPL-3.0-or-later"
+publish = false
+
+# Its own workspace: never a member of src-tauri's.
+[workspace]
+
+[lib]
+name = "leitor_library_sync"
+path = "src/lib.rs"
+
+[[bin]]
+name = "library-sync"
+path = "src/main.rs"
+
+# MIT / Apache-2.0 only.
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
+tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "time", "sync", "signal"] }
+tokio-util = { version = "0.7", features = ["io"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+rusqlite = { version = "0.36", features = ["bundled"] }
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.9"
+base64 = "0.22"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tempfile = "3"
+http-body-util = "0.1"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true

@@ -50,8 +50,9 @@ fn migrations_are_idempotent_on_reopen() {
         assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
         tables = table_count(&store);
         assert_eq!(
-            tables, 20,
-            "16 tables + book_prefs (V3) + book_lemma_page and book_lemma_state (V4) + ai_queue (V5)"
+            tables, 22,
+            "16 tables + book_prefs (V3) + book_lemma_page and book_lemma_state (V4) + ai_queue (V5) \
+             + library_sync_seen and library_sync_file (V6)"
         );
         store.add_book(&new_book(b"x")).unwrap();
         let mode: String = store

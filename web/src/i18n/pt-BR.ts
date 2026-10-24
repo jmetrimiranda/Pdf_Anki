@@ -11,6 +11,7 @@ import { codeReviewMessages } from './pt-BR/codeReview';
 import { epubMessages } from './pt-BR/epub';
 import { epubReaderMessages } from './pt-BR/epubReader';
 import { leitorBridgeMessages } from './pt-BR/leitorBridge';
+import { librarySyncMessages } from './pt-BR/librarySync';
 import { miniReviewMessages } from './pt-BR/miniReview';
 import { ocrMessages } from './pt-BR/ocr';
 import { vocabMessages } from './pt-BR/vocab';
@@ -295,6 +296,7 @@ export const messageSections = {
   epubReader: epubReaderMessages,
   ocr: ocrMessages,
   ai: aiMessages,
+  librarySync: librarySyncMessages,
 } as const;
 
 export const ptBR = {
@@ -314,6 +316,7 @@ export const ptBR = {
   ...epubReaderMessages,
   ...ocrMessages,
   ...aiMessages,
+  ...librarySyncMessages,
 } as const;
 
 export type Messages = typeof ptBR;

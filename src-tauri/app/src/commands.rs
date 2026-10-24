@@ -43,6 +43,7 @@ use crate::epub::{EpubAnnotation, EpubAnnotationInput, EpubSectionMarks};
 use crate::error::AppError;
 use crate::jobs::JobProgress;
 use crate::library::{AddedBook, BookOpen, LibraryPatch, SavedVersion};
+use crate::library_sync::LibrarySyncStatus;
 use crate::ocr::{OcrInfo, OcrStarted};
 use crate::reading::{SessionStarted, StopReasonArg};
 use crate::state::AppState;
@@ -632,6 +633,49 @@ pub async fn ai_queue_add_note(
 ) -> Result<AiQueueInfo, AppError> {
     anki_ready(&state).await?;
     blocking(&state, move |s| s.ai_queue_add_note(note_id, &sentence)).await
+}
+
+#[tauri::command]
+pub async fn library_sync_status(state: Shared<'_>) -> Result<LibrarySyncStatus, AppError> {
+    blocking(&state, AppState::library_sync_status).await
+}
+
+/// The password only goes to the library server; the device token it returns stays in the keychain.
+#[tauri::command]
+pub async fn library_sync_login(
+    state: Shared<'_>,
+    url: String,
+    user: String,
+    password: String,
+    device: String,
+) -> Result<LibrarySyncStatus, AppError> {
+    state
+        .inner()
+        .library_sync_login(&url, &user, &password, &device)
+        .await
+}
+
+#[tauri::command]
+pub async fn library_sync_logout(state: Shared<'_>) -> Result<LibrarySyncStatus, AppError> {
+    state.inner().library_sync_logout().await
+}
+
+#[tauri::command]
+pub async fn library_sync_now(state: Shared<'_>) -> Result<LibrarySyncStatus, AppError> {
+    state.inner().library_sync_now().await
+}
+
+#[tauri::command]
+pub async fn library_sync_clear_conflicts(
+    state: Shared<'_>,
+) -> Result<LibrarySyncStatus, AppError> {
+    blocking(&state, AppState::library_sync_clear_conflicts).await
+}
+
+/// "Baixar": the server's current file of a book.
+#[tauri::command]
+pub async fn library_download(state: Shared<'_>, uid: String) -> Result<LibraryEntry, AppError> {
+    state.inner().library_download(&uid).await
 }
 
 #[tauri::command]

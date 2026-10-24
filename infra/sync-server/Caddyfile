@@ -1,0 +1,27 @@
+# Internal router of the H110 sync stack (docs/planos/fase-9a.md): plain HTTP on :80, reached only by cloudflared
+# (TLS is Cloudflare's). Routes by hostname; anything else gets 404.
+{
+	auto_https off
+	admin off
+}
+
+http://{$ANKI_HOST} {
+	request_body {
+		max_size 110MB
+	}
+	reverse_proxy ankisync:8080
+}
+
+http://{$LIBRARY_HOST} {
+	# Upload parts are 32 MB (well under Cloudflare's 100 MB per request).
+	request_body {
+		max_size 40MB
+	}
+	reverse_proxy library-sync:8090 {
+		flush_interval -1
+	}
+}
+
+:80 {
+	respond "not found" 404
+}

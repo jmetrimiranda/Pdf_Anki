@@ -533,3 +533,10 @@ describe('AI contract (Phase 8)', () => {
     for (const [name, keys] of Object.entries(out)) expect(keys, name).toEqual(expected[name]);
   });
 });
+
+describe('Library sync contract (Phase 9a)', () => {
+  it('the mock status has the keys the core sends', async () => {
+    const expected = contract as Shapes;
+    expect(keysOf(await mockClient.librarySyncStatus())).toEqual(expected['LibrarySyncStatus']);
+  });
+});

@@ -5,7 +5,7 @@ use rusqlite::Connection;
 
 use crate::{Result, StoreError};
 
-const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6];
 
 /// Schema version this build creates and understands.
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -340,6 +340,24 @@ CREATE TABLE ai_queue (
 ) STRICT;
 CREATE UNIQUE INDEX ai_queue_note ON ai_queue (note_id);
 CREATE INDEX ai_queue_order ON ai_queue (state, created_at);
+"#;
+
+/// Phase 9a (docs/planos/fase-9a.md): what this device last exchanged with the library server.
+const V6: &str = r#"
+-- The version of each synced record last exchanged with the server (what differs is outgoing); doesn't sync.
+CREATE TABLE library_sync_seen (
+    kind       TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (kind, key)
+) STRICT;
+
+-- The file of each book the server last confirmed (the base of the next upload); doesn't sync.
+CREATE TABLE library_sync_file (
+    book_uid TEXT PRIMARY KEY NOT NULL,
+    hash     TEXT NOT NULL,
+    version  INTEGER NOT NULL CHECK (version >= 1)
+) STRICT;
 "#;
 
 #[cfg(test)]

@@ -22,6 +22,7 @@ mod code;
 mod epub;
 mod error;
 mod library;
+mod library_sync;
 mod prefs;
 mod schema;
 mod sessions;
@@ -48,6 +49,7 @@ pub use library::{
     LibraryEntry, NewBook, OcrStatus, ReadingPosition, book_uid_of, book_uid_of_reader,
     is_valid_book_uid,
 };
+pub use library_sync::{SYNC_KINDS, SyncApplied, SyncRecord, SyncedFile};
 pub use prefs::{BookPrefs, BookPrefsPatch, CARD_KINDS};
 pub use schema::SCHEMA_VERSION;
 pub use sessions::{

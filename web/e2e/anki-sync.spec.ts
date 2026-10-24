@@ -19,8 +19,8 @@ async function openSettingsFromMenu(page: Page) {
 
 async function login(page: Page, url = 'http://ankisync:8080/') {
   await page.getByLabel('Endereço do servidor').fill(url);
-  await page.getByLabel('Usuário').fill('test');
-  await page.getByLabel('Senha').fill('test');
+  await page.getByLabel('Usuário', { exact: true }).fill('test');
+  await page.getByLabel('Senha', { exact: true }).fill('test');
   await page.getByRole('button', { name: 'Entrar' }).click();
 }
 
@@ -33,7 +33,7 @@ test('sync: login, status pill, offline, full sync and logout', async ({ page })
   // AnkiWeb is refused, before any request.
   await login(page, 'https://ankiweb.net/');
   await expect(page.getByText('Este app não sincroniza com o AnkiWeb. Use o seu servidor próprio.')).toBeVisible();
-  await expect(page.getByLabel('Senha')).toHaveValue('');
+  await expect(page.getByLabel('Senha', { exact: true })).toHaveValue('');
   await expect(pill).toHaveText('Sync desligado');
 
   await page.getByLabel('Endereço do servidor').fill('http://ankisync:8080/');

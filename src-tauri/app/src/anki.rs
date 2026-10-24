@@ -89,6 +89,8 @@ pub enum UiEvent {
     Job(crate::jobs::JobProgress),
     /// `ai://queue`: the background AI enrichment queue changed.
     AiQueue(crate::ai_queue::AiQueueInfo),
+    /// `library://sync`: the library sync status changed (a run started, progressed or ended).
+    LibrarySync(crate::library_sync::LibrarySyncStatus),
 }
 
 /// Receives [`UiEvent`]s: the app emits them to the main window; tests collect them.

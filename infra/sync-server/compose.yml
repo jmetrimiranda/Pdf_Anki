@@ -1,0 +1,78 @@
+# Sync stack of the Leitor de Estudos on the H110 (docs/planos/fase-9a.md, README.md here). Deploy: ./deploy.sh in
+# /opt/leitor-sync/infra/sync-server. No ports on the host: the only way in is the Cloudflare tunnel "leitor"
+# (hostnames → http://caddy). Does not touch the Painel (/opt/painel), its tunnel, LibreChat or the host cloudflared.
+name: leitor-sync
+
+# Logs rotate: at most 3 files of 10 MB per service.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    logging: *logging
+    ulimits:
+      core: 0
+    environment:
+      ANKI_HOST: ${ANKI_HOST:?defina ANKI_HOST no .env}
+      LIBRARY_HOST: ${LIBRARY_HOST:?defina LIBRARY_HOST no .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      ankisync:
+        condition: service_healthy
+      library-sync:
+        condition: service_healthy
+
+  ankisync:
+    image: leitor-ankisync:${LEITOR_SYNC_VERSION:-local}
+    build:
+      context: ankisync
+      args:
+        ANKI_VERSION: "26.9.3"
+    restart: unless-stopped
+    logging: *logging
+    ulimits:
+      core: 0
+    environment:
+      SYNC_USER1: ${ANKI_SYNC_USER:?defina ANKI_SYNC_USER no .env}:${ANKI_SYNC_PASSWORD:?defina ANKI_SYNC_PASSWORD no .env}
+    volumes:
+      - ankisync-data:/data
+
+  library-sync:
+    image: leitor-library-sync:${LEITOR_SYNC_VERSION:-local}
+    build:
+      context: ../../server/library-sync
+    restart: unless-stopped
+    logging: *logging
+    ulimits:
+      core: 0
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      LIBRARY_SYNC_USER: ${LIBRARY_SYNC_USER:?defina LIBRARY_SYNC_USER no .env}
+      LIBRARY_SYNC_PASSWORD: ${LIBRARY_SYNC_PASSWORD:?defina LIBRARY_SYNC_PASSWORD no .env}
+    volumes:
+      - library-data:/data
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.3
+    restart: unless-stopped
+    logging: *logging
+    ulimits:
+      core: 0
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?defina CLOUDFLARE_TUNNEL_TOKEN no .env}
+    depends_on:
+      - caddy
+
+volumes:
+  caddy-data:
+  ankisync-data:
+  library-data:

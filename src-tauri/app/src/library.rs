@@ -617,6 +617,22 @@ impl AppState {
                 kept_newer: false,
             });
         }
+        // The book moved to another PC's version (from the library server, not on this device yet) while this tab
+        // was open: the save must not overwrite that version (spec 16) — it goes to a conflict copy.
+        // A tab already sent to a copy keeps going there (even once the new version is downloaded here).
+        if let Some(base) = base_version.filter(|_| stale_base)
+            && (book.local_hash.as_deref() != Some(book.file_hash.as_str())
+                || self.library_has_stale_copy(uid, base))
+        {
+            let created = self.library_stale_save(book, base, Arc::unwrap_or_clone(bytes))?;
+            // The tab's base stays the old version, so its next saves are stale too and go to the same copy.
+            return Ok(SavedVersion {
+                file_hash: book.file_hash.clone(),
+                file_version: base,
+                changed: false,
+                kept_newer: created.is_some(),
+            });
+        }
         if stale_base {
             tracing::warn!(
                 book_uid = %uid,
@@ -641,6 +657,15 @@ impl AppState {
             changed: recorded.changed,
             kept_newer: stale_base,
         })
+    }
+
+    /// A new version of `book` from bytes already checked (a conflict copy's next save), under the library lock.
+    pub(crate) fn save_version_unchecked(
+        &self,
+        book: &Book,
+        bytes: Vec<u8>,
+    ) -> Result<SavedVersion, AppError> {
+        self.save_version_locked(book, Arc::new(bytes), None)
     }
 
     /// Keeps the new and the previous version files, drops older ones and old covers.
