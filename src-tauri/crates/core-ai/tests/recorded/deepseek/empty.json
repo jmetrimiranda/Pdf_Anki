@@ -1,0 +1,1 @@
+{"id":"ds-test-empty","object":"chat.completion","created":1793001600,"model":"deepseek-flash","choices":[{"index":0,"message":{"role":"assistant","content":""},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":700,"completion_tokens":1,"total_tokens":701,"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":700},"system_fingerprint":"fp_test"}

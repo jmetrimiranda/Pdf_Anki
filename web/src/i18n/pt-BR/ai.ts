@@ -46,6 +46,10 @@ export const aiMessages = {
     'Ao ativar, o app passa a enviar para {dominio} o que a tabela abaixo descreve, só quando você usa uma função de IA (ou a fila de segundo plano, se ligada). A chave vai no cabeçalho, para o próprio provedor. Nenhum identificador do aparelho, nenhuma telemetria.',
   'settings.ai.consent.limits': 'Limites atuais: US$ {dia} por dia e US$ {mes} por mês, somando todos os provedores.',
   'settings.ai.consent.policy': 'Política de dados do provedor',
+  'settings.ai.consent.noteOpenai':
+    'O app pede à OpenAI para não guardar as respostas (store: false). Pela política da OpenAI, os dados da API não são usados para treinar modelos.',
+  'settings.ai.consent.noteDeepseek':
+    'Os servidores da DeepSeek ficam na China. O preço muda com o horário: mais caro de 01h a 04h e de 06h a 10h (UTC) em dias úteis; os limites de gasto usam sempre o preço mais alto.',
   'settings.ai.consent.activate': 'Ativar',
 
   'settings.ai.sent.title': 'O que é enviado',

@@ -89,7 +89,11 @@ fn ai_is_off_by_default_and_needs_consent_per_activation() {
         (claude.id, claude.available, claude.has_key),
         (ProviderKind::Anthropic, true, false)
     );
-    assert!(!s.providers[1].available, "GPT arrives in its own commit");
+    assert!(s.providers[1].available, "GPT");
+    assert!(
+        !s.providers[2].available,
+        "Gemini arrives in its own commit"
+    );
 
     // Activating without the dialog's consent is refused; with it, the default model applies.
     let e = state
@@ -135,8 +139,8 @@ fn ai_is_off_by_default_and_needs_consent_per_activation() {
         })
         .unwrap_err();
     assert_eq!(e.code, "ai_model_unpriced");
-    let mut patch = enrich(Some(ProviderKind::Openai));
-    patch.consent = vec![ProviderKind::Openai];
+    let mut patch = enrich(Some(ProviderKind::Gemini));
+    patch.consent = vec![ProviderKind::Gemini];
     assert_eq!(
         state.ai_settings_set(patch).unwrap_err().code,
         "ai_provider_unavailable"

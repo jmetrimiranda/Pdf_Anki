@@ -392,7 +392,12 @@ async fn offline_and_test_key() {
 fn no_key_pattern_in_versioned_test_data() {
     // Recorded responses and prompts carry no real-looking key (plan 4).
     let root = env!("CARGO_MANIFEST_DIR");
-    for dir in ["tests/recorded/anthropic", "prompts"] {
+    for dir in [
+        "tests/recorded/anthropic",
+        "tests/recorded/openai",
+        "tests/recorded/deepseek",
+        "prompts",
+    ] {
         for entry in std::fs::read_dir(format!("{root}/{dir}")).unwrap() {
             let text = std::fs::read_to_string(entry.unwrap().path()).unwrap();
             for pat in ["sk-ant-", "sk-proj-", "AIza"] {

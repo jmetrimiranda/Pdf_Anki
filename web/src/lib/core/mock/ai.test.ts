@@ -50,7 +50,7 @@ describe('mock AI', () => {
     expect([s.enrich.provider, s.judge.provider, s.limitDayUsd, s.limitMonthUsd]).toEqual([null, null, 1, 5]);
     expect(await code(mockClient.aiSettingsSet({ enrich: { provider: 'anthropic' } }))).toBe('ai_consent_required');
     expect(
-      await code(mockClient.aiSettingsSet({ enrich: { provider: 'openai' }, consent: ['openai'] })),
+      await code(mockClient.aiSettingsSet({ enrich: { provider: 'gemini' }, consent: ['gemini'] })),
     ).toBe('ai_provider_unavailable');
     await claude();
     const on = await mockClient.aiSettingsGet();

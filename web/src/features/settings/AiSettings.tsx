@@ -37,12 +37,20 @@ import { errorMessage } from '../anki/decks/DeckDialogs';
 export { aiQ };
 
 /** Where each provider's calls go and its data policy (shown in the consent dialog). */
-const PROVIDER_INFO: Record<AiProvider, { domain: string; policy: string | null }> = {
+const PROVIDER_INFO: Record<AiProvider, { domain: string; policy: string | null; note?: MessageKey }> = {
   anthropic: { domain: 'api.anthropic.com', policy: 'https://www.anthropic.com/legal/privacy' },
-  // Filled in (and checked) with each adapter's commit.
-  openai: { domain: 'api.openai.com', policy: null },
+  openai: {
+    domain: 'api.openai.com',
+    policy: 'https://developers.openai.com/api/docs/guides/your-data',
+    note: 'settings.ai.consent.noteOpenai',
+  },
+  // Filled in (and checked) with its adapter's commit.
   gemini: { domain: 'generativelanguage.googleapis.com', policy: null },
-  deepseek: { domain: 'api.deepseek.com', policy: null },
+  deepseek: {
+    domain: 'api.deepseek.com',
+    policy: 'https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html',
+    note: 'settings.ai.consent.noteDeepseek',
+  },
 };
 
 const FEATURE_LABEL: Record<string, MessageKey> = {
@@ -264,6 +272,11 @@ function ConsentDialog({
     >
       <div className="flex flex-col gap-3 text-base">
         <p>{t('settings.ai.consent.body', { dominio: info.domain })}</p>
+        {info.note && (
+          <Notice tone="info">
+            <span data-testid="ai-consent-note">{t(info.note)}</span>
+          </Notice>
+        )}
         <SentTable />
         <p className="text-xs text-muted">
           {t('settings.ai.consent.limits', { dia: usd(settings.limitDayUsd), mes: usd(settings.limitMonthUsd) })}

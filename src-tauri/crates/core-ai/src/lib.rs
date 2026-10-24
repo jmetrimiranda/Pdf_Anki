@@ -10,6 +10,7 @@ pub mod engine;
 pub mod error;
 mod http;
 pub mod limits;
+pub mod openai_chat;
 pub mod prices;
 pub mod prompts;
 pub mod provider;
@@ -25,10 +26,11 @@ pub use types::{
     ApiKey, Completion, CompletionRequest, Effort, Feature, Function, ProviderKind, Stop, Usage,
 };
 
-/// The real adapter of a provider. Only Claude in this commit; the others follow, one commit each (plan 6.5).
+/// The real adapter of a provider (Gemini follows in its own commit, plan 6.5).
 pub fn provider_for(kind: ProviderKind) -> Option<Box<dyn Provider>> {
     match kind {
         ProviderKind::Anthropic => Some(Box::new(anthropic::AnthropicProvider::default())),
-        ProviderKind::Openai | ProviderKind::Gemini | ProviderKind::Deepseek => None,
+        ProviderKind::Openai => Some(Box::new(openai_chat::OpenAiChatProvider::openai())),
+        ProviderKind::Gemini | ProviderKind::Deepseek => None,
     }
 }
