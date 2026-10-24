@@ -28,7 +28,7 @@ import { ReferenceTest } from '../anki/editor/ReferenceTest';
 import { textFieldsToHtml, useReferenceGate } from '../anki/editor/referenceTest';
 import { checkError, useNoteCheck } from '../anki/editor/useNoteCheck';
 import { DeckPicker } from '../anki/shared/DeckPicker';
-import { fonteHtml, fonteLabel, fonteQuery } from './fonte';
+import { fonteHtml, fonteHtmlSection, fonteLabel, fonteQuery, fonteSectionLabel } from './fonte';
 import {
   codeText,
   commandText,
@@ -41,11 +41,17 @@ import {
   suggestKind,
 } from './text';
 
-/** The selection the form starts from (0-based PdfCraft page, rects in page view space). */
+/**
+ * The selection the form starts from: a PDF page (0-based PdfCraft page, rects in page view space) or, with
+ * `unit: 'chapter'`, an EPUB spine section with the selection's CFI and the section's TOC label (spec 7.1).
+ */
 export interface CardSelection {
   page: number;
   text: string;
   rects: Rect[];
+  unit?: 'page' | 'chapter';
+  cfi?: string | null;
+  label?: string | null;
 }
 
 type FieldRole = 'prose' | 'code' | 'cloze' | 'line' | 'example' | 'select';
@@ -257,10 +263,12 @@ export function CardForm({
     enabled: word !== null && kinds.includes('vocab'),
     staleTime: Infinity,
   });
+  const epub = selection.unit === 'chapter';
+  // An EPUB has no page words: the example is the selected passage itself (below).
   const pageWords = useQuery({
     queryKey: ['docWords', bookUid, selection.page],
     queryFn: () => core.docWords(bookUid, selection.page),
-    enabled: word !== null && kind === 'vocab',
+    enabled: word !== null && kind === 'vocab' && !epub,
     staleTime: Infinity,
   });
   const vocabTouched = useRef(new Set<string>());
@@ -287,7 +295,17 @@ export function CardForm({
   const effectiveDeck = deckTouched ? deckId : defaultDeck(kind, vocabInfo, defaults.data?.deckId ?? null);
 
   const page1 = selection.page + 1;
-  const fonte = fonteHtml(bookUid, title, page1, fonteQuery(selection.text));
+  const fonte = epub
+    ? fonteHtmlSection(
+        bookUid,
+        title,
+        page1,
+        selection.label ?? null,
+        selection.cfi ?? null,
+        fonteQuery(selection.text),
+      )
+    : fonteHtml(bookUid, title, page1, fonteQuery(selection.text));
+  const fonteText = epub ? fonteSectionLabel(title, page1, selection.label ?? null) : fonteLabel(title, page1);
   const fields = notetype ? noteFields(kind, notetype, current, fonte) : null;
   const check = useNoteCheck(notetype?.id ?? null, fields);
   const err = checkError(check);
@@ -503,8 +521,13 @@ export function CardForm({
 
       <p className="flex min-w-0 items-baseline gap-1.5 text-xs text-muted">
         <span className="shrink-0">{t('bookPanel.form.fonte')}</span>
-        <span data-testid="card-form-fonte" className="min-w-0 truncate text-fg" title={fonteLabel(title, page1)}>
-          {fonteLabel(title, page1)}
+        <span
+          data-testid="card-form-fonte"
+          data-href={/href="([^"]*)"/.exec(fonte)?.[1]?.replace(/&amp;/g, '&')}
+          className="min-w-0 truncate text-fg"
+          title={fonteText}
+        >
+          {fonteText}
         </span>
       </p>
 

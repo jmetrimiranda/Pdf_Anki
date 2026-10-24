@@ -11,7 +11,8 @@ jobs:
   build:
     # The full CI (tests included) builds the PdfCraft web build (scripts/build-pdfcraft-web.sh) and then the Linux
     # bundles (.deb, AppImage), which embed it under /pdfcraft/; scripts/build-wordnet.sh runs there before the tests
-    # and the bundle (vocabulary data, data/generated/vocab). Windows is not released (docs/decisoes.md).
+    # and the bundle (vocabulary data, data/generated/vocab), like scripts/fetch-ocr-models.sh (OCR models, also in
+    # the beforeBuildCommand). Windows is not released (docs/decisoes.md).
     uses: ./.github/workflows/ci.yml
 
   draft:

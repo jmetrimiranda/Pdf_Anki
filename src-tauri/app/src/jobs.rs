@@ -27,6 +27,8 @@ pub const JOB_EVENT_PREFIX: &str = "job://";
 #[serde(rename_all = "camelCase")]
 pub enum JobKind {
     VocabScan,
+    /// Text recognition of a scanned PDF (spec 7.2, `crate::ocr`).
+    Ocr,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -41,6 +43,10 @@ pub enum JobStage {
     Known,
     /// Comparing and building the report.
     Compare,
+    /// Recognising the text of the pages (OCR); `done`/`total` are pages.
+    Ocr,
+    /// Writing the new version of the file with the text layer (OCR).
+    Writing,
     Done,
     Failed,
     Cancelled,
@@ -58,6 +64,22 @@ pub struct JobError {
     pub message: String,
 }
 
+/// What an OCR job did (`JobProgress::ocr`), filled in when it ends.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrJobInfo {
+    /// Words added to the text layer.
+    pub words: u64,
+    /// Pages recognised.
+    pub pages_read: u32,
+    /// Pages left alone (they already had text, or could not be read).
+    pub pages_skipped: u32,
+    /// The `file_version` of the new version with the text layer.
+    pub file_version: Option<u32>,
+    /// Average time per recognised page.
+    pub ms_per_page: Option<u64>,
+}
+
 /// Payload of `job://<jobId>` and of `job_status`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,6 +87,7 @@ pub struct JobProgress {
     pub job_id: String,
     pub kind: JobKind,
     pub book_uid: String,
+    /// The vocabulary scan of a `vocabScan` job; `""` for other kinds.
     pub scan_uid: String,
     pub stage: JobStage,
     pub done: u64,
@@ -72,6 +95,9 @@ pub struct JobProgress {
     /// The book's per-page lemma table was reused (no PDF read).
     pub reused: bool,
     pub error: Option<JobError>,
+    /// OCR jobs: what was recognised and written (absent for other kinds and until the job ends).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr: Option<OcrJobInfo>,
 }
 
 /// Where progress goes (the app emits `job://<id>`; tests collect).
@@ -125,6 +151,7 @@ impl JobRegistry {
             total: 0,
             reused: false,
             error: None,
+            ocr: None,
         };
         inner.jobs.insert(
             job_id.clone(),
@@ -267,6 +294,14 @@ impl JobHandle {
         }
     }
 
+    /// Records what an OCR job did. Not an event on its own: it goes out with the next stage (the end).
+    pub fn set_ocr(&self, info: OcrJobInfo) {
+        let mut inner = lock(&self.registry.inner);
+        if let Some(e) = inner.jobs.get_mut(&self.job_id) {
+            e.progress.ocr = Some(info);
+        }
+    }
+
     pub fn done(self) {
         self.apply(|p| {
             p.stage = JobStage::Done;
@@ -345,6 +380,66 @@ mod tests {
             reg.start(JobKind::VocabScan, "b", "s4", sink),
             Started::New(_)
         ));
+    }
+
+    #[test]
+    fn ocr_jobs_have_their_own_stages_and_info() {
+        let reg = JobRegistry::default();
+        let (sink, seen) = collector();
+        let Started::New(scan) = reg.start(JobKind::VocabScan, "b", "s", Arc::clone(&sink)) else {
+            panic!("scan");
+        };
+        // Another kind for the same book is its own job.
+        let Started::New(h) = reg.start(JobKind::Ocr, "b", "", Arc::clone(&sink)) else {
+            panic!("ocr next to a scan");
+        };
+        let Started::Running(p) = reg.start(JobKind::Ocr, "b", "", Arc::clone(&sink)) else {
+            panic!("one ocr per book");
+        };
+        assert_eq!(p.job_id, h.job_id());
+        assert_eq!(
+            reg.running_for(JobKind::Ocr, "b").map(|p| p.job_id),
+            Some(h.job_id().to_owned())
+        );
+        let id = h.job_id().to_owned();
+        h.stage(JobStage::Ocr, 3);
+        for page in 1..=3 {
+            h.progress(page, 3);
+        }
+        h.stage(JobStage::Writing, 1);
+        let info = OcrJobInfo {
+            words: 120,
+            pages_read: 2,
+            pages_skipped: 1,
+            file_version: Some(2),
+            ms_per_page: Some(1500),
+        };
+        h.set_ocr(info.clone());
+        h.done();
+        let events: Vec<_> = lock(&seen)
+            .iter()
+            .filter(|e| e.job_id == id)
+            .cloned()
+            .collect();
+        let stages: Vec<_> = events.iter().map(|e| e.stage).collect();
+        assert!(stages.starts_with(&[JobStage::Ocr]), "{stages:?}");
+        assert!(stages.contains(&JobStage::Writing), "{stages:?}");
+        assert_eq!(stages.last(), Some(&JobStage::Done));
+        let last = events.last().unwrap();
+        assert_eq!(last.ocr.as_ref(), Some(&info));
+        assert_eq!(last.scan_uid, "");
+        let json = serde_json::to_value(last).unwrap();
+        assert_eq!(json["kind"], "ocr");
+        assert_eq!(json["stage"], "done");
+        assert_eq!(json["ocr"]["pagesRead"], 2);
+        assert_eq!(json["ocr"]["msPerPage"], 1500);
+        assert_eq!(json["ocr"]["fileVersion"], 2);
+        assert_eq!(serde_json::to_value(JobStage::Writing).unwrap(), "writing");
+        // Other jobs don't carry the field at all.
+        scan.stage(JobStage::Text, 1);
+        let json = serde_json::to_value(reg.status(scan.job_id()).unwrap()).unwrap();
+        assert!(json.get("ocr").is_none(), "{json}");
+        scan.done();
     }
 
     #[test]

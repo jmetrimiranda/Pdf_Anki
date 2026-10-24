@@ -55,6 +55,10 @@ pub struct AppState {
     pub(crate) sync: SyncHub,
     /// Vocabulary scanning: data pack, jobs and caches (spec 12).
     pub(crate) vocab: crate::vocab::VocabHub,
+    /// OCR of scanned PDFs: models and running jobs (spec 7.2).
+    pub(crate) ocr: crate::ocr::OcrHub,
+    /// Parsed EPUBs of the last books used (annotations, outline, marks; spec 7.1).
+    pub(crate) epubs: crate::epub::EpubCache,
 }
 
 impl AppState {
@@ -93,6 +97,8 @@ impl AppState {
             shutting_down: AtomicBool::new(false),
             sync: SyncHub::new(secrets),
             vocab: crate::vocab::VocabHub::default(),
+            ocr: crate::ocr::OcrHub::default(),
+            epubs: Default::default(),
         }
     }
 
@@ -269,6 +275,9 @@ impl AppState {
             .spawn(move || {
                 if let Err(e) = state.with_store(|s| s.schema_version()) {
                     tracing::warn!(code = %e.code, "could not open the app database: {e}");
+                } else {
+                    // OCR jobs a previous run left `running` become `failed` (spec 7.2).
+                    state.ocr_recover();
                 }
                 if let Err(e) = state.anki() {
                     tracing::warn!(code = %e.code, "could not open the Anki collection: {e}");
@@ -299,6 +308,7 @@ impl AppState {
         }
         lock(&self.store).take();
         lock(&self.docs).clear();
+        lock(&self.epubs).clear();
         for doc in self.pdf.open_documents() {
             self.pdf.close(doc);
         }

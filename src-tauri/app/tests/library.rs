@@ -126,10 +126,11 @@ fn password_pdfs_are_imported_by_name() {
 fn other_formats_are_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let state = state(tmp.path());
+    // An `.epub` that is not an EPUB is refused as such (EPUB import: tests/epub.rs).
     let epub = write(tmp.path(), "livro.epub", b"PK\x03\x04");
     let err = state.library_add(&epub, false).unwrap_err();
-    assert_eq!(err.code, "unsupported_format");
-    assert_eq!(err.message, "EPUB chega numa próxima versão.");
+    assert_eq!(err.code, "epub_invalid");
+    assert!(state.library_list().unwrap().is_empty());
     let txt = write(tmp.path(), "notas.txt", b"x");
     assert_eq!(
         state.library_add(&txt, false).unwrap_err().code,
@@ -451,7 +452,7 @@ fn everything_survives_a_restart() {
             .library_add(&write(tmp.path(), "p.pdf", &original), false)
             .unwrap();
         state.book_save_version(&uid, annotated.clone()).unwrap();
-        state.position_set(&uid, 7, 0.7).unwrap();
+        state.position_set(&uid, 7, 0.7, None).unwrap();
         // A session that is still open when the app dies.
         state.reading_session_start(&uid, 6).unwrap();
         clock.advance(45_000);

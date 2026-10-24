@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use unicode_segmentation::UnicodeSegmentation;
 
-/// The text of one unit of the book (a PDF page; an EPUB chapter later). `unit` is 0-based.
+/// The text of one unit of the book (a PDF page or an EPUB spine section). `unit` is 0-based.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PageInput<'a> {
     pub unit: u32,
@@ -211,11 +211,21 @@ pub fn noise_spans(text: &str, repeated: &HashSet<String>) -> Vec<(usize, usize)
 
 /// Cleans the units of a book (spec 12.3 B). Never panics; works for any number of pages.
 pub fn clean_pages(pages: &[PageInput]) -> Vec<CleanPage> {
+    clean_pages_with(pages, true)
+}
+
+/// [`clean_pages`], optionally keeping repeated lines (`strip_repeated = false`: EPUB sections have no running
+/// headers or footers, and a line repeated across short sections is real text).
+pub(crate) fn clean_pages_with(pages: &[PageInput], strip_repeated: bool) -> Vec<CleanPage> {
     let normalized: Vec<String> = pages
         .iter()
         .map(|p| normalize_apostrophes(p.text))
         .collect();
-    let repeated = repeated_keys(&normalized);
+    let repeated = if strip_repeated {
+        repeated_keys(&normalized)
+    } else {
+        HashSet::new()
+    };
     pages
         .iter()
         .zip(normalized)

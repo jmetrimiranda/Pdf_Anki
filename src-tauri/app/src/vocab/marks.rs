@@ -187,6 +187,9 @@ impl AppState {
             ));
         }
         let book = self.vocab_book(uid)?;
+        if book.format != core_store::BookFormat::Pdf {
+            return Err(crate::epub::not_pdf());
+        }
         let oracle = self.vocab_oracle(uid)?;
         // The header/footer lines the scan's cleanup removed (stored with the lemma table).
         let repeated: HashSet<String> = self

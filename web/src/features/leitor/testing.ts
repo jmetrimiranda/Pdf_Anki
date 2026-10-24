@@ -51,7 +51,15 @@ export function fakeCore(overrides: Partial<LeitorCore> = {}): LeitorCore & { ca
     calls,
     openInfo: vi.fn(async (uid: string) => {
       calls.push(`openInfo(${uid.slice(0, 1)})`);
-      return { name: `${uid.slice(0, 1)}.pdf`, title: `Livro ${uid.slice(0, 1)}`, page: 4, pages: 12, fileVersion: 1 };
+      return {
+        name: `${uid.slice(0, 1)}.pdf`,
+        title: `Livro ${uid.slice(0, 1)}`,
+        page: 4,
+        pages: 12,
+        fileVersion: 1,
+        format: 'pdf' as const,
+        cfi: null,
+      };
     }),
     bytes: vi.fn(async () => new Uint8Array([37, 80, 68, 70, 45]).buffer),
     saveVersion: vi.fn(rec('saveVersion', { fileVersion: 2, keptNewer: false })),
@@ -65,6 +73,7 @@ export function fakeCore(overrides: Partial<LeitorCore> = {}): LeitorCore & { ca
     sessionHeartbeat: vi.fn(rec('heartbeat')),
     sessionStop: vi.fn(rec('stop')),
     vocabMarks: vi.fn(async () => []),
+    epubMarks: vi.fn(async () => []),
     log: vi.fn(),
     ...overrides,
   };

@@ -48,7 +48,14 @@ export async function fullShot(page: Page, path: string) {
 
 /** `window.__leitorMock` (src/lib/core/mock.ts, mock mode only), as seen from the e2e specs. */
 export interface LeitorMockHandle {
-  readonly books: { bookUid: string; title: string; fileVersion: number; fileHash: string }[];
+  readonly books: {
+    bookUid: string;
+    title: string;
+    fileVersion: number;
+    fileHash: string;
+    format: 'pdf' | 'epub';
+    hasText: boolean;
+  }[];
   readonly savedVersions: { uid: string; fileVersion: number; fileHash: string; size: number; hasBookUid: boolean }[];
   readonly sessions: {
     kind: 'start' | 'heartbeat' | 'stop';
@@ -56,7 +63,7 @@ export interface LeitorMockHandle {
     page: number | null;
     reason: string | null;
   }[];
-  readonly positions: Record<string, { page: number; progress: number }>;
+  readonly positions: Record<string, { page: number; progress: number; cfi: string | null }>;
   readonly files: string[];
   readonly openedExternally: string[];
   reset(): void;
@@ -75,6 +82,18 @@ export interface LeitorMockHandle {
   /** The vocabulary scan mock (src/lib/core/mock/vocab.ts). */
   readonly vocab: MockVocabHandle;
   setVocabRoot(deckId: number | null): void;
+  /** Simulates the OS opening a `leitor://` URL while the app runs. */
+  deepLink(url: string): void;
+  /** The OCR mock (src/lib/core/mock/ocr.ts). */
+  readonly ocr: {
+    setModelsAvailable(available: boolean): void;
+    setPageDelay(ms: number | null): void;
+    failAtPage(page: number | null): void;
+  };
+  /** The EPUB annotations, tombstones included (src/lib/core/mock/epub.ts). */
+  readonly epub: {
+    readonly annotations: ({ uid: string; bookUid: string; deleted: boolean } & Record<string, unknown>)[];
+  };
 }
 
 /** `window.__leitorMock.vocab` (src/lib/core/mock/vocab.ts). */

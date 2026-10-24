@@ -79,12 +79,37 @@ function mockAnkiPages(): Plugin {
   };
 }
 
+// foliate-js, the EPUB reader (web/vendor/foliate-js, pinned and unmodified: scripts/fetch-foliate.sh,
+// docs/tecnico/foliate.md). `@foliate/<file>.js` imports the vendored subset. view.js also imports, on demand, the
+// formats we don't ship (PDF with its 13 MB pdf.js, MOBI, FB2, CBZ) and TTS: those specifiers resolve to a stub that
+// throws, so the build neither fails on the missing files nor bundles them.
+const FOLIATE_DIR = fileURLToPath(new URL('./vendor/foliate-js/', import.meta.url));
+const FOLIATE_UNSUPPORTED = new Set(['./pdf.js', './mobi.js', './fb2.js', './comic-book.js', './tts.js']);
+const FOLIATE_STUB = '\0leitor-foliate-unsupported';
+
+export function foliate(): Plugin {
+  return {
+    name: 'leitor-foliate',
+    enforce: 'pre',
+    config: () => ({ resolve: { alias: { '@foliate': FOLIATE_DIR.replace(/\/$/, '') } } }),
+    resolveId(source, importer) {
+      if (importer && importer.startsWith(FOLIATE_DIR) && FOLIATE_UNSUPPORTED.has(source)) return FOLIATE_STUB;
+      return null;
+    },
+    load(id) {
+      if (id !== FOLIATE_STUB) return null;
+      return "throw new Error('unsupported format');\nexport {};\n";
+    },
+  };
+}
+
 // Tauri expects a fixed dev port and exposes TAURI_* env vars to the frontend.
 export default defineConfig({
   // pdfcraft(): PdfCraft web at /pdfcraft/ on the same origin (spec 6.1).
   // pyodide(): the vendored Pyodide at /pyodide/ for the Python code cards' worker (spec 11.4).
   // ankiCard(): the card frame for the study screen in dev/mock; mockAnkiPages(): Anki pages of the mock core.
-  plugins: [react(), tailwindcss(), pdfcraft(), pyodide(), ankiCard(), mockAnkiPages()],
+  // foliate(): the vendored foliate-js (EPUB reader) without the formats we don't ship.
+  plugins: [react(), tailwindcss(), pdfcraft(), pyodide(), ankiCard(), mockAnkiPages(), foliate()],
   clearScreen: false,
   envPrefix: ['VITE_', 'TAURI_'],
   server: {

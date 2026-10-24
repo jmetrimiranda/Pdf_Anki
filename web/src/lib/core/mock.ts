@@ -27,6 +27,22 @@ import {
 } from './mock/bookPanel';
 import { ankiSyncMock, mockSyncHandle, resetSync, syncCollectionReplaced, type MockSyncHandle } from './mock/ankiSync';
 import { codeMock, mockSetCppAvailable, resetCodeMock } from './mock/code';
+import {
+  createEpubMock,
+  epubBytes,
+  epubOutline,
+  epubSections,
+  epubTitleOf,
+  isEpubBytes,
+  mockEpubHandle,
+  resetEpub,
+  SAMPLE_EPUB,
+  tombstoneEpubBook,
+  type EpubVariant,
+  type MockEpubHandle,
+} from './mock/epub';
+import { clearJobs } from './mock/jobs';
+import { createOcrMock, mockOcrHandle, resetOcr, type MockOcrHandle } from './mock/ocr';
 import { FARM_PAGES, farmChapterParagraphs, farmOutline } from './mock/vocabCorpus';
 import {
   createVocabMock,
@@ -66,7 +82,7 @@ export function mockDeckTree(): DeckTree {
 
 // ---------------------------------------------------------------- book contents
 
-type TextKind = 'ros' | 'farm' | 'generic' | 'scanned';
+type TextKind = 'ros' | 'farm' | 'generic' | 'scanned' | 'epub';
 
 /** How to regenerate a book's ORIGINAL bytes (the saved versions are stored as bytes). */
 interface BookSpec {
@@ -76,9 +92,18 @@ interface BookSpec {
   kind: TextKind;
   /** Makes the file (and so the book_uid) unique. */
   marker: string;
+  /** EPUB books: which mock EPUB. */
+  variant?: EpubVariant;
 }
 
-const TEXTS: Record<Exclude<TextKind, 'scanned'>, string[]> = {
+/** The text on the scanned pages (only images in the file until OCR writes it as a text layer, spec 7.2). */
+const SCANNED_TEXT = [
+  'Lecture notes on the history of printing. Before the printing press, every book was copied by hand, and a single volume could take a scribe many months.',
+  'The movable type of the fifteenth century made books cheaper and faster to produce, and reading spread from monasteries to merchants and students.',
+  'Scanned copies of old handouts keep the look of the page, but a computer sees only a picture until the text is recognized.',
+];
+
+const TEXTS: Record<Exclude<TextKind, 'epub'>, string[]> = {
   ros: [
     'A robot is rarely a single program. It is a small society of processes that talk to each other all the time: one reads the laser, another estimates where the robot is, a third decides where to go next.',
     'The basic unit is the node. A node is a process that does one job well and exposes that job through topics, services and actions.',
@@ -94,10 +119,17 @@ const TEXTS: Record<Exclude<TextKind, 'scanned'>, string[]> = {
     'Reading a little every day builds a large vocabulary over time. New words become familiar when they appear again and again.',
     'A good study routine mixes reading, reviewing and writing. Short sessions repeated often beat long sessions done rarely.',
   ],
+  scanned: SCANNED_TEXT,
 };
 
+/** What OCR finds on page `i` of a scanned book. */
+function scannedPageText(spec: BookSpec, i: number): string {
+  const body = Array.from({ length: 4 }, (_, k) => SCANNED_TEXT[(i + k) % SCANNED_TEXT.length]!);
+  return `${spec.title} - ${i + 1}\n${body.join('\n')}`;
+}
+
 function pageText(spec: BookSpec, i: number): string {
-  if (spec.kind === 'scanned') return '';
+  if (spec.kind === 'scanned' || spec.kind === 'epub') return '';
   const paras = TEXTS[spec.kind];
   // Animal Farm: the three opening paragraphs, then two of the page's chapter (mock/vocabCorpus.ts).
   const body =
@@ -108,6 +140,7 @@ function pageText(spec: BookSpec, i: number): string {
 }
 
 function originalBytes(spec: BookSpec): Uint8Array {
+  if (spec.kind === 'epub') return epubBytes(spec.variant ?? 'generic', spec.title, spec.marker);
   return makePdf({
     pages: spec.pages,
     title: spec.title,
@@ -164,7 +197,7 @@ function baseName(path: string): string {
 }
 
 function fileTitle(path: string): string {
-  return baseName(path).replace(/\.pdf$/i, '');
+  return baseName(path).replace(/\.(pdf|epub)$/i, '');
 }
 
 // ---------------------------------------------------------------- state
@@ -227,6 +260,7 @@ const DAY = 86_400_000;
 function newRec(spec: BookSpec, now: number, extra: Partial<Book> = {}): BookRec {
   const bytes = originalBytes(spec);
   const uid = mockHash(bytes);
+  const ext = spec.kind === 'epub' ? 'epub' : 'pdf';
   return {
     spec,
     removed: false,
@@ -235,9 +269,9 @@ function newRec(spec: BookSpec, now: number, extra: Partial<Book> = {}): BookRec
       title: spec.title,
       author: spec.author,
       language: 'en',
-      format: 'pdf',
-      fileName: `${spec.title}.pdf`,
-      pages: spec.pages,
+      format: spec.kind === 'epub' ? 'epub' : 'pdf',
+      fileName: `${spec.title}.${ext}`,
+      pages: spec.kind === 'epub' ? epubSections(spec.variant ?? 'generic').length : spec.pages,
       hasText: spec.kind !== 'scanned',
       ocrStatus: 'none',
       fileHash: uid,
@@ -246,7 +280,7 @@ function newRec(spec: BookSpec, now: number, extra: Partial<Book> = {}): BookRec
       collectionFolder: null,
       addedAt: now,
       updatedAt: now,
-      localPath: `${APP_DIR}/books/${uid}/v1.pdf`,
+      localPath: `${APP_DIR}/books/${uid}/v1.${ext}`,
       localHash: uid,
       downloaded: true,
       ...extra,
@@ -269,8 +303,20 @@ function seedState(): MockState {
     now - DAY,
     { collectionFolder: 'Inglês' },
   );
+  const timeMachine = newRec(
+    {
+      pages: 0,
+      title: SAMPLE_EPUB.title,
+      author: SAMPLE_EPUB.author,
+      kind: 'epub',
+      variant: 'sample',
+      marker: 'seed-epub',
+    },
+    now - DAY / 2,
+    { collectionFolder: 'Inglês' },
+  );
   return {
-    books: [ros, scanned, farm],
+    books: [ros, scanned, farm, timeMachine],
     positions: {
       [ros.book.bookUid]: { page: 4, offset: 0, cfi: null, progress: 5 / 12, updatedAt: now - 60_000 },
       [farm.book.bookUid]: { page: 1, offset: 0, cfi: null, progress: 2 / FARM_PAGES, updatedAt: now - DAY + 60_000 },
@@ -481,6 +527,24 @@ function addFromBytes(path: string, bytes: Uint8Array, replace = false): AddedBo
     rec.book.updatedAt = now;
     if (rec.book.fileHash !== hash && uid !== hash) storeVersion(rec, bytes, hash, now);
     outcome = 'restored';
+  } else if (isEpubBytes(bytes)) {
+    // An EPUB the mock didn't make from this path: kept as is (its text is the generic sample's).
+    const spec: BookSpec = {
+      pages: 0,
+      title: epubTitleOf(bytes) ?? fileTitle(path),
+      author: null,
+      kind: 'epub',
+      variant: 'generic',
+      marker: path,
+    };
+    const fresh = newRec(spec, now, { fileName: baseName(path) });
+    fresh.book.bookUid = uid;
+    fresh.book.localPath = `${APP_DIR}/books/${uid}/v1.epub`;
+    state.versions[uid] = toBase64(bytes);
+    fresh.book.fileHash = hash;
+    fresh.book.localHash = hash;
+    state.books.push(fresh);
+    outcome = 'created';
   } else {
     // An unknown file: exported copies from another device keep their stamped uid.
     const pages = countPages(bytes) || 1;
@@ -508,7 +572,7 @@ function storeVersion(rec: BookRec, bytes: Uint8Array, hash: string, now: number
   b.localHash = hash;
   b.localPath = `${APP_DIR}/books/${b.bookUid}/v${b.fileVersion}.pdf`;
   b.updatedAt = now;
-  const pages = countPages(bytes);
+  const pages = b.format === 'pdf' ? countPages(bytes) : 0;
   if (pages > 0) b.pages = pages;
   state.versions[b.bookUid] = toBase64(bytes);
   state.savedVersions.push({
@@ -522,21 +586,36 @@ function storeVersion(rec: BookRec, bytes: Uint8Array, hash: string, now: number
 }
 
 function addFromPath(path: string, replace = false): AddedBook {
-  if (!/\.pdf$/i.test(path)) {
-    throw new CoreError('unsupported_format', 'Formato não suportado. Escolha um arquivo PDF.');
+  const epub = /\.epub$/i.test(path);
+  if (!epub && !/\.pdf$/i.test(path)) {
+    throw new CoreError('unsupported_format', 'Formato não suportado: escolha um arquivo PDF ou EPUB.');
   }
   if (/corrompido/i.test(path)) {
-    throw new CoreError('pdf_invalid', 'O arquivo não é um PDF válido ou está corrompido.');
+    throw epub
+      ? new CoreError('epub_invalid', 'Este arquivo não é um EPUB válido ou está danificado.')
+      : new CoreError('pdf_invalid', 'O arquivo não é um PDF válido ou está corrompido.');
+  }
+  if (epub && /drm/i.test(path)) {
+    throw new CoreError('epub_drm', 'Este EPUB está protegido por DRM e não pode ser aberto.');
   }
   const exported = state.files[path];
   if (exported) return addFromBytes(path, fromBase64(exported), replace);
-  const spec: BookSpec = {
-    pages: 6,
-    title: fileTitle(path),
-    author: null,
-    kind: /escanead/i.test(path) ? 'scanned' : 'generic',
-    marker: path,
-  };
+  const spec: BookSpec = epub
+    ? {
+        pages: 0,
+        title: fileTitle(path),
+        author: null,
+        kind: 'epub',
+        variant: /time machine/i.test(path) ? 'sample' : 'generic',
+        marker: path,
+      }
+    : {
+        pages: 6,
+        title: fileTitle(path),
+        author: null,
+        kind: /escanead/i.test(path) ? 'scanned' : 'generic',
+        marker: path,
+      };
   const bytes = originalBytes(spec);
   const uid = mockHash(bytes);
   const rec = state.books.find((r) => r.book.bookUid === uid);
@@ -573,6 +652,9 @@ function update(uid: string, patch: BookPatch): LibraryEntry {
 function saveVersion(uid: string, buf: ArrayBuffer, baseVersion?: number): SavedVersion {
   const rec = liveRec(uid);
   const bytes = new Uint8Array(buf);
+  if (rec.book.format !== 'pdf') {
+    throw new CoreError('not_pdf', 'Este livro é um EPUB: essa ação vale só para PDF.');
+  }
   if (pdfBytesToLatin1(bytes.subarray(0, 5)) !== '%PDF-') {
     throw new CoreError('pdf_invalid', 'O PdfCraft devolveu um arquivo que não é PDF.');
   }
@@ -622,14 +704,17 @@ const baseClient = {
     later(() => {
       const rec = liveRec(uid);
       rec.removed = true;
+      tombstoneEpubBook(uid);
       persist();
     }),
   libraryUpdate: (uid, patch) => later(() => update(uid, patch)),
   bookOpen: (uid) =>
     later(() => {
       const rec = liveRec(uid);
-      const page = Math.min(state.positions[uid]?.page ?? 0, Math.max(0, rec.book.pages - 1));
-      return { book: entry(rec), page };
+      const pos = state.positions[uid];
+      const page = Math.min(pos?.page ?? 0, Math.max(0, rec.book.pages - 1));
+      const format = rec.book.format;
+      return { book: entry(rec), page, format, cfi: format === 'epub' ? (pos?.cfi ?? null) : null };
     }),
 
   bookBytes: (uid) => later(() => toArrayBuffer(currentBytes(liveRec(uid)))),
@@ -652,25 +737,34 @@ const baseClient = {
       state.openedExternally.push(uid);
       persist();
     }),
-  docWords: (uid, page) => later(() => pageWords(liveRec(uid), page)),
+  docWords: (uid, page) =>
+    later(() => {
+      const rec = liveRec(uid);
+      if (rec.book.format !== 'pdf')
+        throw new CoreError('not_pdf', 'Este livro é um EPUB: essa ação vale só para PDF.');
+      return pageWords(rec, page);
+    }),
 
   positionGet: (uid) =>
     later(() => {
       liveRec(uid);
       return structuredClone(state.positions[uid] ?? null);
     }),
-  positionSet: (uid, page, progress) =>
+  positionSet: (uid, page, progress, cfi) =>
     later(() => {
       const rec = liveRec(uid);
       const p = Math.max(0, Math.min(Math.floor(page), Math.max(0, rec.book.pages - 1)));
-      state.positions[uid] = {
+      const epubCfi = rec.book.format === 'epub' && typeof cfi === 'string' && cfi.trim() ? cfi.trim() : null;
+      const position: ReadingPosition = {
         page: p,
         offset: 0,
-        cfi: null,
+        cfi: epubCfi,
         progress: Math.max(0, Math.min(1, Number.isFinite(progress) ? progress : 0)),
         updatedAt: Date.now(),
       };
+      state.positions[uid] = position;
       persist();
+      return structuredClone(position);
     }),
   readingSessionStart: (uid, page) =>
     later(() => {
@@ -726,6 +820,7 @@ const baseClient = {
 
 /** The outline of the current version: read back from saved/imported bytes, else the one `makePdf` wrote. */
 function outlineOf(rec: BookRec): RawOutlineItem[] {
+  if (rec.spec.kind === 'epub') return epubOutline(rec.spec.variant ?? 'generic');
   const parsed = parsedCurrent(rec);
   if (parsed) return parsed.outline;
   if (rec.spec.kind === 'farm') return farmOutline();
@@ -733,13 +828,46 @@ function outlineOf(rec: BookRec): RawOutlineItem[] {
   return Array.from({ length: Math.min(rec.spec.pages, 50) }, (_, k) => ({ title: `Chapter ${k + 1}`, page: k }));
 }
 
+/** Plain text of an EPUB section (`book_text`). */
+function epubSectionText(rec: BookRec, section: number): string {
+  return epubSections(rec.spec.variant ?? 'generic')[section]?.text ?? '';
+}
+
+/**
+ * OCR's result (spec 7.2): a new version whose pages carry the recognized text (here: the scanned book's known text),
+ * the same `LeitorBookUid`, `hasText` and `ocrStatus: 'done'`. Returns the new `fileVersion`.
+ */
+function writeRecognized(rec: BookRec): number {
+  const b = rec.book;
+  const bytes = makePdf({
+    pages: b.pages,
+    title: b.title,
+    ...(b.author ? { author: b.author } : {}),
+    textPerPage: (i) => scannedPageText(rec.spec, i),
+    leitorBookUid: b.bookUid,
+  });
+  storeVersion(rec, bytes, mockHash(bytes), Date.now());
+  b.hasText = true;
+  b.ocrStatus = 'done';
+  persist();
+  return b.fileVersion;
+}
+
 const vocabSource: VocabBookSource = {
   book: (uid) => {
     const b = liveRec(uid).book;
-    return { title: b.title, author: b.author, pages: b.pages, hasText: b.hasText, fileHash: b.fileHash };
+    return {
+      title: b.title,
+      author: b.author,
+      pages: b.pages,
+      hasText: b.hasText,
+      fileHash: b.fileHash,
+      unit: b.format === 'epub' ? 'chapter' : 'page',
+    };
   },
   pageText: (uid, page) => {
     const rec = liveRec(uid);
+    if (rec.spec.kind === 'epub') return epubSectionText(rec, page);
     return layoutPageText(pageSource(rec, page))
       .map((l) => l.text)
       .join('\n');
@@ -773,6 +901,25 @@ export const mockClient: CoreClient = {
     },
   }),
   ...createVocabMock(vocabSource),
+  ...createEpubMock({
+    epub: (uid) => {
+      const rec = liveRec(uid);
+      if (rec.spec.kind !== 'epub') throw new CoreError('not_epub', 'Este livro não é um EPUB.');
+      return { variant: rec.spec.variant ?? 'generic' };
+    },
+  }),
+  ...createOcrMock({
+    book: (uid) => {
+      const b = liveRec(uid).book;
+      return { format: b.format, pages: b.pages, hasText: b.hasText, ocrStatus: b.ocrStatus };
+    },
+    setStatus: (uid, status) => {
+      const rec = liveRec(uid);
+      rec.book.ocrStatus = status;
+      persist();
+    },
+    writeRecognized: (uid) => writeRecognized(liveRec(uid)),
+  }),
 };
 
 // ---------------------------------------------------------------- e2e handle
@@ -804,6 +951,10 @@ export interface LeitorMockHandle extends MockSyncHandle {
   setVocabRoot(deckId: number | null): void;
   /** The vocabulary scan mock (data availability, scan speed, table reads). */
   readonly vocab: MockVocabHandle;
+  /** The OCR mock: models missing, page delay, failures. */
+  readonly ocr: MockOcrHandle;
+  /** The EPUB annotations (with tombstones). */
+  readonly epub: MockEpubHandle;
   /** Simulates the OS opening a `leitor://` URL while the app runs (`onDeepLink`); invalid URLs are ignored. */
   deepLink(url: string): void;
   /** URLs returned (parsed) by the next `pendingDeepLinks()` (launch by URL). */
@@ -949,6 +1100,12 @@ export const mockHandle: LeitorMockHandle = {
   get vocab() {
     return mockVocabHandle;
   },
+  get ocr() {
+    return mockOcrHandle;
+  },
+  get epub() {
+    return mockEpubHandle;
+  },
   reset() {
     state = seedState();
     persist();
@@ -958,6 +1115,9 @@ export const mockHandle: LeitorMockHandle = {
     resetBookPanel();
     resetCodeMock();
     resetVocab();
+    clearJobs();
+    resetOcr();
+    resetEpub();
   },
   setVocabRoot: (deckId) => mockSetVocabRoot(deckId),
   deepLink: (url) => mockDeepLink(url),

@@ -32,9 +32,11 @@ use crate::code::{
     CodeSettings, CodeSettingsPatch, CodeStatus, RunnerTestResult,
 };
 use crate::deep_link::DeepLink;
+use crate::epub::{EpubAnnotation, EpubAnnotationInput, EpubSectionMarks};
 use crate::error::AppError;
 use crate::jobs::JobProgress;
 use crate::library::{AddedBook, BookOpen, LibraryPatch, SavedVersion};
+use crate::ocr::{OcrInfo, OcrStarted};
 use crate::reading::{SessionStarted, StopReasonArg};
 use crate::state::AppState;
 use crate::sync::{AnkiSyncStatus, FullSyncResult, SyncNotice};
@@ -596,6 +598,8 @@ pub enum ExportKind {
     #[default]
     Pdf,
     Apkg,
+    /// An EPUB book's file ("Exportar cópia" of an EPUB).
+    Epub,
 }
 
 impl ExportKind {
@@ -603,6 +607,7 @@ impl ExportKind {
         match self {
             Self::Pdf => ("PDF", "pdf"),
             Self::Apkg => ("Pacote do Anki", "apkg"),
+            Self::Epub => ("Livro EPUB", "epub"),
         }
     }
 }
@@ -689,6 +694,7 @@ fn export_file_name(suggested: &str, kind: ExportKind) -> String {
         return match kind {
             ExportKind::Pdf => "documento.pdf".to_owned(),
             ExportKind::Apkg => "deck.apkg".to_owned(),
+            ExportKind::Epub => "livro.epub".to_owned(),
         };
     }
     if crate::open_paths::has_extension(std::path::Path::new(name), ext) {
@@ -779,8 +785,9 @@ pub async fn position_set(
     uid: String,
     page: u32,
     progress: f64,
+    cfi: Option<String>,
 ) -> Result<ReadingPosition, AppError> {
-    blocking(&state, move |s| s.position_set(&uid, page, progress)).await
+    blocking(&state, move |s| s.position_set(&uid, page, progress, cfi)).await
 }
 
 #[tauri::command]
@@ -1162,4 +1169,54 @@ pub fn job_status(state: Shared<'_>, job_id: String) -> Option<JobProgress> {
 #[tauri::command]
 pub fn job_cancel(state: Shared<'_>, job_id: String) {
     state.job_cancel(&job_id);
+}
+
+/// Whether "Reconhecer texto" is available for a book and its OCR state (spec 7.2).
+#[tauri::command]
+pub async fn ocr_info(state: Shared<'_>, uid: String) -> Result<OcrInfo, AppError> {
+    blocking(&state, move |s| s.ocr_info(&uid)).await
+}
+
+/// Starts the OCR of a scanned PDF in the background; progress on `job://<jobId>`.
+#[tauri::command]
+pub async fn ocr_start(state: Shared<'_>, uid: String) -> Result<OcrStarted, AppError> {
+    blocking_arc(&state, move |s| s.ocr_start(&uid)).await
+}
+
+/// Cancels the running OCR of a book; `false` when none was running.
+#[tauri::command]
+pub async fn ocr_cancel(state: Shared<'_>, uid: String) -> Result<bool, AppError> {
+    blocking(&state, move |s| Ok(s.ocr_cancel(&uid))).await
+}
+
+#[tauri::command]
+pub async fn epub_annotation_list(
+    state: Shared<'_>,
+    uid: String,
+) -> Result<Vec<EpubAnnotation>, AppError> {
+    blocking(&state, move |s| s.epub_annotation_list(&uid)).await
+}
+
+#[tauri::command]
+pub async fn epub_annotation_upsert(
+    state: Shared<'_>,
+    annotation: EpubAnnotationInput,
+) -> Result<EpubAnnotation, AppError> {
+    blocking(&state, move |s| s.epub_annotation_upsert(annotation)).await
+}
+
+/// `uid` is the annotation's uid.
+#[tauri::command]
+pub async fn epub_annotation_delete(state: Shared<'_>, uid: String) -> Result<(), AppError> {
+    blocking(&state, move |s| s.epub_annotation_delete(&uid)).await
+}
+
+/// The word forms to color in up to 5 sections (0-based) of an EPUB (spec 12.7).
+#[tauri::command]
+pub async fn vocab_epub_marks(
+    state: Shared<'_>,
+    uid: String,
+    sections: Vec<u32>,
+) -> Result<Vec<EpubSectionMarks>, AppError> {
+    blocking(&state, move |s| s.vocab_epub_marks(&uid, &sections)).await
 }

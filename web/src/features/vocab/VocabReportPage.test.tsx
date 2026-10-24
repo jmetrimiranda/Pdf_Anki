@@ -240,4 +240,28 @@ describe('Relatório de vocabulário', () => {
     await user.click(within(dialog).getByTestId('vocab-deck-create'));
     await screen.findByText(/cards? criados? em Vocabulário::Livros::Animal Farm::p\. 25-30\./);
   });
+
+  it('EPUB: the range by the TOC and "cap. N" for the first occurrence; a row opens the chapter', async () => {
+    const uid = (await mockClient.libraryList()).find((b) => b.format === 'epub')!.bookUid;
+    const root = (await mockClient.ankiDeckNames()).find((d) => d.name === 'Vocabulário')!.id;
+    const config = (await mockClient.vocabSettingsGet()).config;
+    const outline = await mockClient.vocabOutline(uid);
+    const third = outline.items[0]!.children[2]!;
+    const end = await followJob(
+      await mockClient.vocabScanStart(uid, root, [], { kind: 'outline', ids: [third.id] }, config),
+    );
+    expect(end.stage).toBe('done');
+    const router = await renderApp(`/vocabulario?livro=${uid}`);
+    await screen.findByTestId('vocab-range');
+    expect(screen.getByTestId('vocab-range').textContent).toBe(
+      'Trecho: Chapter III. The Time Traveller Returns (cap. 4)',
+    );
+    await waitFor(() => expect(rows().length).toBeGreaterThan(0));
+    expect(screen.getByRole('columnheader', { name: '1º cap.' })).toBeTruthy();
+    const first = rows()[0]!;
+    expect(within(first).getByText('cap. 4')).toBeTruthy();
+    fireEvent.click(within(first).getByRole('button', { name: /^Abrir “.+” no livro, cap\. 4$/ }));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/leitor'));
+    expect(router.state.location.search).toMatchObject({ livro: uid, cap: 4 });
+  });
 });

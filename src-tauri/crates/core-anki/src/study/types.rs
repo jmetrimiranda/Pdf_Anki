@@ -27,13 +27,29 @@ pub enum AvTag {
     },
 }
 
-/// "Abrir no livro": the first valid `leitor://livro/<uid>?pagina=N[&q=…]` link of the note's Fonte field.
+/// What the number of a `leitor://` link counts: a PDF page (`pagina=N`) or an EPUB chapter, i.e. a section of the
+/// book in reading order (`cap=N`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceUnit {
+    #[default]
+    Page,
+    Chapter,
+}
+
+/// "Abrir no livro": the first valid `leitor://livro/<uid>?pagina=N[&q=…]` (PDF) or
+/// `leitor://livro/<uid>?cap=N[&cfi=…][&q=…]` (EPUB) link of the note's Fonte field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceLink {
     pub book_uid: String,
-    /// 1-based, as written in the link.
+    /// 1-based, as written in the link: the PDF page or the EPUB section ([`SourceLink::unit`]).
     pub page: u32,
+    #[serde(default)]
+    pub unit: SourceUnit,
+    /// The EPUB position (`epubcfi(...)`), only when the link has a valid one.
+    #[serde(default)]
+    pub cfi: Option<String>,
     pub query: Option<String>,
     pub label: String,
 }

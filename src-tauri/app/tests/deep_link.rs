@@ -55,6 +55,8 @@ fn expected(page: u32, query: Option<&str>) -> DeepLink {
     DeepLink {
         book_uid: UID.into(),
         page,
+        unit: core_anki::study::SourceUnit::Page,
+        cfi: None,
         query: query.map(String::from),
     }
 }
@@ -104,4 +106,49 @@ fn files_and_links_never_mix() {
     let args = vec![pdf.clone(), url.clone()];
     assert_eq!(open_paths_from_args(args.clone(), dir.path()), vec![pdf]);
     assert_eq!(deep_links_from_args(args), vec![expected(5, Some("x.pdf"))]);
+}
+
+/// EPUB links (spec 7.1): `cap=N` (chapter = section in reading order) with an optional CFI position.
+#[test]
+fn epub_links_parse_and_reach_the_ui_once() {
+    use core_anki::study::SourceUnit;
+    let chapter = |n: u32, cfi: Option<&str>, q: Option<&str>| DeepLink {
+        unit: SourceUnit::Chapter,
+        cfi: cfi.map(String::from),
+        ..expected(n, q)
+    };
+    let table: Vec<(String, Option<DeepLink>)> = vec![
+        (
+            format!("leitor://livro/{UID}?cap=3"),
+            Some(chapter(3, None, None)),
+        ),
+        (
+            format!("leitor://livro/{UID}?cap=3&cfi=epubcfi(%2F6%2F8!%2F4%2F2%2F1%3A0)&q=pigs"),
+            Some(chapter(3, Some("epubcfi(/6/8!/4/2/1:0)"), Some("pigs"))),
+        ),
+        (
+            format!("LEITOR://LIVRO/{UID}?q=a+b&cap=12"),
+            Some(chapter(12, None, Some("a b"))),
+        ),
+        (
+            format!("leitor://livro/{UID}?cap=3&cfi=%3Cscript%3E"),
+            Some(chapter(3, None, None)),
+        ),
+        (
+            format!("leitor://livro/{UID}?pagina=4&cap=3"),
+            Some(expected(4, None)),
+        ),
+        (format!("leitor://livro/{UID}?cap=0"), None),
+        (format!("leitor://livro/{UID}?cfi=epubcfi(%2F6%2F4)"), None),
+    ];
+    for (url, want) in &table {
+        assert_eq!(leitor_app::parse_deep_link(url), *want, "{url}");
+    }
+    let env = Env::new();
+    let url = format!("leitor://livro/{UID}?cap=3&cfi=epubcfi(%2F6%2F8!%2F4%2F2%2F1%3A0)&q=pigs");
+    env.second_launch(&["/usr/bin/leitor-estudos", &url]);
+    assert_eq!(
+        env.links(),
+        vec![chapter(3, Some("epubcfi(/6/8!/4/2/1:0)"), Some("pigs"))]
+    );
 }

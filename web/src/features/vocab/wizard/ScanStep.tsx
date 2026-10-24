@@ -1,6 +1,6 @@
 // Step 5 "Escanear" (spec 12.1): starts the background scan and follows its `job://` progress with the stage labels;
 // "Cancelar" stops it. When it ends, the report opens.
-import { Ban, WifiOff } from 'lucide-react';
+import { Ban, ScanText, WifiOff } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Button, Notice, ProgressBar } from '../../../components/ui';
 import { t } from '../../../i18n';
@@ -19,6 +19,8 @@ export function scanPercent(p: JobProgress): number {
         lemmas: [5, 5],
         known: [5, 55],
         compare: [55, 100],
+        ocr: [0, 0],
+        writing: [0, 0],
         done: [100, 100],
         failed: [0, 0],
         cancelled: [0, 0],
@@ -29,6 +31,8 @@ export function scanPercent(p: JobProgress): number {
         lemmas: [60, 75],
         known: [75, 85],
         compare: [85, 100],
+        ocr: [0, 0],
+        writing: [0, 0],
         done: [100, 100],
         failed: [0, 0],
         cancelled: [0, 0],
@@ -37,10 +41,31 @@ export function scanPercent(p: JobProgress): number {
   return Math.round(a + (b - a) * frac);
 }
 
+/** The core's error for a book without text (spec 6.6, 7.2). */
+const NEEDS_OCR = 'vocab_needs_ocr';
+
+function errorCode(e: unknown): string | null {
+  return typeof e === 'object' && e !== null && 'code' in e && typeof e.code === 'string' ? e.code : null;
+}
+
+/** The label key of a stage (other jobs' stages never reach a scan: shown as queued). */
+function scanStageLabel(stage: JobProgress['stage']): 'queued' | 'text' | 'lemmas' | 'known' | 'compare' | 'done' {
+  switch (stage) {
+    case 'text':
+    case 'lemmas':
+    case 'known':
+    case 'compare':
+    case 'done':
+      return stage;
+    default:
+      return 'queued';
+  }
+}
+
 type ScanState =
   | { kind: 'starting' }
   | { kind: 'running'; job: VocabJob; progress: JobProgress | null }
-  | { kind: 'failed'; message: string }
+  | { kind: 'failed'; message: string; needsOcr: boolean }
   | { kind: 'cancelled' };
 
 export function ScanStep({
@@ -48,7 +73,13 @@ export function ScanStep({
   onDone,
   onBack,
   onBusy,
+  unit = 'page',
+  onNeedsOcr,
 }: {
+  /** The book looks scanned (`vocab_needs_ocr`): "Reconhecer texto" goes there. */
+  onNeedsOcr?: () => void;
+  /** `chapter` for an EPUB (progress counts chapters). */
+  unit?: 'page' | 'chapter';
   /** Starts the scan (`vocab_scan_start`). */
   start: () => Promise<VocabJob>;
   onDone: (p: JobProgress) => void;
@@ -91,12 +122,23 @@ export function ScanStep({
         callbacks.current.onBusy(false);
         if (end.stage === 'done') callbacks.current.onDone(end);
         else if (end.stage === 'cancelled') setState({ kind: 'cancelled' });
-        else setState({ kind: 'failed', message: end.error?.message ?? t('vocab.scan.failed') });
+        else
+          setState({
+            kind: 'failed',
+            message: end.error?.message ?? t('vocab.scan.failed'),
+            needsOcr: end.error?.code === NEEDS_OCR,
+          });
       })
       .catch((e: unknown) => {
         if (!live()) return;
         callbacks.current.onBusy(false);
-        setState({ kind: 'failed', message: t('vocab.scan.startFailed', { erro: errorMessage(e) }) });
+        const needsOcr = errorCode(e) === NEEDS_OCR;
+        setState({
+          kind: 'failed',
+          // The core's message says what to do (recognize the text first): shown as is.
+          message: needsOcr ? errorMessage(e) : t('vocab.scan.startFailed', { erro: errorMessage(e) }),
+          needsOcr,
+        });
       });
   }, [attempt]);
 
@@ -121,11 +163,14 @@ export function ScanStep({
         >
           <div className="flex items-baseline justify-between gap-3">
             <p className="text-base font-semibold" aria-live="polite">
-              {t(`vocab.scan.stage.${stage === 'failed' || stage === 'cancelled' ? 'queued' : stage}`)}
+              {t(`vocab.scan.stage.${scanStageLabel(stage)}`)}
             </p>
             {progress?.stage === 'text' && progress.total > 0 && (
               <span className="text-xs text-muted tabular">
-                {t('vocab.scan.pages', { feito: progress.done, total: progress.total })}
+                {t(unit === 'chapter' ? 'vocab.chapter.scanUnits' : 'vocab.scan.pages', {
+                  feito: progress.done,
+                  total: progress.total,
+                })}
               </span>
             )}
           </div>
@@ -153,9 +198,15 @@ export function ScanStep({
           <Button variant="ghost" onClick={onBack}>
             {t('vocab.back')}
           </Button>
-          <Button variant="primary" onClick={() => setAttempt((n) => n + 1)}>
-            {t('vocab.scan.retry')}
-          </Button>
+          {state.kind === 'failed' && state.needsOcr && onNeedsOcr ? (
+            <Button variant="primary" icon={ScanText} onClick={onNeedsOcr} data-testid="vocab-needs-ocr">
+              {t('ocr.action')}
+            </Button>
+          ) : (
+            <Button variant="primary" onClick={() => setAttempt((n) => n + 1)}>
+              {t('vocab.scan.retry')}
+            </Button>
+          )}
         </div>
       )}
     </div>

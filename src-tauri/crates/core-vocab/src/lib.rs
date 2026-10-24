@@ -36,18 +36,22 @@ pub use legacy::{MAX_WORD_CHARS, lemma, single_word};
 pub use lemmatize::{Lemma, lemma_with, lemmatize};
 pub use lexicon::{DataInfo, Lexicon, SourceInfo, TestLexicon};
 pub use naming::{
-    VocabDeckNames, book_tag, chapter_subdeck, chapter_tag, range_tag, slug, vocab_deck_names,
+    UnitWord, VocabDeckNames, book_tag, chapter_subdeck, chapter_tag, range_tag, slug,
+    vocab_deck_names,
 };
 pub use notes::{VocabNoteCtx, VocabNoteFields, vocab_note_fields};
 pub use oracle::{MarkKind, MarkStatus, StatusOracle};
 pub use pos::{Pos, pos_label_pt};
 pub use ranges::{
     Chapter, MAX_RANGE_ITEMS, OutlineAnchor, OutlineNode, OutlineRangeItem, RangeKind, RangeSpec,
-    ResolvedRange, chapters, outline_anchors, outline_ranges, parse_pages, rematch_outline_items,
-    resolve_range,
+    ResolvedRange, chapters, chapters_in, outline_anchors, outline_ranges, parse_pages,
+    parse_pages_in, rematch_outline_items, resolve_range, resolve_range_in,
 };
 pub use sample::{SampleRow, sample_tokens, to_csv};
-pub use table::{BookLemma, BookLemmaPage, BookTable, FormCount, build_book_table};
+pub use table::{
+    BookLemma, BookLemmaPage, BookTable, FormCount, TableOptions, build_book_table,
+    build_book_table_with,
+};
 pub use text::{CleanPage, PageInput, clean_pages, noise_spans, repeated_lines};
 
 /// Version of the table algorithm (tokens, lemmas, proper nouns, examples). Bumping it invalidates every cached

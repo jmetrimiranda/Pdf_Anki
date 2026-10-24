@@ -348,7 +348,7 @@ function Gallery({ theme }: { theme: AppTheme }) {
             <EmptyState
               icon={BookOpen}
               title={t('library.empty')}
-              description={t('library.emptyHint')}
+              description={t('ocr.library.emptyHint')}
               action={
                 <Button variant="primary" icon={FolderOpen}>
                   {t('library.add')}

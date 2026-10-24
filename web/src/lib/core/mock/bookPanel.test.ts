@@ -169,6 +169,9 @@ describe('deep links', () => {
     const stop = mockClient.onDeepLink((l) => got.push(l));
     mockHandle.deepLink(`leitor://livro/${uid}?pagina=3&q=the%20windmill`);
     mockHandle.deepLink(`LEITOR://Livro/${uid}?pagina=4`);
+    // EPUB (spec 7.1): a chapter with its CFI; a malformed CFI is dropped, the link still opens the chapter.
+    mockHandle.deepLink(`leitor://livro/${uid}?cap=3&cfi=${encodeURIComponent('epubcfi(/6/8!/4/2/1:0)')}&q=Filby`);
+    mockHandle.deepLink(`leitor://livro/${uid}?cap=2&cfi=nonsense`);
     for (const bad of [
       `leitor://livro/${uid.toUpperCase()}?pagina=1`,
       `leitor://livro/${uid}?pagina=0`,
@@ -180,14 +183,18 @@ describe('deep links', () => {
       mockHandle.deepLink(bad);
     stop();
     expect(got).toEqual([
-      { bookUid: uid, page: 3, query: 'the windmill' },
-      { bookUid: uid, page: 4, query: null },
+      { bookUid: uid, page: 3, unit: 'page', cfi: null, query: 'the windmill' },
+      { bookUid: uid, page: 4, unit: 'page', cfi: null, query: null },
+      { bookUid: uid, page: 3, unit: 'chapter', cfi: 'epubcfi(/6/8!/4/2/1:0)', query: 'Filby' },
+      { bookUid: uid, page: 2, unit: 'chapter', cfi: null, query: null },
     ]);
   });
 
   it('hands the launch links over once', async () => {
     mockHandle.setPendingDeepLinks([`leitor://livro/${uid}?pagina=2`, 'leitor://nada']);
-    expect(await mockClient.pendingDeepLinks()).toEqual([{ bookUid: uid, page: 2, query: null }]);
+    expect(await mockClient.pendingDeepLinks()).toEqual([
+      { bookUid: uid, page: 2, unit: 'page', cfi: null, query: null },
+    ]);
     expect(await mockClient.pendingDeepLinks()).toEqual([]);
   });
 });

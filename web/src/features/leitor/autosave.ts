@@ -11,7 +11,7 @@ export const realTimers: Timers = {
   clearTimeout: (h) => globalThis.clearTimeout(h as ReturnType<typeof setTimeout>),
 };
 
-export type FlushReason = 'quiet' | 'doc' | 'tab' | 'close' | 'manual';
+export type FlushReason = 'quiet' | 'doc' | 'tab' | 'close' | 'manual' | 'ocr';
 
 export interface AutosaveDeps {
   /** Posts `pdfcraft:request-save {id}`; false when the iframe is gone. */

@@ -386,6 +386,8 @@ async fn fonte_link_becomes_open_in_book() -> anyhow::Result<()> {
         Some(SourceLink {
             book_uid: BOOK_UID.into(),
             page: 37,
+            unit: core_anki::study::SourceUnit::Page,
+            cfi: None,
             query: Some("windmill".into()),
             label: "Animal Farm, p. 37".into(),
         })

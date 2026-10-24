@@ -18,7 +18,7 @@ import {
 } from './CardForm';
 import { runCodeCheck } from '../code-review/run';
 import { outcome } from '../anki/editor/codeTesting';
-import { fonteHtml } from './fonte';
+import { fonteHtml, fonteHtmlSection } from './fonte';
 
 vi.mock(
   '../../components/code/CodeEditor',
@@ -197,6 +197,31 @@ describe('CardForm', () => {
     expect(onClose).toHaveBeenCalled();
     await waitFor(() =>
       expect(setLogs().at(-1)).toMatchObject({ uid, patch: { lastDeckId: deck, lastKind: 'basic' } }),
+    );
+  });
+
+  it('EPUB: the Fonte links to the chapter, its CFI and the passage', async () => {
+    const user = userEvent.setup();
+    const cfi = 'epubcfi(/6/8!/4/2,/1:0,/1:18)';
+    const { uid, form } = await renderForm({
+      page: 3,
+      text: 'the Time Traveller',
+      rects: [],
+      unit: 'chapter',
+      cfi,
+      label: 'Chapter III. The Time Traveller Returns',
+    });
+    const fonteEl = screen.getByTestId('card-form-fonte');
+    expect(fonteEl.textContent).toBe('Animal Farm, Chapter III. The Time Traveller Returns');
+    expect(fonteEl.dataset.href).toBe(
+      `leitor://livro/${uid}?cap=4&cfi=${encodeURIComponent(cfi)}&q=the%20Time%20Traveller`,
+    );
+    const back = within(form).getByRole('textbox', { name: 'Verso' });
+    await user.type(back, 'o viajante');
+    fireEvent.keyDown(back, { key: 'Enter', ctrlKey: true });
+    await screen.findByText('Card adicionado');
+    expect((addLogs().at(-1)!.fields as string[])[2]).toBe(
+      fonteHtmlSection(uid, 'Animal Farm', 4, 'Chapter III. The Time Traveller Returns', cfi, 'the Time Traveller'),
     );
   });
 

@@ -210,8 +210,8 @@ impl AppState {
         self.book_panel_info_with(uid, None).await
     }
 
-    /// Same as [`book_panel_info`](Self::book_panel_info) with the 0-based page shown, which picks the chapter
-    /// subdeck. Reads the outline of the book (blocks the first time the document opens).
+    /// Same as [`book_panel_info`](Self::book_panel_info) with the 0-based page shown (the section, for an EPUB:
+    /// the chapter is the top-level table-of-contents item covering it), which picks the chapter subdeck. Reads the outline of the book (blocks the first time the document opens).
     pub async fn book_panel_info_at(
         &self,
         uid: &str,
@@ -234,7 +234,7 @@ impl AppState {
         }
         let book = self.vocab_book(uid).ok()?;
         let (count, outline) = self.vocab_outline_nodes(&book).ok()?;
-        core_vocab::chapters(&outline, count)
+        core_vocab::chapters_in(&outline, count, crate::vocab::unit_word(&book))
             .into_iter()
             .find(|c| (c.start_page..=c.end_page).contains(&page))
             .map(|c| c.index)

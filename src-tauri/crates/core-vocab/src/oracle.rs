@@ -74,13 +74,30 @@ impl StatusOracle {
     /// underlined (known, function word, proper noun, ignored, a form of a known word, a derivative counted as known,
     /// not a word), otherwise its lemma and color.
     pub fn classify_words(&self, words: &[(&str, bool)]) -> Vec<Option<MarkKind>> {
+        self.classify_detailed(words)
+            .into_iter()
+            .map(|hit| {
+                hit.map(|(lemma, status)| MarkKind {
+                    lemma,
+                    status: match status {
+                        Status::Learning | Status::New => MarkStatus::Learning,
+                        _ => MarkStatus::Unknown,
+                    },
+                })
+            })
+            .collect()
+    }
+
+    /// Like [`classify_words`](Self::classify_words) with the report status behind the color: `Unknown` or
+    /// `Suspended` (coral), `Learning` or `New` (amber). Used by the EPUB reader, which colors the forms of a section.
+    pub fn classify_detailed(&self, words: &[(&str, bool)]) -> Vec<Option<(String, Status)>> {
         let classifier = Classifier {
             known: &self.known,
             overrides: &self.overrides,
             config: &self.config,
             lex: &self.lex,
         };
-        let mut cache: HashMap<String, Option<MarkKind>> = HashMap::new();
+        let mut cache: HashMap<String, Option<(String, Status)>> = HashMap::new();
         words
             .iter()
             .map(|(word, initial)| {
@@ -100,17 +117,13 @@ impl StatusOracle {
                 let a = analyze(&lower, &self.lex);
                 let alts: Vec<&str> = a.alts.iter().map(String::as_str).collect();
                 let c = classifier.classify(&a.key, &[lower.as_str()], &alts, false);
-                let status = match (c.group, c.status) {
-                    (RowGroup::Main, Status::Unknown | Status::Suspended) => {
-                        Some(MarkStatus::Unknown)
-                    }
-                    (RowGroup::Main, Status::Learning | Status::New) => Some(MarkStatus::Learning),
+                let out = match (c.group, c.status) {
+                    (
+                        RowGroup::Main,
+                        s @ (Status::Unknown | Status::Suspended | Status::Learning | Status::New),
+                    ) => Some((a.key.clone(), s)),
                     _ => None,
                 };
-                let out = status.map(|status| MarkKind {
-                    lemma: a.key.clone(),
-                    status,
-                });
                 cache.insert(lower, out.clone());
                 out
             })

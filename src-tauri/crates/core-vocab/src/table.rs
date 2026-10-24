@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
 
 use crate::lemmatize::lemmatize;
-use crate::text::{Sentence, Token, clean_pages, is_capitalized, tokenize, utf16_len};
+use crate::text::{Sentence, Token, clean_pages_with, is_capitalized, tokenize, utf16_len};
 use crate::{Lexicon, PageInput, Pos, VocabError};
 
 /// A form of a lemma in the book (lowercase) with its count and the other lemmas it could belong to.
@@ -71,6 +71,21 @@ pub struct BookTable {
     /// The repeated header/footer lines the cleanup removed ([`crate::repeated_lines`]): the highlight skips them.
     #[serde(default)]
     pub repeated_lines: Vec<String>,
+}
+
+/// How [`build_book_table_with`] reads the units of a book.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TableOptions {
+    /// Drop lines repeated on most units (running headers/footers of PDF pages). Off for EPUB sections.
+    pub strip_repeated: bool,
+}
+
+impl Default for TableOptions {
+    fn default() -> Self {
+        TableOptions {
+            strip_repeated: true,
+        }
+    }
 }
 
 /// A lowercase share below this makes a capitalized word a proper noun (spec 12.3 E).
@@ -183,11 +198,12 @@ pub(crate) fn looks_proper(word: &str, initial: bool, lex: &Lexicon) -> bool {
 pub(crate) fn scan_book(
     pages: &[PageInput],
     lex: &Lexicon,
+    options: TableOptions,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(u32, u32),
 ) -> Result<ScannedBook, VocabError> {
     let total = pages.len() as u32;
-    let clean = clean_pages(pages);
+    let clean = clean_pages_with(pages, options.strip_repeated);
     let mut out = Vec::with_capacity(clean.len());
     let mut stats: HashMap<String, CaseStats> = HashMap::new();
     for (i, page) in clean.into_iter().enumerate() {
@@ -307,8 +323,19 @@ pub fn build_book_table(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(u32, u32),
 ) -> Result<BookTable, VocabError> {
+    build_book_table_with(pages, lex, TableOptions::default(), cancel, progress)
+}
+
+/// [`build_book_table`] with explicit [`TableOptions`] (EPUB: no repeated-line removal).
+pub fn build_book_table_with(
+    pages: &[PageInput],
+    lex: &Lexicon,
+    options: TableOptions,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(u32, u32),
+) -> Result<BookTable, VocabError> {
     let total = pages.len() as u32;
-    let book = scan_book(pages, lex, cancel, progress)?;
+    let book = scan_book(pages, lex, options, cancel, progress)?;
     let page_count = pages
         .iter()
         .map(|p| p.unit.saturating_add(1))
@@ -500,7 +527,11 @@ pub fn build_book_table(
         page_count,
         lemmas,
         pages: rows,
-        repeated_lines: crate::text::repeated_lines(pages),
+        repeated_lines: if options.strip_repeated {
+            crate::text::repeated_lines(pages)
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -613,5 +644,38 @@ mod tests {
             build_book_table(&[], &lex, &AtomicBool::new(false), &mut |_, _| {}).expect("empty");
         assert_eq!(t.page_count, 0);
         assert!(t.lemmas.is_empty());
+    }
+
+    #[test]
+    fn repeated_lines_are_kept_without_stripping() {
+        let lex = Lexicon::from_parts(TestLexicon::sample());
+        let texts: Vec<String> = (0..6)
+            .map(|i| format!("the old windmill\nThe pigs met on day {i}."))
+            .collect();
+        let pages: Vec<PageInput> = texts
+            .iter()
+            .enumerate()
+            .map(|(i, t)| PageInput {
+                unit: i as u32,
+                text: t,
+            })
+            .collect();
+        let stripped =
+            build_book_table(&pages, &lex, &AtomicBool::new(false), &mut |_, _| {}).expect("pdf");
+        assert!(!stripped.repeated_lines.is_empty());
+        assert!(stripped.lemmas.iter().all(|l| l.lemma != "windmill"));
+        let kept = build_book_table_with(
+            &pages,
+            &lex,
+            TableOptions {
+                strip_repeated: false,
+            },
+            &AtomicBool::new(false),
+            &mut |_, _| {},
+        )
+        .expect("epub");
+        assert!(kept.repeated_lines.is_empty());
+        let windmill = lemma(&kept, "windmill");
+        assert_eq!(windmill.units, vec![0, 1, 2, 3, 4, 5]);
     }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseLeitorLink } from '../anki/study/links';
-import { escapeHtml, fonteHtml, fonteQuery } from './fonte';
+import { escapeHtml, fonteHtml, fonteHtmlSection, fonteQuery, sectionLabel } from './fonte';
 
 const UID = 'a'.repeat(64);
 
@@ -36,10 +36,55 @@ describe('fonteHtml', () => {
     expect(parseLeitorLink(href, 'Animal Farm, p. 12')).toEqual({
       bookUid: UID,
       page: 12,
+      unit: 'page',
+      cfi: null,
       query: '“Four legs good, two legs bad!” & more',
       label: 'Animal Farm, p. 12',
     });
     expect(parseLeitorLink(/href="([^"]+)"/.exec(fonteHtml(UID, 'X', 3, ''))![1]!)?.query).toBeNull();
+  });
+});
+
+describe('fonteHtmlSection (EPUB, spec 7.1)', () => {
+  it('matches the core literals (core-anki study::source::tests::source_html_section_literal)', () => {
+    expect(fonteHtmlSection(UID, 'Animal Farm', 3, 'Chapter III', 'epubcfi(/6/8!/4/2/1:0)', 'the windmill')).toBe(
+      `<a href="leitor://livro/${UID}?cap=3&amp;cfi=epubcfi(%2F6%2F8!%2F4%2F2%2F1%3A0)&amp;q=the%20windmill">Animal Farm, Chapter III</a>`,
+    );
+    expect(fonteHtmlSection(UID, 'Animal Farm', 1, '', null, '')).toBe(
+      `<a href="leitor://livro/${UID}?cap=1">Animal Farm, cap. 1</a>`,
+    );
+    expect(fonteHtmlSection(UID, 'Animal Farm', 2, '  \n ', '', 'pigs')).toBe(
+      `<a href="leitor://livro/${UID}?cap=2&amp;q=pigs">Animal Farm, cap. 2</a>`,
+    );
+    expect(
+      fonteHtmlSection(
+        UID,
+        'Tom & "Jerry"',
+        12,
+        'Part One: The Rebellion & the Windmill of Animal Farm, in which everything changes',
+        'epubcfi(/6/4!/4/2,/1:0,/1:12)',
+        '',
+      ),
+    ).toBe(
+      `<a href="leitor://livro/${UID}?cap=12&amp;cfi=epubcfi(%2F6%2F4!%2F4%2F2%2C%2F1%3A0%2C%2F1%3A12)">Tom &amp; &quot;Jerry&quot;, Part One: The Rebellion &amp; the Windmill of Animal Farm, in</a>`,
+    );
+    expect(sectionLabel('<b>Intro</b>', 4)).toBe('<b>Intro</b>');
+    expect(sectionLabel('', 4)).toBe('cap. 4');
+    expect(sectionLabel(null, 4)).toBe('cap. 4');
+    expect(sectionLabel('x'.repeat(70), 4)).toBe('x'.repeat(60));
+  });
+
+  it('round-trips through the study screen link parser (core-anki chapter_links_parse)', () => {
+    const html = fonteHtmlSection(UID, 'Animal Farm', 3, 'Chapter III', 'epubcfi(/6/8!/4/2/1:0)', 'the windmill');
+    const href = /href="([^"]+)"/.exec(html)![1]!;
+    expect(parseLeitorLink(href, 'Animal Farm, Chapter III')).toEqual({
+      bookUid: UID,
+      page: 3,
+      unit: 'chapter',
+      cfi: 'epubcfi(/6/8!/4/2/1:0)',
+      query: 'the windmill',
+      label: 'Animal Farm, Chapter III',
+    });
   });
 });
 

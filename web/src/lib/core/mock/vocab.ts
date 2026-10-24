@@ -7,7 +7,7 @@ import {
   type BookDeckInfo,
   type BookPanelVocab,
   type CoreClient,
-  type JobProgress,
+  type EpubSectionMarks,
   type PageWords,
   type VocabConfig,
   type VocabDataInfo,
@@ -32,7 +32,6 @@ import {
   deckById,
   deckCounts,
   later,
-  listenTo,
   logAnki,
   mockLatency,
   newId,
@@ -42,6 +41,7 @@ import {
   type MockNotetype,
 } from './ankiData';
 import { createDeck } from './ankiDecks';
+import { addJob, clearJobs, createJobsMock, emitJob, runningJob, type JobMockKeys, type MockJob } from './jobs';
 import { parseSourceLink } from './ankiStudy';
 import { mockSetVocabRoot, mockVocabRootId, setVocabBridge } from './bookPanel';
 import {
@@ -67,6 +67,7 @@ import {
   type BookTable,
   type DeckStatus,
   type KnownIndex,
+  type RangeUnit,
   type RawOutlineItem,
 } from './vocabEngine';
 
@@ -80,6 +81,8 @@ export interface VocabBookSource {
     hasText: boolean;
     /** Text version: changes when the file changes. */
     fileHash: string;
+    /** `chapter` for an EPUB: its units are spine sections (`pages` counts them, `pageText` is a section's text). */
+    unit: RangeUnit;
   };
   /** Raw text of a page (its lines, `\n`-separated). */
   pageText(uid: string, page: number): string;
@@ -169,12 +172,15 @@ const err = {
       'vocab_data_missing',
       'Os dados de vocabulário não estão instalados. Reinstale o app ou rode scripts/build-wordnet.sh.',
     ),
-  noText: () =>
+  needsOcr: () =>
     new CoreError(
-      'vocab_no_text',
-      'Este livro não tem texto para escanear: parece escaneado. O reconhecimento de texto (OCR) chega numa próxima versão.',
+      'vocab_needs_ocr',
+      'Este livro parece escaneado: reconheça o texto (OCR) antes de escanear o vocabulário.',
     ),
+  notPdf: () => new CoreError('not_pdf', 'Este livro é um EPUB: essa ação vale só para PDF.'),
+  notEpub: () => new CoreError('not_epub', 'Este livro não é um EPUB.'),
   noScan: () => new CoreError('vocab_no_scan', 'Este livro ainda não foi escaneado.'),
+  notScanned: () => new CoreError('vocab_not_scanned', 'Escaneie o vocabulário deste livro primeiro.'),
   stale: () =>
     new CoreError('vocab_scan_stale', 'O relatório mudou. Abra o relatório de novo e gere o deck outra vez.'),
   prepare: () =>
@@ -439,11 +445,11 @@ function computeReport(
   const raw = deps.outline(uid);
   let range;
   try {
-    range = resolveRange(rangeSpec, raw, book.pages);
+    range = resolveRange(rangeSpec, raw, book.pages, book.unit);
   } catch (e) {
     rangeError(e);
   }
-  const chapters = bookChapters(raw, book.pages);
+  const chapters = bookChapters(raw, book.pages, book.unit);
   const result = compare({
     table,
     range,
@@ -480,22 +486,9 @@ function computeReport(
 
 // ---------------------------------------------------------------- jobs (spec 15: `job://<id>`)
 
-interface Job {
-  progress: JobProgress;
-  cancelled: boolean;
-  /** What the scan was started with (folder, subdecks left out, range, criterion), to tell another request apart. */
-  params: string;
-}
-
-const jobs = new Map<string, Job>();
-const jobListeners = new Map<string, Set<(p: JobProgress) => void>>();
 let jobDelayMs: number | null = null;
 
-function emit(job: Job, patch: Partial<JobProgress>): void {
-  job.progress = { ...job.progress, ...patch };
-  const p = structuredClone(job.progress);
-  for (const cb of [...(jobListeners.get(p.jobId) ?? [])]) cb(p);
-}
+const emit = emitJob;
 
 function tick(): Promise<void> {
   const ms = jobDelayMs ?? Math.round(mockLatency() / 2);
@@ -512,7 +505,7 @@ function uuid(): string {
 
 async function runScan(
   deps: VocabBookSource,
-  job: Job,
+  job: MockJob,
   uid: string,
   rootDeckId: number,
   excluded: number[],
@@ -577,15 +570,13 @@ function startScan(
   liveRoot(rootDeckId);
   const cfg = checkConfig(config);
   try {
-    resolveRange(range, deps.outline(uid), book.pages);
+    resolveRange(range, deps.outline(uid), book.pages, book.unit);
   } catch (e) {
     rangeError(e);
   }
-  if (!book.hasText) throw err.noText();
+  if (!book.hasText) throw err.needsOcr();
   const params = JSON.stringify([rootDeckId, [...excluded].sort((a, b) => a - b), range, cfg]);
-  const running = [...jobs.values()].find(
-    (j) => j.progress.bookUid === uid && !j.cancelled && !['done', 'failed', 'cancelled'].includes(j.progress.stage),
-  );
+  const running = runningJob('vocabScan', uid);
   // The same scan already running is returned; a different one (another range, folder or criterion) replaces it.
   if (running && running.params === params) {
     return { jobId: running.progress.jobId, scanUid: running.progress.scanUid };
@@ -597,7 +588,7 @@ function startScan(
   state.config = cfg;
   const jobId = `vocab-${state.nextJob++}`;
   persist();
-  const job: Job = {
+  const job: MockJob = {
     progress: {
       jobId,
       kind: 'vocabScan',
@@ -612,7 +603,7 @@ function startScan(
     cancelled: false,
     params,
   };
-  jobs.set(jobId, job);
+  addJob(job);
   void runScan(deps, job, uid, rootDeckId, [...excluded], range, cfg);
   return { jobId, scanUid: job.progress.scanUid };
 }
@@ -630,6 +621,13 @@ function fonteHtml(uid: string, title: string, page1: number, query: string): st
   const s = query.replace(/\s+/g, ' ').trim().slice(0, 80);
   const q = s ? `&amp;q=${encodeURIComponent(s)}` : '';
   return `<a href="leitor://livro/${uid}?pagina=${page1}${q}">${escapeHtml(title)}, p. ${page1}</a>`;
+}
+
+/** Like `core_anki::study::source::source_html_section` (EPUB, no CFI): `?cap=N&q=…`, label `cap. N`. */
+function fonteHtmlSection(uid: string, title: string, section1: number, query: string): string {
+  const s = query.replace(/\s+/g, ' ').trim().slice(0, 80);
+  const q = s ? `&amp;q=${encodeURIComponent(s)}` : '';
+  return `<a href="leitor://livro/${uid}?cap=${section1}${q}">${escapeHtml(title)}, cap. ${section1}</a>`;
 }
 
 /** The example with the form in bold. */
@@ -685,7 +683,14 @@ function addVocabNote(
   return id;
 }
 
-function noteValues(uid: string, title: string, row: VocabRow, card2: boolean): Record<string, string> {
+function noteValues(
+  uid: string,
+  title: string,
+  row: VocabRow,
+  card2: boolean,
+  unit: RangeUnit = 'page',
+): Record<string, string> {
+  const at = (row.examplePage ?? row.firstPage) + 1;
   return {
     Palavra: row.group === 'proper' ? row.form : row.lemma,
     Lema: row.lemma.toLowerCase(),
@@ -693,7 +698,7 @@ function noteValues(uid: string, title: string, row: VocabRow, card2: boolean): 
     Definição: escapeHtml(definitionOf(row.lemma.toLowerCase()) ?? ''),
     Tradução: '',
     Exemplo: exampleHtml(row),
-    Fonte: fonteHtml(uid, title, (row.examplePage ?? row.firstPage) + 1, row.form),
+    Fonte: unit === 'chapter' ? fonteHtmlSection(uid, title, at, row.form) : fonteHtml(uid, title, at, row.form),
     Frequência: String(row.occurrences),
     Família: row.family?.lemma ?? '',
     'Card 2': card2 ? '1' : '',
@@ -743,7 +748,7 @@ function generate(
     const tags = [naming.bookTag];
     if (naming.rangeTag) tags.push(naming.rangeTag);
     if (r.chapter !== null) tags.push(chapterTag(r.chapter));
-    noteIds.push(addVocabNote(nt, deckId, noteValues(uid, book.title, r, options.card2), tags, due++));
+    noteIds.push(addVocabNote(nt, deckId, noteValues(uid, book.title, r, options.card2, book.unit), tags, due++));
   }
   if (!decks.size) decks.add(mainName);
   persistAnki();
@@ -776,8 +781,49 @@ function liveStatus(scan: StoredScan, lemma: string): VocabStatus | null {
   return scan.report.rows.find((r) => r.lemma === lemma)?.status ?? null;
 }
 
+/** Coral (unknown, suspended) and amber (learning, new), like `MARK_*_COLOR` in the core. */
+const MARK_UNKNOWN_COLOR = '#d85a30';
+const MARK_LEARNING_COLOR = '#ba7517';
+
+/** EPUB sections at most per `vocab_epub_marks` call (`MAX_EPUB_MARK_SECTIONS`). */
+const MAX_MARK_UNITS = 5;
+
+/**
+ * `vocab_epub_marks`: for each section, the word forms the reader colors (lowercase, unique, sorted): forms whose
+ * lemma is unknown/suspended (coral) or learning/new (amber); proper nouns, ignored and known words get no color.
+ */
+function epubMarks(deps: VocabBookSource, uid: string, sections: number[]): EpubSectionMarks[] {
+  if (sections.length > MAX_MARK_UNITS) throw err.invalid(`Peça no máximo ${MAX_MARK_UNITS} capítulos de cada vez.`);
+  const book = deps.book(uid);
+  if (book.unit !== 'chapter') throw err.notEpub();
+  const scan = state.scans[uid];
+  if (!scan) throw err.notScanned();
+  const out: EpubSectionMarks[] = [];
+  for (const section of sections) {
+    const words: EpubSectionMarks['words'] = [];
+    if (Number.isInteger(section) && section >= 0 && section < book.pages) {
+      const seen = new Set<string>();
+      for (const w of wordsOf(deps.pageText(uid, section))) {
+        const form = w.form.toLowerCase().replace(/[’‘]/g, "'");
+        if (seen.has(form)) continue;
+        seen.add(form);
+        const lemma = scan.formToLemma[form];
+        if (!lemma) continue;
+        const status = liveStatus(scan, lemma);
+        if (status !== 'unknown' && status !== 'suspended' && status !== 'learning' && status !== 'new') continue;
+        const color = status === 'learning' || status === 'new' ? MARK_LEARNING_COLOR : MARK_UNKNOWN_COLOR;
+        words.push({ form, lemma, status, color });
+      }
+    }
+    words.sort((a, b) => (a.form < b.form ? -1 : a.form > b.form ? 1 : 0));
+    out.push({ section, words });
+  }
+  return out;
+}
+
 function marks(deps: VocabBookSource, uid: string, pages: number[]): VocabPageMarks[] {
   const book = deps.book(uid);
+  if (book.unit !== 'page') throw err.notPdf();
   const scan = state.scans[uid];
   const out: VocabPageMarks[] = [];
   for (const page of [...new Set(pages)].sort((a, b) => a - b)) {
@@ -835,7 +881,7 @@ function addWord(deps: VocabBookSource, uid: string, lemma: string, page: number
     chapter: null,
     position: 0,
   };
-  const values = noteValues(uid, book.title, { ...row, form: form || row.form, examplePage: page }, false);
+  const values = noteValues(uid, book.title, { ...row, form: form || row.form, examplePage: page }, false, book.unit);
   const tags = [scan?.report.deck.bookTag ?? `livro::${slugify(book.title) || 'livro'}`];
   const noteId = addVocabNote(nt, deckId, values, tags, nextNewPosition());
   persistAnki();
@@ -896,9 +942,8 @@ export type VocabMockKeys =
   | 'vocabMarks'
   | 'vocabAddWord'
   | 'vocabDataInfo'
-  | 'jobStatus'
-  | 'jobCancel'
-  | 'onJobProgress';
+  | 'vocabEpubMarks'
+  | JobMockKeys;
 
 export function createVocabMock(deps: VocabBookSource): Pick<CoreClient, VocabMockKeys> {
   setVocabBridge({
@@ -934,7 +979,7 @@ export function createVocabMock(deps: VocabBookSource): Pick<CoreClient, VocabMo
       later(() => {
         const book = deps.book(uid);
         try {
-          return resolveRange(range, deps.outline(uid), book.pages);
+          return resolveRange(range, deps.outline(uid), book.pages, book.unit);
         } catch (e) {
           return rangeError(e);
         }
@@ -969,40 +1014,14 @@ export function createVocabMock(deps: VocabBookSource): Pick<CoreClient, VocabMo
     vocabGenerateDeck: (uid, scanUid, lemmas, options) => later(() => generate(deps, uid, scanUid, lemmas, options)),
     vocabMarks: (uid, pages) => later(() => marks(deps, uid, pages)),
     vocabAddWord: (uid, lemma, page, form) => later(() => addWord(deps, uid, lemma, page, form)),
+    vocabEpubMarks: (uid, sections) => later(() => epubMarks(deps, uid, sections)),
     vocabDataInfo: () =>
       later(() =>
         state.dataAvailable
           ? structuredClone(DATA_INFO)
           : { available: false, wordnet: null, frequency: null, stopwords: null, schemaVersion: null },
       ),
-    jobStatus: (jobId) =>
-      later(() => {
-        const job = jobs.get(jobId);
-        return job ? structuredClone(job.progress) : null;
-      }),
-    jobCancel: (jobId) =>
-      later(() => {
-        const job = jobs.get(jobId);
-        if (job) job.cancelled = true;
-      }),
-    onJobProgress: (jobId, cb) => {
-      const set = jobListeners.get(jobId) ?? new Set();
-      jobListeners.set(jobId, set);
-      let stopped = false;
-      const deliver = (p: JobProgress) => {
-        if (!stopped) cb(p);
-      };
-      const stop = listenTo(set, deliver);
-      // Like the Tauri client: ask once after subscribing (an early end is never missed).
-      setTimeout(() => {
-        const job = jobs.get(jobId);
-        if (job) deliver(structuredClone(job.progress));
-      }, 0);
-      return () => {
-        stopped = true;
-        stop();
-      };
-    },
+    ...createJobsMock(later),
   };
 }
 
@@ -1026,7 +1045,9 @@ function panelVocab(
   let chapterDeck: BookDeckInfo | null = null;
   if (page !== undefined && page !== null) {
     const book = deps.book(uid);
-    const chapter = bookChapters(deps.outline(uid), book.pages).find((c) => page >= c.startPage && page <= c.endPage);
+    const chapter = bookChapters(deps.outline(uid), book.pages, book.unit).find(
+      (c) => page >= c.startPage && page <= c.endPage,
+    );
     if (chapter) {
       const suffix = `::${chapterDeckName(chapter.index)}`;
       const base = r.deck.baseName.toLowerCase();
@@ -1099,7 +1120,7 @@ export function vocabScanned(uid: string): boolean {
 
 export function resetVocab(): void {
   state = initial();
-  jobs.clear();
+  clearJobs();
   jobDelayMs = null;
   persist();
 }

@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::RangeError;
-use crate::naming::slug;
+use crate::naming::{UnitWord, slug};
 
 /// Most items (pages or intervals) a page list may have.
 pub const MAX_RANGE_ITEMS: usize = 100;
@@ -138,6 +138,22 @@ fn parse_page(s: &str) -> Result<u32, RangeError> {
 /// Parses a page list typed by the user: one page (`37`), an interval (`21-45`, en/em dashes accepted) or a list
 /// (`21-45, 60, 72-80`; commas or semicolons, any spaces). Returns sorted, merged, 0-based inclusive intervals.
 pub fn parse_pages(text: &str, page_count: u32) -> Result<Vec<[u32; 2]>, RangeError> {
+    parse_pages_in(text, page_count, UnitWord::Page)
+}
+
+/// [`parse_pages`] for books whose units are `unit` (chapters: the same syntax, the errors say "capítulo").
+pub fn parse_pages_in(
+    text: &str,
+    page_count: u32,
+    unit: UnitWord,
+) -> Result<Vec<[u32; 2]>, RangeError> {
+    parse_units(text, page_count).map_err(|e| match unit {
+        UnitWord::Page => e,
+        UnitWord::Chapter => e.in_chapters(),
+    })
+}
+
+fn parse_units(text: &str, page_count: u32) -> Result<Vec<[u32; 2]>, RangeError> {
     if page_count == 0 {
         return Err(RangeError::EmptyBook);
     }
@@ -420,18 +436,42 @@ pub fn resolve_range(
     outline: &[OutlineNode],
     page_count: u32,
 ) -> Result<ResolvedRange, RangeError> {
+    resolve_range_in(spec, outline, page_count, UnitWord::Page)
+}
+
+/// [`resolve_range`] for a book whose units are `unit`: with [`UnitWord::Chapter`] (EPUB, outline pages are section
+/// indexes) the "Páginas" kind takes 1-based chapter numbers and labels read "cap. 2-4", and errors say "capítulo".
+pub fn resolve_range_in(
+    spec: &RangeSpec,
+    outline: &[OutlineNode],
+    page_count: u32,
+    unit: UnitWord,
+) -> Result<ResolvedRange, RangeError> {
+    resolve_units(spec, outline, page_count, unit).map_err(|e| match unit {
+        UnitWord::Page => e,
+        UnitWord::Chapter => e.in_chapters(),
+    })
+}
+
+fn resolve_units(
+    spec: &RangeSpec,
+    outline: &[OutlineNode],
+    page_count: u32,
+    unit: UnitWord,
+) -> Result<ResolvedRange, RangeError> {
     if page_count == 0 {
         return Err(RangeError::EmptyBook);
     }
+    let abbrev = unit.abbrev();
     match spec {
         RangeSpec::All => Ok(ResolvedRange::all(page_count)),
         RangeSpec::Pages { text } => {
-            let pages = parse_pages(text, page_count)?;
+            let pages = parse_units(text, page_count)?;
             let norm = pages_text(&pages, "-");
-            let label = format!("p. {norm}");
+            let label = format!("{abbrev} {norm}");
             Ok(ResolvedRange {
                 kind: RangeKind::Pages,
-                display: format!("p. {}", pages_text(&pages, "–")),
+                display: format!("{abbrev} {}", pages_text(&pages, "–")),
                 slug: Some(slug(&label)),
                 subdeck: Some(subdeck_of(&label)),
                 label: Some(label),
@@ -486,7 +526,7 @@ pub fn resolve_range(
             let label = cut(&titles.join(" + "), LABEL_MAX_CHARS);
             Ok(ResolvedRange {
                 kind: RangeKind::Outline,
-                display: format!("{label} (p. {})", pages_text(&pages, "–")),
+                display: format!("{label} ({abbrev} {})", pages_text(&pages, "–")),
                 slug: Some(slug(&label)),
                 subdeck: Some(subdeck_of(&label)),
                 label: Some(label),
@@ -503,6 +543,12 @@ pub fn resolve_range(
 /// the previous chapter is skipped: PdfCraft appends the bookmarks the user creates at the end of the root level,
 /// so they never renumber or split the chapters before them); or blocks of 20 pages ("p. 1–20") without an outline.
 pub fn chapters(outline: &[OutlineNode], page_count: u32) -> Vec<Chapter> {
+    chapters_in(outline, page_count, UnitWord::Page)
+}
+
+/// [`chapters`] for a book whose units are `unit`: without an outline, the blocks of 20 units are labelled
+/// "cap. 1–20" for EPUB sections.
+pub fn chapters_in(outline: &[OutlineNode], page_count: u32, unit: UnitWord) -> Vec<Chapter> {
     if page_count == 0 {
         return Vec::new();
     }
@@ -524,7 +570,7 @@ pub fn chapters(outline: &[OutlineNode], page_count: u32) -> Vec<Chapter> {
             let end = start.saturating_add(19).min(last);
             out.push(Chapter {
                 index,
-                label: format!("p. {}–{}", start + 1, end + 1),
+                label: format!("{} {}–{}", unit.abbrev(), start + 1, end + 1),
                 start_page: start,
                 end_page: end,
             });
@@ -902,5 +948,133 @@ mod tests {
         assert_eq!(blocks[2].label, "p. 41–45");
         assert!(chapters(&[], 0).is_empty());
         assert_eq!(chapter_of(&c, 12), Some(2));
+    }
+
+    #[test]
+    fn chapter_ranges_use_chapter_words() {
+        let outline = vec![
+            node(
+                "Part One",
+                Some(1),
+                vec![
+                    node("Chapter 1", Some(1), vec![]),
+                    node("Chapter 2", Some(2), vec![]),
+                ],
+            ),
+            node("Part Two", Some(4), vec![]),
+        ];
+        let r = resolve_range_in(
+            &RangeSpec::Pages { text: "2-3".into() },
+            &outline,
+            6,
+            UnitWord::Chapter,
+        )
+        .unwrap();
+        assert_eq!(r.pages, vec![[1, 2]]);
+        assert_eq!(r.label.as_deref(), Some("cap. 2-3"));
+        assert_eq!(r.display, "cap. 2–3");
+        assert_eq!(r.slug.as_deref(), Some("cap-2-3"));
+        assert_eq!(r.subdeck.as_deref(), Some("cap. 2-3"));
+        assert_eq!(crate::range_tag(&r).as_deref(), Some("trecho::cap-2-3"));
+        let o = resolve_range_in(
+            &RangeSpec::Outline {
+                ids: vec!["0".into()],
+            },
+            &outline,
+            6,
+            UnitWord::Chapter,
+        )
+        .unwrap();
+        assert_eq!(o.pages, vec![[1, 3]]);
+        assert_eq!(o.display, "Part One (cap. 2–4)");
+        // PDF output is unchanged.
+        let p = resolve_range_in(
+            &RangeSpec::Pages { text: "2-3".into() },
+            &outline,
+            6,
+            UnitWord::Page,
+        )
+        .unwrap();
+        assert_eq!(
+            p,
+            resolve_range(&RangeSpec::Pages { text: "2-3".into() }, &outline, 6).unwrap()
+        );
+        assert_eq!(p.label.as_deref(), Some("p. 2-3"));
+        assert_eq!(p.display, "p. 2–3");
+    }
+
+    #[test]
+    fn chapter_errors_say_chapter() {
+        let err = |text: &str, n: u32| {
+            resolve_range_in(
+                &RangeSpec::Pages { text: text.into() },
+                &[],
+                n,
+                UnitWord::Chapter,
+            )
+            .unwrap_err()
+            .to_string()
+        };
+        assert_eq!(
+            err("9", 4),
+            "O capítulo 9 não existe (o livro tem 4 capítulos)."
+        );
+        assert_eq!(
+            err("2", 1),
+            "O capítulo 2 não existe (o livro tem 1 capítulo)."
+        );
+        assert_eq!(err("0", 4), "Os capítulos começam em 1.");
+        assert_eq!(
+            err("", 4),
+            "Digite um capítulo, um intervalo ou uma lista, como 3, 2-4 ou 2-4, 7."
+        );
+        assert_eq!(
+            err("x", 4),
+            "“x” não é um capítulo válido. Use números, como 3, 2-4 ou 2-4, 7."
+        );
+        assert_eq!(
+            err("2-", 4),
+            "O intervalo “2-” está incompleto. Informe o início e o fim, como 2-4."
+        );
+        assert_eq!(err("3-2", 4), "O intervalo 3-2 está invertido. Use 2-3.");
+        assert_eq!(err("1", 0), "O livro não tem capítulos.");
+        let no_page = vec![node("Notes", None, vec![])];
+        let e = resolve_range_in(
+            &RangeSpec::Outline {
+                ids: vec!["0".into()],
+            },
+            &no_page,
+            3,
+            UnitWord::Chapter,
+        )
+        .unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "“Notes” não aponta para um capítulo do livro."
+        );
+        assert_eq!(
+            parse_pages_in("5", 4, UnitWord::Chapter).unwrap_err(),
+            RangeError::ChapterBeyondEnd {
+                chapter: 5,
+                count: 4
+            }
+        );
+        // Page wording stays as it was.
+        assert_eq!(
+            parse_pages_in("5", 4, UnitWord::Page)
+                .unwrap_err()
+                .to_string(),
+            "A página 5 não existe (o livro tem 4 páginas)."
+        );
+    }
+
+    #[test]
+    fn chapter_blocks_without_outline() {
+        let c = chapters_in(&[], 25, UnitWord::Chapter);
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].label, "cap. 1–20");
+        assert_eq!(c[1].label, "cap. 21–25");
+        assert_eq!(chapters_in(&[], 25, UnitWord::Page), chapters(&[], 25));
+        assert_eq!(chapters(&[], 25)[0].label, "p. 1–20");
     }
 }

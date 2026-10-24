@@ -1,6 +1,7 @@
 //! The `pdf` URI scheme (spec 15): only library covers.
 //! `GET pdf://localhost/cover/{book_uid}?v={file_version}` (`http://pdf.localhost/…` on Windows)
-//! answers with the cover PNG of the book's current file version. The reader itself is PdfCraft,
+//! answers with the cover of the book's current file version: a PNG for PDFs, the book's own cover image for EPUBs
+//! (PNG, JPEG, GIF or WebP, served with the type sniffed from its bytes; anything else is not served). The reader itself is PdfCraft,
 //! served as a static file of the UI under `/pdfcraft/`.
 
 use std::sync::Arc;
@@ -55,17 +56,25 @@ pub fn handle<R: Runtime>(
     let state = Arc::clone(app.state::<Arc<AppState>>().inner());
     tauri::async_runtime::spawn_blocking(move || {
         let res = match route {
-            Route::Cover(uid) => match state.cover_png(&uid) {
-                Ok(Some(png)) => png_response(if head_only { Vec::new() } else { png }),
-                Ok(None) => not_found_cover(),
-                Err(e) => {
-                    tracing::warn!(book_uid = %uid, code = %e.code, "cover failed");
-                    not_found_cover()
-                }
-            },
+            Route::Cover(uid) => cover_response(&state, &uid, head_only),
         };
         reply(res);
     });
+}
+
+/// The answer to `GET /cover/{book_uid}` (without CORS headers): the cover with its sniffed image type, or 404.
+pub fn cover_response(state: &AppState, uid: &str, head_only: bool) -> Response<Vec<u8>> {
+    match state.cover_png(uid) {
+        Ok(Some(image)) => match crate::library::image_type(&image) {
+            Some(mime) => image_response(mime, if head_only { Vec::new() } else { image }),
+            None => not_found_cover(),
+        },
+        Ok(None) => not_found_cover(),
+        Err(e) => {
+            tracing::warn!(book_uid = %uid, code = %e.code, "cover failed");
+            not_found_cover()
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -105,9 +114,15 @@ fn not_found_cover() -> Response<Vec<u8>> {
     text(StatusCode::NOT_FOUND, "Capa não encontrada.")
 }
 
+#[cfg(test)]
 fn png_response(png: Vec<u8>) -> Response<Vec<u8>> {
+    image_response("image/png", png)
+}
+
+fn image_response(mime: &str, png: Vec<u8>) -> Response<Vec<u8>> {
     response(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "image/png")
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         // The URL carries `?v={file_version}`, so a cached cover never outlives its version.
         .header(
             header::CACHE_CONTROL,

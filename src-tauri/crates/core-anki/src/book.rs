@@ -27,8 +27,11 @@ pub struct BookCard {
     /// Home deck of the note's first card.
     pub deck_id: i64,
     pub notetype: String,
-    /// 1-based, as written in the link.
+    /// 1-based, as written in the link: a PDF page or an EPUB chapter (`unit`).
     pub page: u32,
+    pub unit: crate::study::SourceUnit,
+    /// The EPUB position of the link, when it has a valid one.
+    pub cfi: Option<String>,
     pub query: Option<String>,
     /// Sort field as plain text, whitespace collapsed, at most [`PREVIEW_CHARS`] chars (a cut one ends with "…").
     pub preview: String,
@@ -154,6 +157,8 @@ pub fn book_cards(col: &mut Collection, book_uid: &str) -> Result<Vec<BookCard>>
             deck_id: note_cards.first().map_or(0, |c| c.1),
             notetype: nt.name.clone(),
             page: link.page,
+            unit: link.unit,
+            cfi: link.cfi,
             query: link.query,
             preview: preview(fields.get(sort_idx).copied().unwrap_or_default()),
         });

@@ -44,4 +44,41 @@ pub enum RangeError {
     UnknownItem(String),
     #[error("“{0}” não aponta para uma página do livro.")]
     ItemWithoutPage(String),
+    // The same errors for books whose units are chapters (EPUB sections, `UnitWord::Chapter`).
+    #[error("Digite um capítulo, um intervalo ou uma lista, como 3, 2-4 ou 2-4, 7.")]
+    EmptyChapters,
+    #[error("“{0}” não é um capítulo válido. Use números, como 3, 2-4 ou 2-4, 7.")]
+    ChapterNotANumber(String),
+    #[error("Os capítulos começam em 1.")]
+    ChapterZero,
+    #[error("O intervalo “{0}” está incompleto. Informe o início e o fim, como 2-4.")]
+    ChapterOpenEnded(String),
+    #[error("O capítulo {chapter} não existe (o livro tem {count} {}).", if *count == 1 { "capítulo" } else { "capítulos" })]
+    ChapterBeyondEnd { chapter: u32, count: u32 },
+    #[error("Use no máximo {0} capítulos ou intervalos.")]
+    TooManyChapters(usize),
+    #[error("O livro não tem capítulos.")]
+    NoChapters,
+    #[error("“{0}” não aponta para um capítulo do livro.")]
+    ItemWithoutChapter(String),
+}
+
+impl RangeError {
+    /// The same error worded for chapters (EPUB sections) instead of pages; errors without a unit are unchanged.
+    pub fn in_chapters(self) -> RangeError {
+        match self {
+            Self::Empty => Self::EmptyChapters,
+            Self::NotANumber(s) => Self::ChapterNotANumber(s),
+            Self::Zero => Self::ChapterZero,
+            Self::OpenEnded(s) => Self::ChapterOpenEnded(s),
+            Self::BeyondEnd { page, count } => Self::ChapterBeyondEnd {
+                chapter: page,
+                count,
+            },
+            Self::TooMany(n) => Self::TooManyChapters(n),
+            Self::EmptyBook => Self::NoChapters,
+            Self::ItemWithoutPage(s) => Self::ItemWithoutChapter(s),
+            other => other,
+        }
+    }
 }

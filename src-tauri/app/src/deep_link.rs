@@ -1,4 +1,5 @@
-//! `leitor://livro/<book_uid>?pagina=N&q=…` links opened by the OS (spec 10.2, 15): "Abrir no livro" from a card
+//! `leitor://livro/<book_uid>?pagina=N&q=…` (PDF) and `leitor://livro/<book_uid>?cap=N&cfi=…&q=…` (EPUB) links opened by
+//! the OS (spec 10.2, 15, 7.1): "Abrir no livro" from a card
 //! seen outside the app. The scheme is registered with the system by `tauri-plugin-deep-link` (the bundler writes
 //! `MimeType=x-scheme-handler/leitor` / the Windows registry keys; [`registration_plan`] decides when the app also
 //! registers it at run time, off the startup path: AppImage and unbundled Windows runs, debug builds only on request).
@@ -13,6 +14,7 @@
 //! Every link becomes [`DEEP_LINK_EVENT`] with a [`DeepLink`] payload; invalid links are logged and dropped. Parsing
 //! is shared with the Fonte links ([`core_anki::study::source::parse_link`]) and never panics.
 
+use core_anki::study::SourceUnit;
 use serde::{Deserialize, Serialize};
 
 use crate::anki::UiEvent;
@@ -34,15 +36,22 @@ const PREFIX: &str = "leitor://livro/";
 pub struct DeepLink {
     /// 64 lowercase hex chars.
     pub book_uid: String,
-    /// 1-based.
+    /// 1-based: the PDF page or the EPUB chapter (section in reading order), see `unit`.
     pub page: u32,
+    /// `page` for `pagina=N`, `chapter` for `cap=N`.
+    #[serde(default)]
+    pub unit: SourceUnit,
+    /// The EPUB position inside the chapter (`epubcfi(...)`), only when valid.
+    #[serde(default)]
+    pub cfi: Option<String>,
     /// The text to find on the page (at most 500 chars), when the link has one.
     pub query: Option<String>,
 }
 
-/// `leitor://livro/<64 lowercase hex>?pagina=N[&q=…]` → [`DeepLink`]. The scheme and host are case-insensitive
-/// (some launchers change them); the uid is not. `None` for anything else: other schemes or hosts, a missing or
-/// non-positive `pagina`, an uppercase or short uid, URLs over [`MAX_URL_BYTES`].
+/// `leitor://livro/<64 lowercase hex>?pagina=N[&q=…]` or `?cap=N[&cfi=…][&q=…]` → [`DeepLink`]. The scheme and host
+/// are case-insensitive (some launchers change them); the uid is not. `None` for anything else: other schemes or
+/// hosts, a missing or non-positive `pagina`/`cap`, an uppercase or short uid, URLs over [`MAX_URL_BYTES`]. An
+/// invalid `cfi` is dropped (the link still opens the chapter).
 pub fn parse_deep_link(url: &str) -> Option<DeepLink> {
     if url.len() > MAX_URL_BYTES {
         return None;
@@ -57,6 +66,8 @@ pub fn parse_deep_link(url: &str) -> Option<DeepLink> {
     Some(DeepLink {
         book_uid: link.book_uid,
         page: link.page,
+        unit: link.unit,
+        cfi: link.cfi,
         query: link.query,
     })
 }
@@ -335,7 +346,63 @@ mod tests {
         DeepLink {
             book_uid: UID.into(),
             page,
+            unit: SourceUnit::Page,
+            cfi: None,
             query: query.map(String::from),
+        }
+    }
+
+    fn chapter(n: u32, cfi: Option<&str>, query: Option<&str>) -> DeepLink {
+        DeepLink {
+            unit: SourceUnit::Chapter,
+            cfi: cfi.map(String::from),
+            ..link(n, query)
+        }
+    }
+
+    #[test]
+    fn epub_chapter_links() {
+        let cases: Vec<(String, Option<DeepLink>)> = vec![
+            (
+                format!("leitor://livro/{UID}?cap=3"),
+                Some(chapter(3, None, None)),
+            ),
+            (
+                format!(
+                    "leitor://livro/{UID}?cap=3&cfi=epubcfi(%2F6%2F8!%2F4%2F2%2F1%3A0)&q=the%20windmill"
+                ),
+                Some(chapter(
+                    3,
+                    Some("epubcfi(/6/8!/4/2/1:0)"),
+                    Some("the windmill"),
+                )),
+            ),
+            // The order of the parameters doesn't matter.
+            (
+                format!("leitor://livro/{UID}?cfi=epubcfi(%2F6%2F4!%2F2)&cap=1"),
+                Some(chapter(1, Some("epubcfi(/6/4!/2)"), None)),
+            ),
+            // An invalid cfi is dropped; the chapter still opens.
+            (
+                format!("leitor://livro/{UID}?cap=2&cfi=nope"),
+                Some(chapter(2, None, None)),
+            ),
+            (
+                format!("leitor://livro/{UID}?cap=2&cfi=epubcfi(%2F6%0A)"),
+                Some(chapter(2, None, None)),
+            ),
+            // pagina wins over cap (and a cfi means nothing on a PDF page).
+            (
+                format!("leitor://livro/{UID}?cap=2&pagina=9&cfi=epubcfi(%2F6%2F4)"),
+                Some(link(9, None)),
+            ),
+            (format!("leitor://livro/{UID}?cap=0"), None),
+            (format!("leitor://livro/{UID}?cap=-1"), None),
+            (format!("leitor://livro/{UID}?cap=x"), None),
+            (format!("leitor://livro/{UID}?cfi=epubcfi(%2F6%2F4)"), None),
+        ];
+        for (url, expected) in cases {
+            assert_eq!(parse_deep_link(&url), expected, "{url}");
         }
     }
 
@@ -510,7 +577,12 @@ mod tests {
         let json = serde_json::to_value(link(3, Some("q"))).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({ "bookUid": UID, "page": 3, "query": "q" })
+            serde_json::json!({ "bookUid": UID, "page": 3, "unit": "page", "cfi": null, "query": "q" })
+        );
+        let json = serde_json::to_value(chapter(2, Some("epubcfi(/6/6!/2)"), None)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "bookUid": UID, "page": 2, "unit": "chapter", "cfi": "epubcfi(/6/6!/2)", "query": null })
         );
     }
 }

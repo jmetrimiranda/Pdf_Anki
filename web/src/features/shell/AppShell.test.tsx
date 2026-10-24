@@ -102,7 +102,7 @@ describe('AppShell', () => {
 
   it('imports files opened with the app and opens the last one in the Leitor', async () => {
     await renderApp();
-    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(3));
+    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(4));
     act(() => mockHandle.openPaths(['/home/jorge/Livros/Aberto pelo sistema.pdf']));
     await waitFor(() => expect(leitorMock.openBook).toHaveBeenCalledTimes(1));
     const added = mockHandle.books.find((b) => b.title === 'Aberto pelo sistema');
@@ -112,7 +112,7 @@ describe('AppShell', () => {
 
   it('asks before an imported copy replaces the current version of a book', async () => {
     await renderApp();
-    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(3));
+    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(4));
     const farm = mockHandle.books.find((b) => b.title === 'Animal Farm')!;
     const copy = makePdf({ pages: 3, title: 'Animal Farm', leitorBookUid: farm.bookUid, highlight: true });
     for (const name of ['Cópia antiga', 'Cópia nova']) {
@@ -137,7 +137,7 @@ describe('AppShell', () => {
     );
     expect(await screen.findByText('Reconhecido como Animal Farm: anotações atualizadas')).toBeTruthy();
     expect(mockHandle.books.find((b) => b.bookUid === farm.bookUid)?.fileVersion).toBe(2);
-    expect(mockHandle.books).toHaveLength(3);
+    expect(mockHandle.books).toHaveLength(4);
   });
 
   it('imports the files the app was launched with', async () => {
@@ -149,13 +149,13 @@ describe('AppShell', () => {
 
   it('adds with Ctrl+O and reports a corrupted file without breaking', async () => {
     await renderApp();
-    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(3));
+    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(4));
     mockHandle.setNextPick(['/tmp/livro corrompido.pdf', '/tmp/Bom.pdf']);
     fireEvent.keyDown(window, { key: 'o', code: 'KeyO', ctrlKey: true });
     expect(
       await screen.findByText(/^Não foi possível adicionar livro corrompido\.pdf: O arquivo não é um PDF válido/),
     ).toBeTruthy();
-    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(4));
+    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(5));
     expect(leitorMock.openBook).not.toHaveBeenCalled();
   });
 
@@ -171,7 +171,7 @@ describe('AppShell', () => {
 
   it('a .apkg opened with the app asks, imports directly and shows the summary', async () => {
     await renderApp();
-    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(3));
+    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(4));
     act(() => mockHandle.openPaths(['/home/jorge/Downloads/Fazenda.apkg']));
     const dialog = await screen.findByRole('dialog', { name: 'Importar “Fazenda.apkg” para a coleção?' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Importar' }));
@@ -214,7 +214,7 @@ describe('AppShell', () => {
 
   it('handles mixed lists in order: books, then a package', async () => {
     await renderApp();
-    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(3));
+    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(4));
     act(() => mockHandle.openPaths(['/tmp/Livro misto.pdf', '/tmp/Misto.apkg']));
     await screen.findByRole('dialog', { name: /Importar “Misto.apkg”/ });
     // The PDF was imported before the package dialog appeared.
@@ -271,10 +271,10 @@ describe('AppShell', () => {
 
   it('opens a leitor:// link forwarded while running; an unknown book shows a notice', async () => {
     await renderApp();
-    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(3));
+    await waitFor(() => expect(screen.getAllByTestId('book-title')).toHaveLength(4));
     const farm = mockHandle.books.find((b) => b.title === 'Animal Farm')!;
     act(() => mockHandle.deepLink(`leitor://livro/${farm.bookUid}?pagina=1`));
-    await waitFor(() => expect(leitorMock.openBook).toHaveBeenCalledWith(farm.bookUid, { page: 0, find: null }));
+    await waitFor(() => expect(leitorMock.openBook).toHaveBeenCalledWith(farm.bookUid, { page: 0 }));
 
     act(() => mockHandle.deepLink(`leitor://livro/${'f'.repeat(64)}?pagina=2&q=x`));
     expect(await screen.findByText('Este livro não está na Biblioteca deste computador.')).toBeTruthy();

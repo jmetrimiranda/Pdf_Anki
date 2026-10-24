@@ -102,6 +102,12 @@ export function BookPanel({
   const toast = useToast();
   const bookUid = useLeitorSelector((s) => s.activeBookUid);
   const page = useLeitorSelector((s) => s.page);
+  const unit = useLeitorSelector((s) => (s.front === 'epub' && s.epub ? 'chapter' : 'page'));
+  // The EPUB in front and where it is (the capture request's passage belongs there).
+  const epubKey = useLeitorSelector((s) =>
+    s.front === 'epub' && s.epub ? JSON.stringify({ uid: s.epub.uid, cfi: s.epub.cfi, label: s.epub.tocLabel }) : null,
+  );
+  const epubPlace = epubKey ? (JSON.parse(epubKey) as { uid: string; cfi: string | null; label: string | null }) : null;
   const selection = useLeitorSelector(
     (s) => (s.selection && s.selection.id === s.activeBookUid ? s.selection : null),
     sameSelection,
@@ -137,12 +143,18 @@ export function BookPanel({
         toast.show(t('bookPanel.selectFirst'), { tone: 'info' });
         return;
       }
-      const { id, page: p, text, rects } = r.selection;
+      const { id, page: p, text, rects, unit: u, cfi, label } = r.selection;
       if (id === null) {
         toast.show(t('bookPanel.notInLibrary'), { tone: 'info' });
         return;
       }
-      setCard({ uid: id, page: p, text, rects });
+      setCard({
+        uid: id,
+        page: p,
+        text,
+        rects,
+        ...(u === 'chapter' ? { unit: u, cfi: cfi ?? null, label: label ?? null } : {}),
+      });
     },
     [toast, panelAnchor],
   );
@@ -166,7 +178,16 @@ export function BookPanel({
     const key = JSON.stringify(capture);
     if (applied.current === key) return;
     applied.current = key;
-    const sel = { id: bookUid, page, text: capture.trecho ?? '', rects: [] };
+    // An EPUB in front: the passage belongs to the section on screen, at the reader's location.
+    const sel = {
+      id: bookUid,
+      page,
+      text: capture.trecho ?? '',
+      rects: [],
+      ...(epubPlace && epubPlace.uid === bookUid
+        ? { unit: 'chapter' as const, cfi: epubPlace.cfi, label: epubPlace.label }
+        : {}),
+    };
     if (capture.painel === 'card') {
       if (!open) leitor.togglePanel(true);
       handle({ kind: 'card', via: 'button', selection: sel.text ? sel : null, anchor: null });
@@ -241,6 +262,7 @@ export function BookPanel({
               bookUid={bookUid}
               title={bookTitle}
               page={page}
+              unit={unit}
               selection={selection}
               cardRequest={card && card.uid === bookUid ? card : null}
               onCardDone={() => setCard(null)}

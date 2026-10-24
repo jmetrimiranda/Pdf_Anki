@@ -303,3 +303,123 @@ export async function canvasVariance(page: Page, frame: Frame): Promise<number> 
     return colors.size;
   }, png.toString('base64'));
 }
+
+// ---------------------------------------------------------------- locating page rects on screen (Phase 7)
+
+/** A screen rect in viewport CSS px. */
+export interface ScreenBox {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+/**
+ * Where PdfCraft draws a page-space rect (`[x, y, w, h]`, points, y down) right now, in viewport CSS px. It asks
+ * PdfCraft itself: an underline mark of a color nothing else uses goes under the rect (`pdfcraft:marks`, set
+ * `e2e-locate`), PdfCraft reports it drawn (`pdfcraft:marks-shown`), the underline is found in a screenshot of the
+ * iframe, and the mark is removed again. The underline spans the rect's width, so its x range and the rect's
+ * aspect give the rect on screen with PdfCraft's own page-to-canvas mapping (zoom, scroll, rotation-free pages),
+ * whatever the page looks like (a scanned page has no fill color to look for).
+ */
+export async function locatePageRect(
+  page: Page,
+  id: string,
+  pageIndex: number,
+  rect: [number, number, number, number],
+): Promise<ScreenBox> {
+  const SET = 'e2e-locate';
+  const post = (msg: Record<string, unknown>) =>
+    page.evaluate((m) => {
+      const frame = document.querySelector<HTMLIFrameElement>('iframe[title="PdfCraft"]')!;
+      frame.contentWindow!.postMessage(m, location.origin);
+    }, msg);
+  const after = await now(page);
+  await post({
+    type: 'pdfcraft:marks',
+    id,
+    set: SET,
+    marks: [{ page: pageIndex, rects: [rect], style: 'underline', color: '#ff00ff' }],
+  });
+  await waitForMessage(page, { type: 'pdfcraft:marks-shown', id, set: SET, page: pageIndex, count: 1 }, { after });
+  const el = await pdfcraftFrame(page).frameElement();
+  let line: { x0: number; x1: number; y0: number; y1: number; width: number } | null = null;
+  await expect
+    .poll(
+      async () => {
+        const box = await el.boundingBox();
+        if (!box) return false;
+        const png = await el.screenshot();
+        line = await page.evaluate(
+          async ({ b64 }) => {
+            const img = new Image();
+            img.src = `data:image/png;base64,${b64}`;
+            await img.decode();
+            const c = document.createElement('canvas');
+            c.width = img.width;
+            c.height = img.height;
+            const ctx = c.getContext('2d')!;
+            ctx.drawImage(img, 0, 0);
+            const { data, width, height } = ctx.getImageData(0, 0, c.width, c.height);
+            let x0 = width;
+            let x1 = -1;
+            let y0 = height;
+            let y1 = -1;
+            for (let y = 0; y < height; y++) {
+              for (let x = 0; x < width; x++) {
+                const i = (y * width + x) * 4;
+                // Magenta: red and blue well above green and close to each other. Also under PdfCraft's
+                // translucent selection tint, never PdfCraft's own purples (e.g. its highlight swatch).
+                const [r, g, b] = [data[i]!, data[i + 1]!, data[i + 2]!];
+                if (r - g >= 100 && b - g >= 100 && Math.abs(r - b) <= 70) {
+                  x0 = Math.min(x0, x);
+                  x1 = Math.max(x1, x);
+                  y0 = Math.min(y0, y);
+                  y1 = Math.max(y1, y);
+                }
+              }
+            }
+            return x1 < 0 ? null : { x0, x1, y0, y1, width };
+          },
+          { b64: png.toString('base64') },
+        );
+        return !!line && line.x1 - line.x0 >= 4;
+      },
+      { timeout: 30_000, message: `the e2e-locate underline under [${rect.join(', ')}] on page ${pageIndex + 1}` },
+    )
+    .toBe(true)
+    .catch(async (e: Error) => {
+      await page.screenshot({ path: 'test-results/locate-page-rect-failure.png' }).catch(() => undefined);
+      throw e;
+    });
+  const box = (await el.boundingBox())!;
+  await post({ type: 'pdfcraft:clear-marks', id, set: SET });
+  await pdfcraftFrames(page, 2);
+  const found = line! as { x0: number; x1: number; y0: number; y1: number; width: number };
+  // Screenshot px → viewport CSS px (WebKit's device scale is 2).
+  const k = box.width / found.width;
+  const x0 = box.x + found.x0 * k;
+  const x1 = box.x + (found.x1 + 1) * k;
+  // The underline sits at the bottom of the rect: the rect's height follows from its on-screen width.
+  const h = ((x1 - x0) * rect[3]) / Math.max(1e-6, rect[2]);
+  const bottom = box.y + found.y0 * k;
+  return { x0, x1, y0: bottom - h, y1: bottom };
+}
+
+/**
+ * Drags from `(x0, y)` to `(x1, y)` the way a person does, one PdfCraft frame per step (pointer move, press, moves,
+ * release land in separate egui passes on any machine speed).
+ */
+export async function dragAcross(page: Page, x0: number, x1: number, y: number, steps = 8): Promise<void> {
+  await page.mouse.move(x0, y);
+  await pdfcraftFrames(page, 2);
+  await page.mouse.down();
+  await pdfcraftFrames(page, 1);
+  for (let i = 1; i <= steps; i++) {
+    await page.mouse.move(x0 + ((x1 - x0) * i) / steps, y);
+    await pdfcraftFrames(page, 1);
+  }
+  await pdfcraftFrames(page, 2);
+  await page.mouse.up();
+  await pdfcraftFrames(page);
+}

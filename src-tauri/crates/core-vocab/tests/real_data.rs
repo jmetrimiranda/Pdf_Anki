@@ -233,6 +233,26 @@ fn forms_of_known_words() {
 }
 
 #[test]
+fn function_words_whose_lemma_is_another_word() {
+    if common::lexicon().is_none() {
+        return;
+    }
+    // morphy reads "his" as the plural of the noun "hi"; it is still a function word (Snowball list).
+    let r = scan(
+        &pages(&["The Time Traveller explains his theory and shows his machine."]),
+        &[],
+        ScanConfig::default(),
+    );
+    let his = r
+        .rows
+        .iter()
+        .find(|x| x.form.eq_ignore_ascii_case("his"))
+        .expect("a row for his");
+    assert_eq!(his.status, Status::Known, "{his:?}");
+    assert_eq!(his.status_source, Some(StatusSource::Function));
+}
+
+#[test]
 fn derivatives_of_known_words() {
     if common::lexicon().is_none() {
         return;

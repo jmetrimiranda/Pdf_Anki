@@ -18,6 +18,7 @@
 //! `Mutex` (or give it its own thread).
 
 mod code;
+mod epub;
 mod error;
 mod library;
 mod prefs;
@@ -35,10 +36,15 @@ pub use code::{
     CODE_EXTRA_MAX_CHARS, CODE_EXTRA_MAX_ENTRIES, CodeMappingFields, CodeMappingRow, CodeNoteExtra,
     CodeRole,
 };
+pub use epub::{
+    BookTextRow, EPUB_ANNOTATION_TEXT_MAX_CHARS, EPUB_CFI_MAX_BYTES, EPUB_COLOR_MAX_BYTES,
+    EPUB_UID_MAX_BYTES, EpubAnnotationRow,
+};
 pub use error::{Result, StoreError};
 pub use library::{
-    AddOutcome, AddedBook, Book, BookFormat, BookPatch, FileVersion, LibraryEntry, NewBook,
-    OcrStatus, ReadingPosition, book_uid_of, book_uid_of_reader, is_valid_book_uid,
+    AddOutcome, AddedBook, Book, BookFormat, BookPatch, EpubAnnotationKind, FileVersion,
+    LibraryEntry, NewBook, OcrStatus, ReadingPosition, book_uid_of, book_uid_of_reader,
+    is_valid_book_uid,
 };
 pub use prefs::{BookPrefs, BookPrefsPatch, CARD_KINDS};
 pub use schema::SCHEMA_VERSION;

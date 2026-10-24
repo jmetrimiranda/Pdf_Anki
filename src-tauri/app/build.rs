@@ -101,6 +101,13 @@ const COMMANDS: &[&str] = &[
     "vocab_data_info",
     "job_status",
     "job_cancel",
+    "ocr_info",
+    "ocr_start",
+    "ocr_cancel",
+    "epub_annotation_list",
+    "epub_annotation_upsert",
+    "epub_annotation_delete",
+    "vocab_epub_marks",
     "dev_smoke",
     "dev_log",
 ];
@@ -108,6 +115,7 @@ const COMMANDS: &[&str] = &[
 fn main() {
     ensure_anki_web_dir();
     ensure_vocab_data_dir();
+    ensure_ocr_models_dir();
     let manifest = tauri_build::AppManifest::new().commands(COMMANDS);
     if let Err(e) = tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest)) {
         panic!("tauri-build failed: {e:#}");
@@ -140,6 +148,22 @@ fn ensure_vocab_data_dir() {
     if !dir.join("vocab-data.json").is_file() {
         println!(
             "cargo:warning=Vocabulary data missing in {}: run scripts/build-wordnet.sh",
+            dir.display()
+        );
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            panic!("could not create {}: {e}", dir.display());
+        }
+    }
+}
+
+/// `tauri.conf.json` bundles `../resources/ocr-models/` (spec 7.2: the OCR models offline, CC-BY-SA-4.0).
+/// `scripts/fetch-ocr-models.sh` fills it (the `beforeBuildCommand` runs it); a plain `cargo build`/`cargo test`
+/// without it still compiles, and "Reconhecer texto" then answers that the models are missing.
+fn ensure_ocr_models_dir() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../resources/ocr-models");
+    if !dir.is_dir() {
+        println!(
+            "cargo:warning=OCR models missing in {}: run scripts/fetch-ocr-models.sh",
             dir.display()
         );
         if let Err(e) = std::fs::create_dir_all(&dir) {

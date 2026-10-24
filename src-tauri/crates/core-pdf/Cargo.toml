@@ -9,10 +9,20 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# `core_pdf::testkit`: synthetic scanned PDFs for tests, examples and the bridge fixtures. Never in the app.
+testkit = ["dep:pdfcraft-testkit"]
+
 [dependencies]
 pdfcraft-render.workspace = true
 pdfcraft-cos.workspace = true
 pdfcraft-organize.workspace = true
+# OCR (spec 7.2): recognition (ocrs models) and the invisible text layer, stamped like PdfCraft's
+# "Searchable Image" through pdfcraft-edit (never the engine).
+pdfcraft-ocr.workspace = true
+pdfcraft-edit.workspace = true
+# Only with the `testkit` feature (scanned-PDF fixtures for tests and examples).
+pdfcraft-testkit = { workspace = true, optional = true }
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -25,3 +35,11 @@ insta.workspace = true
 pdfcraft-testkit.workspace = true
 serde_json.workspace = true
 pdfcraft-annot.workspace = true
+
+[[test]]
+name = "ocr"
+required-features = ["testkit"]
+
+[[example]]
+name = "ocr_fixture"
+required-features = ["testkit"]

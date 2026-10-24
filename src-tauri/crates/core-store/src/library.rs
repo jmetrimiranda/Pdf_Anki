@@ -90,6 +90,10 @@ macro_rules! text_enum {
 
 text_enum!(BookFormat { Pdf => "pdf", Epub => "epub" });
 text_enum!(OcrStatus { None => "none", Running => "running", Done => "done", Failed => "failed" });
+text_enum!(
+    /// Kind of an EPUB annotation (`epub_annotation.kind`, spec 7.1).
+    EpubAnnotationKind { Highlight => "highlight", Underline => "underline", Note => "note", Bookmark => "bookmark" }
+);
 
 /// A book as listed in the library (non-deleted), joined with this device's file info.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -273,7 +277,7 @@ fn fetch_book(tx: &rusqlite::Connection, uid: &str) -> Result<Option<Book>> {
         .optional()?)
 }
 
-fn require_book(tx: &rusqlite::Connection, uid: &str) -> Result<Book> {
+pub(crate) fn require_book(tx: &rusqlite::Connection, uid: &str) -> Result<Book> {
     fetch_book(tx, uid)?.ok_or_else(|| StoreError::BookNotFound(uid.to_owned()))
 }
 
@@ -330,6 +334,7 @@ impl Store {
                 tx.execute(
                     "UPDATE book SET title = ?2, author = ?3, language = ?4, format = ?5,
                                      file_name = ?6, pages = ?7, has_text = ?8,
+                                     ocr_status = 'none',
                                      file_version = file_version + (file_hash <> ?9),
                                      file_hash = ?9, updated_at = ?10, deleted = 0
                      WHERE book_uid = ?1",

@@ -342,8 +342,16 @@ fn serde_shapes_match_the_ts_contract() {
     let link = DeepLink {
         book_uid: fixture::BOOK_UID.into(),
         page: 37,
+        unit: core_anki::study::SourceUnit::Page,
+        cfi: None,
         query: Some("windmill".into()),
     };
+    record(&mut out, "DeepLink", &serde_json::to_value(link).unwrap());
+    let link = leitor_app::parse_deep_link(&format!(
+        "leitor://livro/{}?cap=2&cfi=epubcfi(%2F6%2F6!%2F4%2F2%2F1%3A0)&q=pigs",
+        fixture::BOOK_UID
+    ))
+    .unwrap();
     record(&mut out, "DeepLink", &serde_json::to_value(link).unwrap());
     code_samples(&state, &info, &mut out);
     state.shutdown();
@@ -420,6 +428,13 @@ fn serde_shapes_match_the_ts_contract() {
         "VocabDataInfo",
         "VocabDataSource",
         "BookPanelVocab",
+        "BookOpen",
+        "EpubAnnotation",
+        "EpubSectionMarks",
+        "EpubMarkWord",
+        "OcrInfo",
+        "OcrStarted",
+        "OcrJobInfo",
     ] {
         assert!(
             out.contains_key(required),
@@ -718,6 +733,7 @@ fn vocab_samples(out: &mut BTreeMap<String, Vec<String>>) {
             code: "vocab_needs_ocr".into(),
             message: "OCR".into(),
         }),
+        ocr: None,
     };
     let failed = val(&failed);
     record(out, "JobProgress", &failed);
@@ -797,7 +813,91 @@ fn vocab_samples(out: &mut BTreeMap<String, Vec<String>>) {
     if !def["family"].is_null() {
         record(out, "VocabLemmaRef", &def["family"]);
     }
+    epub_ocr_samples(&state, dir.path(), root, &uid, out);
     state.shutdown();
+}
+
+/// Phase 7 (spec 7, 15): an EPUB of the library (book_open, annotations, scan marks) and the OCR shapes.
+fn epub_ocr_samples(
+    state: &Arc<AppState>,
+    dir: &std::path::Path,
+    root: i64,
+    pdf_uid: &str,
+    out: &mut BTreeMap<String, Vec<String>>,
+) {
+    use core_epub::testkit::{ChapterSpec, EpubBuilder, EpubVersion};
+    use std::time::Duration;
+
+    let text = "<p>All the learning of the pigs was quick. Then Napoleon said that a slow learner would look up \
+                the word windmill.</p>";
+    let bytes = EpubBuilder::new(EpubVersion::V3)
+        .title("Animal Farm EPUB")
+        .chapter(ChapterSpec::new("Part One", text).child(ChapterSpec::new("Chapter 1", text)))
+        .chapter(ChapterSpec::new("Part Two", text))
+        .build();
+    let path = common::write(dir, "farm.epub", &bytes);
+    let uid = state.library_add(&path, false).unwrap().book.book.book_uid;
+    state
+        .position_set(&uid, 1, 0.3, Some("epubcfi(/6/4!/4/2/1:0)".into()))
+        .unwrap();
+    let open = val(&state.book_open(&uid).unwrap());
+    record(out, "BookOpen", &open);
+    let pdf_open = val(&state.book_open(pdf_uid).unwrap());
+    record(out, "BookOpen", &pdf_open);
+    let input: leitor_app::EpubAnnotationInput = serde_json::from_value(serde_json::json!({
+        "bookUid": uid, "kind": "highlight", "cfi": "epubcfi(/6/4!/4/2,/1:0,/1:7)", "text": "All the", "color": "#fff000"
+    }))
+    .unwrap();
+    let a = val(&state.epub_annotation_upsert(input).unwrap());
+    record(out, "EpubAnnotation", &a);
+    for a in state.epub_annotation_list(&uid).unwrap() {
+        record(out, "EpubAnnotation", &val(&a));
+    }
+    let job = state
+        .vocab_scan_start(
+            &uid,
+            root,
+            vec![],
+            core_vocab::RangeSpec::All,
+            core_vocab::ScanConfig::default(),
+        )
+        .unwrap();
+    let end = state
+        .job_wait(&job.job_id, Duration::from_secs(120))
+        .unwrap();
+    assert_eq!(end.stage, leitor_app::JobStage::Done, "{end:?}");
+    let marks = state.vocab_epub_marks(&uid, &[0, 1, 2]).unwrap();
+    for m in &marks {
+        let v = val(m);
+        record(out, "EpubSectionMarks", &v);
+        for w in v["words"].as_array().unwrap() {
+            record(out, "EpubMarkWord", w);
+        }
+    }
+
+    // OCR (spec 7.2): what the library and the panel read, the start answer and the summary of a finished job.
+    let scanned = common::write(dir, "scan.pdf", &common::scanned_pdf(2));
+    let scanned = state
+        .library_add(&scanned, false)
+        .unwrap()
+        .book
+        .book
+        .book_uid;
+    let info = val(&state.ocr_info(&scanned).unwrap());
+    record(out, "OcrInfo", &info);
+    let started = leitor_app::ocr::OcrStarted {
+        job_id: "j".into(),
+        already_running: false,
+    };
+    record(out, "OcrStarted", &val(&started));
+    let summary = leitor_app::jobs::OcrJobInfo {
+        words: 120,
+        pages_read: 2,
+        pages_skipped: 0,
+        file_version: Some(2),
+        ms_per_page: Some(900),
+    };
+    record(out, "OcrJobInfo", &val(&summary));
 }
 
 fn val<T: serde::Serialize>(x: &T) -> Value {

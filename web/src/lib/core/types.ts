@@ -141,10 +141,15 @@ export interface BookPatch {
   pages?: number;
 }
 
-/** `book_open`: the book and the page to open it at (last page read, 0-based). */
+/**
+ * `book_open`: the book and where to open it: the last page read (0-based; for an EPUB the spine section) and, for an
+ * EPUB, the last CFI read (`null` for a PDF or a book never opened).
+ */
 export interface BookOpenInfo {
   book: LibraryEntry;
   page: number;
+  format: BookFormat;
+  cfi: string | null;
 }
 
 /** `book_save_version`: `changed` is false when the bytes equal the current version. */
@@ -206,11 +211,20 @@ export interface QueueCounts {
 export type AvTag =
   { kind: 'sound'; file: string } | { kind: 'tts'; text: string; lang: string; voices: string[]; speed: number };
 
-/** A `leitor://livro/<uid>?pagina=N&q=…` link found in the note's Fonte field. */
+/**
+ * Where a `leitor://` link points: `page` (`?pagina=N`, a PDF page) or `chapter` (`?cap=N[&cfi=…]`, an EPUB spine
+ * section).
+ */
+export type LinkUnit = 'page' | 'chapter';
+
+/** A `leitor://livro/<uid>?pagina=N&q=…` (PDF) or `?cap=N&cfi=…&q=…` (EPUB) link found in the note's Fonte field. */
 export interface SourceLink {
   bookUid: string;
-  /** 1-based, as in the link. */
+  /** 1-based, as in the link (`pagina` or `cap`). */
   page: number;
+  unit: LinkUnit;
+  /** EPUB CFI of the passage (`cfi=`), `null` when absent. */
+  cfi: string | null;
   query: string | null;
   label: string;
 }
@@ -437,14 +451,17 @@ export interface BookPanelPatch {
   reviewDeckId?: number | null;
 }
 
-/** A note whose Fonte links to this book ("Cards desta página"). */
+/** A note whose Fonte links to this book ("Cards desta página" / "Cards deste capítulo"). */
 export interface BookCard {
   noteId: number;
   cardIds: number[];
   deckId: number;
   notetype: string;
-  /** 1-based, as in the link. */
+  /** 1-based, as in the link (a page, or a chapter for `unit: 'chapter'`). */
   page: number;
+  unit: LinkUnit;
+  /** EPUB CFI of the passage, `null` when the link has none. */
+  cfi: string | null;
   query: string | null;
   /** Plain text of the first field (short). */
   preview: string;
@@ -469,12 +486,104 @@ export interface WordDefinition {
   note: { noteId: number; deckName: string; notetype: string; definition: string | null; preview: string } | null;
 }
 
-/** A parsed `leitor://livro/<uid>?pagina=N&q=…` link opened by the system (spec 10.2). */
+/** A parsed `leitor://livro/<uid>?pagina=N&q=…` (or `?cap=N&cfi=…&q=…`) link opened by the system (spec 10.2). */
 export interface DeepLink {
   bookUid: string;
-  /** 1-based. */
+  /** 1-based (a page, or a chapter for `unit: 'chapter'`). */
   page: number;
+  unit: LinkUnit;
+  cfi: string | null;
   query: string | null;
+}
+
+// ---------------------------------------------------------------- EPUB (spec 7.1, 14, 15)
+
+export type EpubAnnotationKind = 'highlight' | 'underline' | 'note' | 'bookmark';
+
+/** A highlight, underline, note or bookmark of an EPUB (`epub_annotation`, CFI range). Times are epoch ms. */
+export interface EpubAnnotation {
+  uid: string;
+  bookUid: string;
+  kind: EpubAnnotationKind;
+  /** EPUB CFI (a range for highlights/underlines/notes, a point for bookmarks). */
+  cfi: string;
+  /** 0-based spine section the CFI points into. */
+  section: number;
+  /** The passage (plain text), when there is one. */
+  text: string | null;
+  /** `#rrggbb` (PdfCraft's palette), `null` for the kind's default color. */
+  color: string | null;
+  comment: string | null;
+  updatedAt: number;
+}
+
+/**
+ * `epub_annotation_upsert`: a new annotation (`uid` absent or null: the core picks one) or a change of an existing
+ * one. Only these keys (the core refuses unknown ones).
+ */
+export interface EpubAnnotationInput {
+  uid?: string | null;
+  bookUid: string;
+  kind: EpubAnnotationKind;
+  cfi: string;
+  text?: string | null;
+  color?: string | null;
+  comment?: string | null;
+}
+
+/** One word form to color in the EPUB reader ("Realçar vocabulário", spec 12.7). */
+export interface EpubMarkWord {
+  /** Lowercase surface form as in the text (typographic apostrophes normalised to `'`). */
+  form: string;
+  lemma: string;
+  /** `unknown`/`suspended` (coral) or `learning`/`new` (amber). */
+  status: VocabStatus;
+  /** `#d85a30` (unknown, suspended) or `#ba7517` (learning, new in the deck). */
+  color: string;
+}
+
+/** The forms to color in one section (`vocab_epub_marks`). */
+export interface EpubSectionMarks {
+  /** 0-based spine section. */
+  section: number;
+  words: EpubMarkWord[];
+}
+
+// ---------------------------------------------------------------- OCR (spec 7.2, 6.6, 15)
+
+/** `ocr_info`: what the library and the panel need to offer "Reconhecer texto". */
+export interface OcrInfo {
+  /** The book is a PDF and the OCR models are installed. */
+  available: boolean;
+  status: OcrStatus;
+  /** `false` = "parece escaneado" (spec 6.6). */
+  hasText: boolean;
+  pages: number;
+  /** The book's running OCR job, else its last one of this app run (if still known). */
+  job: JobProgress | null;
+  /** pt-BR message of the last failure, when `status` is `failed`. */
+  lastError: string | null;
+}
+
+/** `ocr_start`: the job (`job://<jobId>`). */
+export interface OcrStarted {
+  jobId: string;
+  /** The book's OCR was already running: this is its job. */
+  alreadyRunning: boolean;
+}
+
+/** What an OCR job did (`JobProgress.ocr`), filled in when it ends. */
+export interface OcrJobInfo {
+  /** Words added to the text layer. */
+  words: number;
+  /** Pages recognised. */
+  pagesRead: number;
+  /** Pages left alone (they already had text, or could not be read). */
+  pagesSkipped: number;
+  /** The `fileVersion` of the new version with the text layer. */
+  fileVersion: number | null;
+  /** Average time per recognised page (ms). */
+  msPerPage: number | null;
 }
 
 // ---------------------------------------------------------------- code cards (spec 11, 14, 15)
@@ -848,13 +957,17 @@ export interface VocabJob {
   scanUid: string;
 }
 
-export type JobStage = 'queued' | 'text' | 'lemmas' | 'known' | 'compare' | 'done' | 'failed' | 'cancelled';
+export type JobStage =
+  'queued' | 'text' | 'lemmas' | 'known' | 'compare' | 'ocr' | 'writing' | 'done' | 'failed' | 'cancelled';
+
+export type JobKind = 'vocabScan' | 'ocr';
 
 /** Payload of `job://<jobId>` and of `job_status`. */
 export interface JobProgress {
   jobId: string;
-  kind: 'vocabScan';
+  kind: JobKind;
   bookUid: string;
+  /** The vocabulary scan's uid (`''` for other jobs). */
   scanUid: string;
   stage: JobStage;
   done: number;
@@ -862,6 +975,8 @@ export interface JobProgress {
   /** The book's per-page lemma table was reused (no PDF read). */
   reused: boolean;
   error: CoreErrorPayload | null;
+  /** OCR jobs: what was recognised and written (absent for other kinds and until the job ends). */
+  ocr?: OcrJobInfo;
 }
 
 export interface VocabLemmaRef {
@@ -1146,6 +1261,22 @@ export interface CoreClient {
   /** "Adicionar ao deck do livro" (reading popover): one note at once, enriched later. */
   vocabAddWord(uid: string, lemma: string, page: number, form: string): Promise<VocabWordAdded>;
   vocabDataInfo(): Promise<VocabDataInfo>;
+  /** The word forms to color in these EPUB sections (0-based, at most 5), from the last scan. */
+  vocabEpubMarks(uid: string, sections: number[]): Promise<EpubSectionMarks[]>;
+
+  // EPUB annotations (spec 7.1, 14)
+  /** The book's live annotations, in no particular order. */
+  epubAnnotationList(uid: string): Promise<EpubAnnotation[]>;
+  epubAnnotationUpsert(input: EpubAnnotationInput): Promise<EpubAnnotation>;
+  /** Tombstones the annotation (a no-op when already gone). */
+  epubAnnotationDelete(annotationUid: string): Promise<void>;
+
+  // OCR (spec 7.2)
+  ocrInfo(uid: string): Promise<OcrInfo>;
+  /** Starts "Reconhecer texto" in the background (`job://<jobId>`, kind 'ocr'); the result is a new version. */
+  ocrStart(uid: string): Promise<OcrStarted>;
+  /** Cancels the book's OCR job; `false` when none was running. */
+  ocrCancel(uid: string): Promise<boolean>;
 
   // Jobs (spec 15)
   /** `null` when the job is unknown (finished long ago, or another app run). */
@@ -1263,7 +1394,8 @@ export interface CoreClient {
 
   // Reading
   positionGet(uid: string): Promise<ReadingPosition | null>;
-  positionSet(uid: string, page: number, progress: number): Promise<void>;
+  /** `page` 0-based (an EPUB's spine section); `cfi` the EPUB location (left out / null for a PDF). */
+  positionSet(uid: string, page: number, progress: number, cfi?: string | null): Promise<ReadingPosition>;
   readingSessionStart(uid: string, page: number): Promise<void>;
   readingSessionHeartbeat(uid: string, page: number): Promise<void>;
   /** Ends `uid`'s session; a no-op when another book's session is open (a late stop). */
@@ -1281,7 +1413,7 @@ export interface CoreClient {
   devLog(level: LogLevel, message: string): Promise<void>;
   /** Library cover (first page). `fileVersion` busts the cache when a new version is saved. */
   coverUrl(uid: string, fileVersion: number): string;
-  /** Native "open files" dialog (PDF). Empty when cancelled. */
+  /** Native "open files" dialog (PDF, EPUB). Empty when cancelled. */
   pickBookFiles(): Promise<string[]>;
   /** Native "save as" dialog, opened by the core; the chosen path is the only one `bookExport`/`exportBytes`
    *  will write to, once. `null` when cancelled. */

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: the app commands, events/window basics, and the open dialog (pickImageFile); the save and package dialogs are opened by the core (`export_pick_path`, `anki_pick_package`). The anki/card iframes get no capability (spec 18: minimal)",
+  "description": "Main window: the app commands, events/window basics, the open dialog (pickImageFile) and opening http(s) links of an EPUB in the system browser (after a confirm in the reader); the save and package dialogs are opened by the core (`export_pick_path`, `anki_pick_package`). The anki/card iframes get no capability (spec 18: minimal)",
   "windows": [
     "main"
   ],
@@ -9,6 +9,10 @@
     "core:default",
     "core:window:allow-destroy",
     "dialog:allow-open",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }, { "url": "http://*" }]
+    },
     "allow-anki-deck-tree",
     "allow-anki-deck-names",
     "allow-anki-deck-create",
@@ -108,6 +112,13 @@
     "allow-vocab-add-word",
     "allow-vocab-data-info",
     "allow-job-status",
-    "allow-job-cancel"
+    "allow-job-cancel",
+    "allow-ocr-info",
+    "allow-ocr-start",
+    "allow-ocr-cancel",
+    "allow-epub-annotation-list",
+    "allow-epub-annotation-upsert",
+    "allow-epub-annotation-delete",
+    "allow-vocab-epub-marks"
   ]
 }

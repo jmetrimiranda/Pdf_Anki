@@ -10,8 +10,9 @@
 # With the seed, '{deck:<full name>}' and '{card:<full name>}' in a route become that deck's id and
 # the id of its first card (e.g. /anki/opcoes/{deck:5000 palavras}); the file name keeps the
 # placeholder's text ('deck-5000-palavras').
-# LEITOR_CAPTURE_PDF=<file.pdf> imports that book into the library first (one launch with the file, like "Abrir
-# com"); '{book}' in a route becomes its book_uid, and with the seed the fixture's Animal Farm Fonte links to it.
+# LEITOR_CAPTURE_BOOK=<file.pdf|file.epub> (old name LEITOR_CAPTURE_PDF, still accepted) imports that book into the
+# library first (one launch with the file, like "Abrir com"); '{book}' in a route becomes its book_uid (the sha256
+# of the file, for PDFs and EPUBs alike), and with the seed the fixture's Animal Farm Fonte links to it.
 # LEITOR_CAPTURE_ARGS adds arguments (space-separated) to every capture launch.
 # LEITOR_CAPTURE_EMBEDDED=1 captures the production frontend instead of the Vite dev server: `vite build` + a debug
 # build with `tauri/custom-protocol` (dist embedded, served over tauri:// with the real CSP header, Pyodide from
@@ -19,6 +20,7 @@
 # CSP violations included) is kept as $OUT/<name>.log.
 set -euo pipefail
 OUT="$1"; shift
+LEITOR_CAPTURE_PDF="${LEITOR_CAPTURE_BOOK:-${LEITOR_CAPTURE_PDF:-}}"
 mkdir -p "$OUT"
 export LEITOR_DATA_DIR="${LEITOR_DATA_DIR:-$(mktemp -d)}"
 export XDG_DATA_HOME=/tmp/xdg/data XDG_CACHE_HOME=/tmp/xdg/cache XDG_CONFIG_HOME=/tmp/xdg/config

@@ -39,15 +39,25 @@ as_root() {
 }
 export -f dev as_root
 
-step rust "dev 'cd src-tauri && export CARGO_INCREMENTAL=0 LEITOR_REQUIRE_VOCAB_DATA=1 && cargo fmt --all --check \
+# Light preparation (no heavy lock): the OCR models (sha256-checked, nothing downloaded when they match) and the
+# committed foliate-js copy checked against its pinned hashes (no network).
+echo "=== prep"
+if ! { scripts/fetch-ocr-models.sh && scripts/fetch-foliate.sh --check; } >"$LOGS/prep.log" 2>&1; then
+  failed+=("prep"); echo "--- FALHOU: prep, log em $LOGS/prep.log"
+fi
+
+step rust "dev 'cd src-tauri && export CARGO_INCREMENTAL=0 LEITOR_REQUIRE_VOCAB_DATA=1 LEITOR_REQUIRE_OCR_MODELS=1 && cargo fmt --all --check \
   && cargo clippy -j 12 --workspace --all-targets -- -D warnings \
   && ../scripts/with-keyring.sh cargo test -j 12 --workspace'" 150
 
-# Release timing tests (ignored in the normal run): vocabulary engine, the 300-page scan and the PDF text extraction.
-step perf "dev 'cd src-tauri && export CARGO_INCREMENTAL=0 LEITOR_REQUIRE_VOCAB_DATA=1 \
+# Release timing tests (ignored in the normal run): vocabulary engine, the 300-page scan, the PDF text extraction,
+# OCR time per page (spec 7.2) and the EPUB open + text extraction.
+step perf "dev 'cd src-tauri && export CARGO_INCREMENTAL=0 LEITOR_REQUIRE_VOCAB_DATA=1 LEITOR_REQUIRE_OCR_MODELS=1 \
   && cargo test -j 12 --release -p core-vocab -- --ignored \
   && cargo test -j 12 --release -p leitor-estudos --test vocab_perf -- --ignored --nocapture \
-  && cargo test -j 12 --release -p core-pdf --test book_text -- --ignored'" 90
+  && cargo test -j 12 --release -p core-pdf --test book_text -- --ignored \
+  && cargo test -j 12 --release -p core-pdf --features testkit --test ocr -- --ignored --nocapture \
+  && cargo test -j 12 --release -p core-epub --test text -- --ignored --nocapture'" 90
 
 step cpp-root-and-user "as_root 'cargo test -j 12 -p core-cpp \
   && chown -R dev:dev /usr/local/cargo/registry /usr/local/cargo/git \
@@ -61,13 +71,18 @@ if [[ -n "$(git -C third_party/pdfcraft status --porcelain)" ]]; then
     && cargo check --target wasm32-unknown-unknown -p pdfcraft-web'" 90
 fi
 
-step web "dev 'pnpm install --frozen-lockfile && pnpm -r lint && echo lint-ok && pnpm -r test'" 45
+# The production build is checked for foliate-js leftovers (no pdf.js, no foliate chunk over 1 MB).
+step web "dev 'pnpm install --frozen-lockfile && pnpm -r lint && echo lint-ok && pnpm -r test \
+  && pnpm --dir web exec vite build && scripts/fetch-foliate.sh --check-dist web/dist'" 45
 
 step pdfcraft-web 'dev scripts/build-pdfcraft-web.sh' 60
 
 # Playwright: keep the exit code, then clean the artifacts (traces/videos only on failure, but don't keep them).
 # Each run has its own limit (t): a hung xvfb-run/Xvfb ends the run with 124/137 instead of blocking the step.
-step playwright "dev 't() { timeout --kill-after=30s 30m \"\$@\"; }; cd web && rc=0; t pnpm e2e:mock --reporter=line || rc=\$?; \
+# The OCR bridge test needs the core-generated scanned PDF and its OCR'd version (ocr_fixture example).
+step playwright "dev 't() { timeout --kill-after=30s 30m \"\$@\"; }; export LEITOR_OCR_FIXTURE_DIR=/workspaces/leitor-estudos/src-tauri/target/fixtures/ocr; \
+  (cd src-tauri && CARGO_INCREMENTAL=0 cargo run -j 12 -p core-pdf --features testkit --example ocr_fixture -- \"\$LEITOR_OCR_FIXTURE_DIR\") || exit 1; \
+  cd web && rc=0; t pnpm e2e:mock --reporter=line || rc=\$?; \
   [ \$rc -eq 0 ] && { t xvfb-run -a pnpm e2e:bridge --reporter=line || rc=\$?; }; \
   [ \$rc -eq 0 ] && { echo \"bridge: 2nd run, flakiness check\"; t xvfb-run -a pnpm e2e:bridge --reporter=line || rc=\$?; }; \
   [ \$rc -eq 0 ] && { t xvfb-run -a pnpm e2e:perf --reporter=line || rc=\$?; }; \

@@ -18,6 +18,10 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(credits.filter({ hasText: 'Modelos de OCR (ocrs)' })).toContainText('CC BY-SA 4.0');
     await expect(credits.filter({ hasText: /^Anki/ })).toContainText('AGPL-3.0');
     await expect(credits.filter({ hasText: 'PdfCraft' })).toContainText('MIT / Apache-2.0');
+    await expect(credits.filter({ hasText: /^foliate-js/ })).toContainText('MIT');
+    await expect(credits.filter({ hasText: /^foliate-js/ })).toContainText('commit 78914ae');
+    await expect(credits.filter({ hasText: /^zip\.js/ })).toContainText('BSD-3-Clause');
+    await expect(credits.filter({ hasText: /^fflate/ })).toContainText('MIT');
     await expect(credits.filter({ hasText: 'Pyodide' })).toContainText('MPL-2.0');
     await expect(credits.filter({ hasText: 'CodeMirror' })).toContainText('MIT');
     await page.screenshot({ path: shot(`vocab-about-${theme}`, info.project.name), fullPage: true });

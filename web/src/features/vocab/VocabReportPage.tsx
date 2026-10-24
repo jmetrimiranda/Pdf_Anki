@@ -38,6 +38,7 @@ import {
   type StatusFilter,
 } from './model';
 import { followJob, vocabQ } from './queries';
+import { q } from '../../lib/core/queries';
 import { CoverageCurve } from './report/CoverageCurve';
 import { GenerateDeckDialog } from './report/GenerateDeckDialog';
 import { ReportTable } from './report/ReportTable';
@@ -316,6 +317,9 @@ function Report({ report }: { report: VocabReport }) {
   const [generate, setGenerate] = useState(false);
   const carried = useRef<Set<string> | null>(null);
   const folderCount = report.folder.deckCount;
+  // An EPUB's units are its chapters (spine sections): "cap. N" instead of "p. N" (spec 12 for EPUB).
+  const library = useQuery(q.library());
+  const unit = library.data?.find((b) => b.bookUid === report.bookUid)?.format === 'epub' ? 'chapter' : 'page';
 
   // A new scan of the same book (rescan, deck generation): keep the selection that still makes sense.
   useEffect(() => {
@@ -474,10 +478,14 @@ function Report({ report }: { report: VocabReport }) {
           onToggle={toggle}
           onToggleAll={toggleAll}
           scroller={scroller}
+          unit={unit}
           onOpen={(row) =>
             void navigate({
               to: '/leitor',
-              search: { livro: report.bookUid, pagina: row.firstPage + 1, q: row.form } as never,
+              search:
+                unit === 'chapter'
+                  ? { livro: report.bookUid, cap: row.firstPage + 1, q: row.form }
+                  : { livro: report.bookUid, pagina: row.firstPage + 1, q: row.form },
             })
           }
         />

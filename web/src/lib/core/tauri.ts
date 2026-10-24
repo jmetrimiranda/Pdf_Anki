@@ -51,7 +51,7 @@ function subscription(start: () => Promise<() => void>): Unlisten {
   };
 }
 
-const PDF_FILTER = [{ name: 'PDF', extensions: ['pdf'] }];
+const BOOK_FILTER = [{ name: 'Livros (PDF, EPUB)', extensions: ['pdf', 'epub'] }];
 const IMAGE_FILTER = [{ name: 'Imagens', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }];
 
 function toBytes(bytes: ArrayBuffer | Uint8Array): Uint8Array {
@@ -109,6 +109,15 @@ export const tauriClient: CoreClient = {
   vocabMarks: (uid, pages) => call('vocab_marks', { uid, pages }),
   vocabAddWord: (uid, lemma, page, form) => call('vocab_add_word', { uid, lemma, page, form }),
   vocabDataInfo: () => call('vocab_data_info'),
+  vocabEpubMarks: (uid, sections) => call('vocab_epub_marks', { uid, sections }),
+
+  epubAnnotationList: (uid) => call('epub_annotation_list', { uid }),
+  epubAnnotationUpsert: (input) => call('epub_annotation_upsert', { annotation: input }),
+  epubAnnotationDelete: (annotationUid) => call<void>('epub_annotation_delete', { uid: annotationUid }),
+
+  ocrInfo: (uid) => call('ocr_info', { uid }),
+  ocrStart: (uid) => call('ocr_start', { uid }),
+  ocrCancel: (uid) => call('ocr_cancel', { uid }),
 
   jobStatus: (jobId) => call('job_status', { jobId }),
   jobCancel: (jobId) => call<void>('job_cancel', { jobId }),
@@ -226,7 +235,7 @@ export const tauriClient: CoreClient = {
   docWords: (uid, page) => call('doc_words', { uid, page }),
 
   positionGet: (uid) => call('position_get', { uid }),
-  positionSet: (uid, page, progress) => call('position_set', { uid, page, progress }),
+  positionSet: (uid, page, progress, cfi) => call('position_set', { uid, page, progress, cfi: cfi ?? null }),
   readingSessionStart: (uid, page) => call('reading_session_start', { uid, page }),
   readingSessionHeartbeat: (uid, page) => call('reading_session_heartbeat', { uid, page }),
   readingSessionStop: (uid, reason) => call('reading_session_stop', { uid, reason }),
@@ -244,7 +253,7 @@ export const tauriClient: CoreClient = {
   coverUrl: (uid, fileVersion) => protocolUrl('pdf', `cover/${encodeURIComponent(uid)}?v=${fileVersion}`),
 
   pickBookFiles: async () => {
-    const picked = await openDialog({ multiple: true, directory: false, filters: PDF_FILTER });
+    const picked = await openDialog({ multiple: true, directory: false, filters: BOOK_FILTER });
     if (!picked) return [];
     return Array.isArray(picked) ? picked : [picked];
   },

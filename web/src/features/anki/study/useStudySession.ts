@@ -26,7 +26,7 @@ import { isPdfcraftFrame, isTypingTarget } from '../../shell/shortcuts';
 import { AvPlayer, browserPlayerDeps, replayTags } from './audio';
 import type { CardFrameHandle, CardToHost } from './CardFrame';
 import { forwardKey, keyLikeOf, studyKeyAction, type KeyLike, type Rating, type StudyKeyAction } from './keys';
-import { parseLeitorLink } from './links';
+import { openOptions, parseLeitorLink } from './links';
 
 /** How long to wait for the frame's typed answer. */
 export const TYPED_TIMEOUT_MS = 2_000;
@@ -87,7 +87,7 @@ export function studyInOrder<T>(call: () => Promise<T>): Promise<T> {
 
 /** "Abrir no livro" (spec 10.2): opens the book at the Fonte's page and finds the excerpt there. */
 export function openBookAt(source: SourceLink): Promise<boolean> {
-  return leitor.openBook(source.bookUid, { page: source.page - 1, find: source.query ?? undefined });
+  return leitor.openBook(source.bookUid, openOptions(source));
 }
 
 export interface StudySessionOptions {

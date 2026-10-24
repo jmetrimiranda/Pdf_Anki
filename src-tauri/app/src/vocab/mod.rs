@@ -32,6 +32,8 @@ pub use data::{VocabData, VocabDataInfo, VocabDataSource};
 pub const SAMPLE_WORDS: usize = 5;
 /// Most pages per `vocab_marks` call.
 pub const MAX_MARK_PAGES: usize = 20;
+/// Most sections per `vocab_epub_marks` call.
+pub const MAX_EPUB_MARK_SECTIONS: usize = 5;
 
 /// `vocab_settings_get`/`vocab_settings_set`: the wizard's defaults (the last scan's choices).
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -165,13 +167,6 @@ pub(crate) fn folder_required() -> AppError {
     )
 }
 
-pub(crate) fn epub_later() -> AppError {
-    AppError::new(
-        "vocab_epub_later",
-        "O escaneamento de livros EPUB chega numa próxima versão.",
-    )
-}
-
 pub(crate) fn invalid_range(e: &core_vocab::RangeError) -> AppError {
     AppError::new("vocab_invalid_range", e.to_string())
 }
@@ -273,6 +268,14 @@ pub(crate) fn sample_words(values: &[String], n: usize) -> Vec<String> {
     out
 }
 
+/// What the units of a book are called in range labels and errors: pages (PDF) or chapters (EPUB sections).
+pub(crate) fn unit_word(book: &Book) -> core_vocab::UnitWord {
+    match book.format {
+        BookFormat::Pdf => core_vocab::UnitWord::Page,
+        BookFormat::Epub => core_vocab::UnitWord::Chapter,
+    }
+}
+
 pub(crate) fn outline_nodes(items: &[core_pdf::OutlineItem]) -> Vec<OutlineNode> {
     items
         .iter()
@@ -321,14 +324,10 @@ impl AppState {
     }
 
     pub(crate) fn vocab_book(&self, uid: &str) -> Result<Book, AppError> {
-        let book = self.with_store(|s| {
+        self.with_store(|s| {
             s.get_book(uid)?
                 .ok_or_else(|| core_store::StoreError::BookNotFound(uid.to_owned()))
-        })?;
-        if book.format != BookFormat::Pdf {
-            return Err(epub_later());
-        }
-        Ok(book)
+        })
     }
 
     pub fn vocab_settings_get(&self) -> Result<VocabSettings, AppError> {
@@ -471,11 +470,15 @@ impl AppState {
         Ok(())
     }
 
-    /// The outline of the current version (with the bookmarks the user created in PdfCraft) and the page count.
+    /// The outline of the current version (with the bookmarks the user created in PdfCraft) and the page count; for
+    /// an EPUB, its table of contents (`page` = 0-based section) and the section count.
     pub(crate) fn vocab_outline_nodes(
         &self,
         book: &Book,
     ) -> Result<(u32, Vec<OutlineNode>), AppError> {
+        if book.format == BookFormat::Epub {
+            return self.epub_outline_nodes(book);
+        }
         let doc = self.book_doc(book)?;
         let info = self.pdf().info(doc)?;
         let outline = self.pdf().outline(doc)?;
@@ -498,8 +501,8 @@ impl AppState {
         range: &RangeSpec,
     ) -> Result<(ResolvedRange, Vec<OutlineNode>, u32), AppError> {
         let (page_count, nodes) = self.vocab_outline_nodes(book)?;
-        let resolved =
-            core_vocab::resolve_range(range, &nodes, page_count).map_err(|e| invalid_range(&e))?;
+        let resolved = core_vocab::resolve_range_in(range, &nodes, page_count, unit_word(book))
+            .map_err(|e| invalid_range(&e))?;
         Ok((resolved, nodes, page_count))
     }
 

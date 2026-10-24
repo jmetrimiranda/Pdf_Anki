@@ -103,10 +103,17 @@ test('app tabs navigate and highlight; shortcuts switch tabs', async ({ page }) 
 test('the Library shows the seeded books with covers, progress, search and collections', async ({ page }, info) => {
   await page.goto('/biblioteca');
   const books = page.getByTestId('book');
-  await expect(books).toHaveCount(3);
-  await expect(page.getByTestId('book-title')).toHaveText(['ROS 2 na prática', 'Animal Farm', 'Apostila digitalizada']);
+  await expect(books).toHaveCount(4);
+  await expect(page.getByTestId('book-title')).toHaveText([
+    'ROS 2 na prática',
+    'The Time Machine',
+    'Animal Farm',
+    'Apostila digitalizada',
+  ]);
   await expect(page.getByText('p. 5 de 12')).toBeVisible();
   await expect(page.getByText('Parece escaneado')).toBeVisible();
+  // The EPUB carries its format badge.
+  await expect(page.getByTestId('format-badge')).toHaveText(['EPUB']);
   // Covers loaded (data: SVGs from the mock core).
   for (const img of await page.getByRole('img', { name: /^Capa de / }).all()) {
     await expect.poll(() => img.evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
@@ -122,9 +129,9 @@ test('the Library shows the seeded books with covers, progress, search and colle
 
   const chips = page.getByRole('group', { name: 'Coleções' });
   await chips.getByRole('button', { name: 'Inglês' }).click();
-  await expect(page.getByTestId('book-title')).toHaveText(['Animal Farm']);
+  await expect(page.getByTestId('book-title')).toHaveText(['The Time Machine', 'Animal Farm']);
   await chips.getByRole('button', { name: 'Todas' }).click();
-  await expect(books).toHaveCount(3);
+  await expect(books).toHaveCount(4);
 
   await page.getByRole('radio', { name: 'Lista' }).click();
   await page.reload();
@@ -134,30 +141,30 @@ test('the Library shows the seeded books with covers, progress, search and colle
 
 test('adding books: success, corrupted file and duplicates keep the app usable', async ({ page }) => {
   await page.goto('/biblioteca');
-  await expect(page.getByTestId('book')).toHaveCount(3);
+  await expect(page.getByTestId('book')).toHaveCount(4);
   await setNextPick(page, ['/home/jorge/Livros/Livro corrompido.pdf']);
   await page.getByRole('button', { name: 'Adicionar livro' }).first().click();
   await expect(page.getByText(/^Não foi possível adicionar Livro corrompido\.pdf: /)).toBeVisible();
-  await expect(page.getByTestId('book')).toHaveCount(3);
+  await expect(page.getByTestId('book')).toHaveCount(4);
 
   await setNextPick(page, ['/home/jorge/Livros/Dom Casmurro.pdf']);
   await page.keyboard.press('Control+o');
   await expect(page.getByText('“Dom Casmurro” foi adicionado à biblioteca.')).toBeVisible();
-  await expect(page.getByTestId('book')).toHaveCount(4);
+  await expect(page.getByTestId('book')).toHaveCount(5);
 
   await setNextPick(page, ['/home/jorge/Livros/Dom Casmurro.pdf']);
   await page.getByRole('button', { name: 'Adicionar livro' }).first().click();
   await expect(page.getByText('Este livro já está na biblioteca')).toBeVisible();
-  await expect(page.getByTestId('book')).toHaveCount(4);
+  await expect(page.getByTestId('book')).toHaveCount(5);
 
   // A reload is an app restart: the library is still there.
   await page.reload();
-  await expect(page.getByTestId('book')).toHaveCount(4);
+  await expect(page.getByTestId('book')).toHaveCount(5);
 });
 
 test('rename, move to a collection and remove a book', async ({ page }) => {
   await page.goto('/biblioteca');
-  await expect(page.getByTestId('book')).toHaveCount(3);
+  await expect(page.getByTestId('book')).toHaveCount(4);
 
   await page.getByRole('button', { name: 'Ações do livro Apostila digitalizada' }).click();
   await page.getByRole('menuitem', { name: 'Renomear' }).click();
@@ -185,8 +192,16 @@ test('rename, move to a collection and remove a book', async ({ page }) => {
     .getByRole('button', { name: 'Remover' })
     .click();
   await expect(page.getByText('“Animal Farm” foi removido da biblioteca.')).toBeVisible();
+  await expect(page.getByTestId('book')).toHaveCount(3);
+  await expect(chips.getByRole('button', { name: 'Inglês' })).toHaveCount(1);
+  // Removing the last book of "Inglês" removes the chip too.
+  await page.getByRole('button', { name: 'Ações do livro The Time Machine' }).click();
+  await page.getByRole('menuitem', { name: 'Remover da biblioteca' }).click();
+  await page
+    .getByRole('dialog', { name: 'Remover “The Time Machine” da biblioteca?' })
+    .getByRole('button', { name: 'Remover' })
+    .click();
   await expect(page.getByTestId('book')).toHaveCount(2);
-  // Removing the only book of "Inglês" removes the chip too.
   await expect(chips.getByRole('button', { name: 'Inglês' })).toHaveCount(0);
 });
 
@@ -233,7 +248,7 @@ test('narrow screens turn tabs into a menu and the library into a list', async (
   await page.screenshot({ path: shot('narrow-menu', info.project.name) });
   await page.getByRole('menuitem', { name: /Biblioteca/ }).click();
   await expect(page).toHaveURL(/\/biblioteca$/);
-  await expect(page.getByTestId('book')).toHaveCount(3);
+  await expect(page.getByTestId('book')).toHaveCount(4);
   await expect(page.getByRole('radio', { name: 'Lista' })).toHaveCount(0);
   await page.screenshot({ path: shot('narrow-biblioteca', info.project.name) });
 });

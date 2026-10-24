@@ -7,8 +7,11 @@ import { ankiSyncMessages } from './pt-BR/ankiSync';
 import { bookPanelMessages } from './pt-BR/bookPanel';
 import { codeAuthoringMessages } from './pt-BR/codeAuthoring';
 import { codeReviewMessages } from './pt-BR/codeReview';
+import { epubMessages } from './pt-BR/epub';
+import { epubReaderMessages } from './pt-BR/epubReader';
 import { leitorBridgeMessages } from './pt-BR/leitorBridge';
 import { miniReviewMessages } from './pt-BR/miniReview';
+import { ocrMessages } from './pt-BR/ocr';
 import { vocabMessages } from './pt-BR/vocab';
 import { vocabReadingMessages } from './pt-BR/vocabReading';
 
@@ -63,7 +66,6 @@ export const baseMessages = {
   'library.collections': 'Coleções',
   'library.allCollections': 'Todas',
   'library.empty': 'Nenhum livro na biblioteca ainda.',
-  'library.emptyHint': 'Adicione um PDF do seu computador ou arraste o arquivo para esta janela.',
   'library.or': 'ou',
   'library.noResults': 'Nenhum livro encontrado.',
   'library.noResultsHint': 'Tente outro termo ou escolha outra coleção.',
@@ -74,8 +76,6 @@ export const baseMessages = {
   'library.notStarted': 'Não iniciado',
   'library.progress': 'Progresso da leitura',
   'library.noAuthor': 'Autor desconhecido',
-  'library.scanned': 'Parece escaneado',
-  'library.scannedHint': 'Reconhecimento de texto (OCR) chega numa próxima versão',
   'library.actions': 'Ações do livro {titulo}',
   'library.open': 'Abrir',
   'library.rename': 'Renomear',
@@ -116,7 +116,6 @@ export const baseMessages = {
   'library.openFailed': 'Não foi possível abrir “{titulo}”: {mensagem}',
   'library.actionFailed': 'Não foi possível concluir: {mensagem}',
   'library.dropTitle': 'Solte para adicionar à biblioteca',
-  'library.dropHint': 'Arquivos PDF são copiados para a pasta do app.',
   'library.coverAlt': 'Capa de {titulo}',
 
   'notFound.title': 'Página não encontrada.',
@@ -291,6 +290,9 @@ export const messageSections = {
   codeAuthoring: codeAuthoringMessages,
   vocab: vocabMessages,
   vocabReading: vocabReadingMessages,
+  epub: epubMessages,
+  epubReader: epubReaderMessages,
+  ocr: ocrMessages,
 } as const;
 
 export const ptBR = {
@@ -306,6 +308,9 @@ export const ptBR = {
   ...codeAuthoringMessages,
   ...vocabMessages,
   ...vocabReadingMessages,
+  ...epubMessages,
+  ...epubReaderMessages,
+  ...ocrMessages,
 } as const;
 
 export type Messages = typeof ptBR;

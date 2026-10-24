@@ -1,11 +1,13 @@
 // Configurações → Sobre: the app version and the credits of the bundled data and programs (spec 12.2: WordNet
 // CC BY 4.0, the frequency list and the stopwords as built by scripts/build-wordnet.sh; the OCR models CC BY-SA 4.0;
-// Anki AGPL-3.0; PdfCraft MIT/Apache-2.0; Pyodide MPL-2.0; CodeMirror MIT).
+// Anki AGPL-3.0; PdfCraft MIT/Apache-2.0; foliate-js MIT with zip.js BSD-3-Clause and fflate MIT (the EPUB reader,
+// pinned in scripts/fetch-foliate.sh); Pyodide MPL-2.0; CodeMirror MIT).
 import { useQuery } from '@tanstack/react-query';
 import { BookOpenText } from 'lucide-react';
 import { Badge, Card, Skeleton } from '../../components/ui';
 import { t, type MessageKey } from '../../i18n';
 import type { VocabDataSource } from '../../lib/core/types';
+import { FFLATE_VERSION, FOLIATE_COMMIT, ZIPJS_VERSION } from '../epub/version';
 import { vocabQ } from '../vocab/queries';
 import tauriConf from '../../../../src-tauri/app/tauri.conf.json';
 
@@ -65,9 +67,23 @@ export function AboutSettings() {
     },
   ];
   const programs: Credit[] = [
-    { name: t('settings.about.ocr'), use: 'settings.about.ocrUse', license: 'CC BY-SA 4.0' },
+    // CC BY-SA asks for the author: Robert Knight's ocrs-models (src-tauri/resources/ocr-models/ATTRIBUTION.txt).
+    {
+      name: t('settings.about.ocr'),
+      use: 'settings.about.ocrUse',
+      license: 'CC BY-SA 4.0',
+      detail: 'ocrs-models · Robert Knight',
+    },
     { name: t('settings.about.anki'), use: 'settings.about.ankiUse', license: 'AGPL-3.0' },
     { name: t('settings.about.pdfcraft'), use: 'settings.about.pdfcraftUse', license: 'MIT / Apache-2.0' },
+    {
+      name: t('settings.about.foliate'),
+      use: 'settings.about.foliateUse',
+      license: 'MIT',
+      detail: t('settings.about.foliateCommit', { sha: FOLIATE_COMMIT.slice(0, 7) }),
+    },
+    { name: t('settings.about.zipjs'), use: 'settings.about.zipjsUse', license: 'BSD-3-Clause', detail: ZIPJS_VERSION },
+    { name: t('settings.about.fflate'), use: 'settings.about.fflateUse', license: 'MIT', detail: FFLATE_VERSION },
     { name: t('settings.about.pyodide'), use: 'settings.about.pyodideUse', license: 'MPL-2.0' },
     { name: t('settings.about.codemirror'), use: 'settings.about.codemirrorUse', license: 'MIT' },
   ];

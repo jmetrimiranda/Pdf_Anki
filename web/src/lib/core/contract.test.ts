@@ -5,7 +5,7 @@ import importExample from '../../../../src-tauri/crates/core-code/tests/fixtures
 import contract from './__fixtures__/contract.json';
 import { mockClient, mockHandle } from './mock';
 import { intervalLabel, NEW_CARD_LABELS } from './mock/ankiStudy';
-import type { AvTag, DeckNode, StudyCard } from './types';
+import type { AvTag, DeckNode, JobProgress, StudyCard } from './types';
 
 type Shapes = Record<string, string[]>;
 
@@ -79,6 +79,20 @@ const VOCAB_SHAPES = new Set([
 function hasVocab(expected: Shapes): boolean {
   return Object.keys(expected).some((k) => VOCAB_SHAPES.has(k));
 }
+
+/**
+ * The EPUB/OCR shapes (Phase 7). The Rust contract may name these structs differently (an OCR progress is a
+ * `JobProgress` with its `ocr` member): the key set must still be one it sends.
+ */
+const PHASE7_SHAPES = new Set([
+  'EpubAnnotation',
+  'EpubSectionMarks',
+  'EpubMarkWord',
+  'BookOpen',
+  'OcrInfo',
+  'OcrStarted',
+  'OcrJobInfo',
+]);
 
 describe('mock core vs the Rust contract snapshot', () => {
   it('serializes the same keys as the Rust core', async () => {
@@ -292,6 +306,71 @@ describe('mock core vs the Rust contract snapshot', () => {
     const wd = await mockClient.vocabDefine('windmills', farmBook.bookUid);
     collect(out, 'WordDefinition', wd);
 
+    // EPUB (spec 7.1): the sample book's annotations, its position with a CFI, opening it, the vocabulary marks of its
+    // sections and a card whose Fonte points at a chapter; OCR (spec 7.2) of the scanned book through its job.
+    const epub = (await mockClient.libraryList()).find((b) => b.format === 'epub')!;
+    const cfi = 'epubcfi(/6/8!/4/2/2,/1:0,/1:16)';
+    const ann = await mockClient.epubAnnotationUpsert({
+      bookUid: epub.bookUid,
+      kind: 'highlight',
+      cfi,
+      text: 'The Time Traveller',
+      color: '#fff000',
+      comment: null,
+    });
+    collect(out, 'EpubAnnotation', ann);
+    for (const a of await mockClient.epubAnnotationList(epub.bookUid)) collect(out, 'EpubAnnotation', a);
+    await mockClient.positionSet(epub.bookUid, 3, 0.4, cfi);
+    collect(out, 'BookOpen', await mockClient.bookOpen(epub.bookUid));
+    collect(out, 'BookOpen', await mockClient.bookOpen(farmBook.bookUid));
+    const epubJob = await mockClient.vocabScanStart(epub.bookUid, vocabRoot, [], { kind: 'all' }, settings.config);
+    await new Promise<void>((resolve) => {
+      const stopJob = mockClient.onJobProgress(epubJob.jobId, (p) => {
+        if (p.stage === 'done' || p.stage === 'failed') {
+          stopJob();
+          resolve();
+        }
+      });
+    });
+    for (const sm of await mockClient.vocabEpubMarks(epub.bookUid, [1, 2])) {
+      collect(out, 'EpubSectionMarks', sm);
+      for (const m of sm.words) collect(out, 'EpubMarkWord', m);
+    }
+    const basic = (await mockClient.ankiNotetypes()).find((n) => n.appType === 'Básico (Leitor)');
+    if (basic) {
+      const fonte = basic.fields.findIndex((f) => f.name === 'Fonte');
+      const fields = basic.fields.map((_, i) =>
+        i === 0
+          ? 'Contrato EPUB'
+          : i === fonte
+            ? `<a href="leitor://livro/${epub.bookUid}?cap=2&amp;cfi=${encodeURIComponent(cfi)}">The Time Machine, Chapter I</a>`
+            : '',
+      );
+      await mockClient.ankiNoteAdd({ notetypeId: basic.id, deckId: words, fields, tags: [] });
+      for (const c of await mockClient.ankiBookCards(epub.bookUid)) collect(out, 'BookCard', c);
+    }
+    const scannedBook = (await mockClient.libraryList()).find((b) => !b.hasText)!;
+    mockHandle.ocr.setPageDelay(1);
+    collect(out, 'OcrInfo', await mockClient.ocrInfo(scannedBook.bookUid));
+    const ocrStarted = await mockClient.ocrStart(scannedBook.bookUid);
+    collect(out, 'OcrStarted', ocrStarted);
+    const ocrProgress: JobProgress[] = [];
+    await new Promise<void>((resolve) => {
+      const stopJob = mockClient.onJobProgress(ocrStarted.jobId, (p) => {
+        ocrProgress.push(p);
+        if (p.stage === 'done' || p.stage === 'failed') {
+          stopJob();
+          resolve();
+        }
+      });
+    });
+    for (const p of ocrProgress) {
+      // `ocr` is only there once the job ends (skipped while absent): the other events are plain JobProgress.
+      if (p.ocr) collect(out, 'OcrJobInfo', p.ocr);
+      else collect(out, 'JobProgress', p);
+    }
+    expect(ocrProgress.at(-1)?.ocr, 'the OCR job ends with its OcrJobInfo').toBeDefined();
+
     const expected = contract as Shapes;
     for (const required of [
       'StudyNext.card',
@@ -336,12 +415,27 @@ describe('mock core vs the Rust contract snapshot', () => {
       'ImportPreview',
       'ImportItem',
       'CodeImportResult',
+      'BookOpen',
+      'EpubAnnotation',
+      'EpubSectionMarks',
+      'EpubMarkWord',
+      'OcrInfo',
+      'OcrStarted',
+      'OcrJobInfo',
     ]) {
       expect(out[required], `the mock produced no ${required}`).toBeDefined();
     }
     const known = new Set(Object.values(expected).map((k) => JSON.stringify(k)));
+    const hasPhase7 = Object.keys(expected).some(
+      (k) => PHASE7_SHAPES.has(k) || k.startsWith('Epub') || k.startsWith('Ocr'),
+    );
     for (const [name, keys] of Object.entries(out)) {
       if (name.startsWith('Values.')) continue;
+      if (PHASE7_SHAPES.has(name) && !expected[name]) {
+        // Named differently in Rust: the key set must be one it sends (once the snapshot has the Phase 7 shapes).
+        if (hasPhase7) expect(known.has(JSON.stringify(keys)), `${name} keys ${keys.join(',')}`).toBe(true);
+        continue;
+      }
       if (VOCAB_SHAPES.has(name) && !expected[name]) {
         // The Rust contract may name a vocabulary struct differently: the key set must still be one it sends.
         if (hasVocab(expected)) expect(known.has(JSON.stringify(keys)), `${name} keys ${keys.join(',')}`).toBe(true);

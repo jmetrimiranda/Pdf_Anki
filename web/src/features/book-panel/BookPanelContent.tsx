@@ -11,10 +11,12 @@ import { cn } from '../../lib/cn';
 import { core } from '../../lib/core/client';
 import type { BookCard, BookDeckInfo, BookPanelInfo, BookPanelPatch } from '../../lib/core/types';
 import { errorMessage } from '../anki/decks/DeckDialogs';
+import { openOptions } from '../anki/study/links';
 import { NoteEditorDialog } from '../anki/editor/NoteEditorDialog';
 import { DeckPicker } from '../anki/shared/DeckPicker';
 import type { LeitorSelection } from '../leitor/controller';
 import { leitor, useLeitorSelector } from '../leitor/instance';
+import { OcrPanelNotice } from '../ocr';
 import { useSyncStatus } from '../sync/useSyncStatus';
 import { CardForm, type CardSelection } from './CardForm';
 import { MiniReview } from './review/MiniReview';
@@ -87,11 +89,14 @@ export function BookPanelContent({
   onCardDone,
   reviewRequest,
   onReviewStarted,
+  unit = 'page',
 }: {
   bookUid: string;
   title: string;
-  /** 0-based page in front. */
+  /** 0-based page in front (an EPUB's spine section). */
   page: number;
+  /** `chapter` for an EPUB: "Cards deste capítulo", Fonte links with `cap`/`cfi` (spec 7.1, 10). */
+  unit?: 'page' | 'chapter';
   /** The book's current selection in PdfCraft (null: nothing selected). */
   selection: LeitorSelection | null;
   /** Open the card form for this selection ("Criar card", Ctrl+Shift+N, the button). */
@@ -192,6 +197,7 @@ export function BookPanelContent({
 
   return (
     <div className="flex flex-col">
+      {unit === 'page' && <OcrPanelNotice uid={bookUid} />}
       <SelectionSection selection={selection} />
       <Section title={t('bookPanel.decks')}>
         <div className="flex flex-col gap-3">
@@ -214,7 +220,7 @@ export function BookPanelContent({
       <Section title={t('bookPanel.vocab')}>
         <VocabSection bookUid={bookUid} vocab={data.vocab} />
       </Section>
-      <PageCards bookUid={bookUid} page={page} cards={cards.data ?? null} loading={cards.isPending} />
+      <PageCards bookUid={bookUid} page={page} unit={unit} cards={cards.data ?? null} loading={cards.isPending} />
     </div>
   );
 }
@@ -367,14 +373,17 @@ function ContentDeckRow({
   );
 }
 
+/** "Cards desta página" (PDF) / "Cards deste capítulo" (EPUB): the book's cards whose Fonte points here. */
 function PageCards({
   bookUid,
   page,
+  unit,
   cards,
   loading,
 }: {
   bookUid: string;
   page: number;
+  unit: 'page' | 'chapter';
   cards: BookCard[] | null;
   loading: boolean;
 }) {
@@ -382,14 +391,20 @@ function PageCards({
   const [editing, setEditing] = useState<number | null>(null);
   const deckNames = useQuery({ queryKey: ['anki', 'deckNames'], queryFn: () => core.ankiDeckNames() });
   const page1 = page + 1;
-  const here = (cards ?? []).filter((c) => c.page === page1);
+  const here = (cards ?? []).filter((c) => c.page === page1 && (c.unit ?? 'page') === unit);
   const deckName = (id: number) => deckNames.data?.find((d) => d.id === id)?.name ?? '';
+  const chapter = unit === 'chapter';
   return (
-    <Section title={t('bookPanel.pageCards', { n: page1 })} className="pb-1">
+    <Section
+      title={chapter ? t('bookPanel.chapterCards', { n: page1 }) : t('bookPanel.pageCards', { n: page1 })}
+      className="pb-1"
+    >
       {loading ? (
         <SkeletonLines lines={2} />
       ) : here.length === 0 ? (
-        <p className="text-base text-(--pc-muted)">{t('bookPanel.pageCardsEmpty')}</p>
+        <p className="text-base text-(--pc-muted)">
+          {chapter ? t('bookPanel.chapterCardsEmpty') : t('bookPanel.pageCardsEmpty')}
+        </p>
       ) : (
         <ul data-testid="book-page-cards" className="-mx-1.5 flex flex-col">
           {here.map((c) => (
@@ -398,7 +413,7 @@ function PageCards({
                 type="button"
                 className="min-w-0 flex-1 px-1.5 py-1.5 text-left"
                 aria-label={t('bookPanel.pageCardOpen', { trecho: c.preview })}
-                onClick={() => void leitor.openBook(bookUid, { page: c.page - 1, find: c.query })}
+                onClick={() => void leitor.openBook(bookUid, openOptions(c))}
               >
                 <span className="line-clamp-2 text-base break-words">{c.preview}</span>
                 <span className="mt-0.5 block truncate text-xs text-(--pc-muted)">

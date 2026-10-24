@@ -7,7 +7,7 @@
     "frontendDist": "../../web/dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "pnpm --filter @leitor/web dev",
-    "beforeBuildCommand": "pnpm --filter @leitor/web exec bash ../scripts/build-pdfcraft-web.sh && pnpm --filter @leitor/web exec bash ../scripts/fetch-anki-web.sh && pnpm --filter @leitor/web exec bash ../scripts/fetch-pyodide.sh && pnpm --filter @leitor/web exec bash ../scripts/build-wordnet.sh && pnpm --filter @leitor/web build"
+    "beforeBuildCommand": "pnpm --filter @leitor/web exec bash ../scripts/build-pdfcraft-web.sh && pnpm --filter @leitor/web exec bash ../scripts/fetch-anki-web.sh && pnpm --filter @leitor/web exec bash ../scripts/fetch-pyodide.sh && pnpm --filter @leitor/web exec bash ../scripts/build-wordnet.sh && pnpm --filter @leitor/web exec bash ../scripts/fetch-ocr-models.sh && pnpm --filter @leitor/web build"
   },
   "app": {
     "windows": [
@@ -25,12 +25,12 @@
       "csp": {
         "default-src": "'self'",
         "script-src": "'self' 'wasm-unsafe-eval'",
-        "style-src": "'self' 'unsafe-inline'",
+        "style-src": "'self' 'unsafe-inline' blob:",
         "img-src": "'self' data: blob: pdf: http://pdf.localhost card: http://card.localhost",
-        "font-src": "'self' data:",
+        "font-src": "'self' data: blob:",
         "connect-src": "'self' ipc: http://ipc.localhost pdf: http://pdf.localhost data: blob:",
         "worker-src": "'self' blob:",
-        "frame-src": "'self' anki: http://anki.localhost card: http://card.localhost",
+        "frame-src": "'self' anki: http://anki.localhost card: http://card.localhost blob:",
         "object-src": "'none'",
         "base-uri": "'self'",
         "form-action": "'none'",
@@ -40,12 +40,12 @@
       "devCsp": {
         "default-src": "'self'",
         "script-src": "'self' 'wasm-unsafe-eval' 'unsafe-inline'",
-        "style-src": "'self' 'unsafe-inline'",
+        "style-src": "'self' 'unsafe-inline' blob:",
         "img-src": "'self' data: blob: pdf: http://pdf.localhost card: http://card.localhost",
-        "font-src": "'self' data:",
+        "font-src": "'self' data: blob:",
         "connect-src": "'self' ipc: http://ipc.localhost pdf: http://pdf.localhost data: blob: ws://localhost:5173 http://localhost:5173",
         "worker-src": "'self' blob:",
-        "frame-src": "'self' anki: http://anki.localhost card: http://card.localhost",
+        "frame-src": "'self' anki: http://anki.localhost card: http://card.localhost blob:",
         "object-src": "'none'",
         "base-uri": "'self'",
         "form-action": "'none'",
@@ -86,6 +86,15 @@
       },
       {
         "ext": [
+          "epub"
+        ],
+        "mimeType": "application/epub+zip",
+        "name": "EPUB",
+        "description": "Livro EPUB",
+        "role": "Viewer"
+      },
+      {
+        "ext": [
           "apkg"
         ],
         "mimeType": "application/zip",
@@ -105,7 +114,8 @@
     ],
     "resources": {
       "../resources/anki-web/": "anki-web/",
-      "../../data/generated/vocab/": "vocab/"
+      "../../data/generated/vocab/": "vocab/",
+      "../resources/ocr-models/": "ocr-models/"
     }
   }
 }

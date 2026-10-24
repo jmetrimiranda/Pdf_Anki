@@ -32,6 +32,14 @@ describe('Configurações → Sobre', () => {
     expect(within(credit('Modelos de OCR (ocrs)')).getByText('CC BY-SA 4.0')).toBeTruthy();
     expect(within(credit('Anki')).getByText('AGPL-3.0')).toBeTruthy();
     expect(within(credit('PdfCraft')).getByText('MIT / Apache-2.0')).toBeTruthy();
+    expect(within(credit('foliate-js')).getByText('MIT')).toBeTruthy();
+    expect(within(credit('foliate-js')).getByText('commit 78914ae')).toBeTruthy();
+    expect(within(credit('zip.js')).getByText('BSD-3-Clause')).toBeTruthy();
+    expect(within(credit('fflate')).getByText('MIT')).toBeTruthy();
+    expect(
+      within(credit('Modelos de OCR (ocrs)')).getByText('Reconhecimento de texto de livros escaneados.'),
+    ).toBeTruthy();
+    expect(within(credit('Modelos de OCR (ocrs)')).getByText('ocrs-models · Robert Knight')).toBeTruthy();
     expect(within(credit('Pyodide')).getByText('MPL-2.0')).toBeTruthy();
     expect(within(credit('CodeMirror')).getByText('MIT')).toBeTruthy();
     expect(within(credit('Lista de frequência do inglês')).getByText('CC-BY-SA-4.0')).toBeTruthy();

@@ -19,7 +19,8 @@ in PdfCraft's own tests, or reading the fields. Add `static_assertions` checks t
 | `pdfcraft-annot` (`crates/annot`) | build annotations (`add_annotation`) and their appearance streams; link annotations | cos, fonts, model |
 | `pdfcraft-model` (`crates/model`) | typed page tree: `Page::crop/rotation/view_matrix` | cos |
 | `pdfcraft-organize` (`crates/organize`) | `set_info` / `info` / `custom_info` (Info dictionary), bookmark paging | cos, content |
-| `pdfcraft-ocr` (`crates/ocr`) | ocrs recogniser (§7.2) | ocrs, rten |
+| `pdfcraft-ocr` (`crates/ocr`) | ocrs recogniser and the invisible text layer (`text_layer`) (§8) | ocrs, rten |
+| `pdfcraft-edit` (`crates/edit`) | `stamp` (tagged page content: the OCR layer), `page_images` (scan resolution) (§8) | annot, cos, content, fonts, model, kurbo, unicode-bidi — **not** the engine |
 | `pdfcraft-engine` (`crates/engine`) | façade: `Session` holds open `Document`s (cos graph, `DocInfo`, a `RenderPool`, undo, saves); `Edit` enum | **everything**: sign (aws-lc-rs, rustls-cng), js (boa_engine), xfa, forms, print (craft-print git), craft-docpath (git), image, png, tiff, chrono… |
 
 Module layout of render (`crates/render/src/lib.rs:11-29`): `inspect`, `raster`, `reading`, `pixels` are
@@ -673,29 +674,81 @@ and can be reused even when the engine is only partially used).
 
 ---
 
-## 8. OCR (spec 7.2) — `crates/ocr/src/lib.rs`, `crates/engine/src/ocr.rs`
+## 8. OCR (spec 7.2) — `crates/ocr/src/lib.rs`, `crates/edit/src/{lib,images}.rs`, recipe from `crates/engine/src/ocr.rs`
 ```rust
+// pdfcraft-ocr
+pub const DETECTION_MODEL: &str = "text-detection.rten"; pub const RECOGNITION_MODEL: &str = "text-recognition.rten";
 pub struct Models { pub detection: PathBuf, pub recognition: PathBuf }           // :45
 impl Models { pub fn in_dir(dir: &Path) -> Option<Models>; pub fn find() -> Option<Models>; pub fn search_dirs() -> Vec<PathBuf> } // :52-64
-pub struct Ocr { /* ocrs::OcrEngine */ }                                          // :107
+pub struct Ocr { /* ocrs::OcrEngine */ }                                          // :107 (Send + Sync)
 impl Ocr {
     pub fn load(models: &Models) -> Result<Ocr, OcrError>                         // :112 (slow: load once, share Arc)
     pub fn recognize(&self, pixels: &[u8], width: u32, height: u32) -> Result<Vec<Line>, OcrError> // :130 RGBA/RGB/grey
 }
 pub struct Line { pub words: Vec<Word> }  pub struct Word { pub text: String, pub rect: [f32; 4] /* IMAGE PIXELS l,t,r,b */ }
+pub struct PlacedWord { pub text: String, pub origin: [f64; 2], pub across: [f64; 2], pub up: [f64; 2] } // USER space
+impl PlacedWord { pub fn place(word: &Word, to_user: impl Fn(f32, f32) -> [f64; 2]) -> PlacedWord }    // :178
+pub fn text_layer(words: &[PlacedWord]) -> Vec<u8>   // "/OCR BMC q BT 3 Tr /PCHelv 1 Tf … ET Q EMC": invisible Helvetica
 pub enum OcrError { NoModels, Load(String, String), Recognize(String), EmptyImage }  // :30
-pub const ALPHABET: &str = " 0123456789!…ABC…xyz";  // no accented letters
+pub const ALPHABET: &str = " 0123456789!…ABC…xyz";  // Latin, no accented letters (English)
+
+// pdfcraft-edit
+pub fn stamp(doc: &mut cos::Document, page: usize, tag: &str, content: Vec<u8>) -> Result<(), EditError> // lib.rs:667
+pub fn page_images(doc: &cos::Document, page: usize) -> Result<Vec<PageImage>, EditError>               // images.rs:234
+pub struct PageImage { pub matrix: [f64; 6] /* unit square → user space */, pub width: u32, pub height: u32, pub is_form: bool, … }
+pub enum EditError { NoSuchPage(usize), Invalid(String), Cos(CosError) }
 ```
-- Model lookup order: `$PDFCRAFT_MODELS`, then `models/`, `../Resources/models` and `../share/pdfcraft/models` beside the
-  exe, then `CARGO_MANIFEST_DIR/../../assets/models`. **In the Tauri app, call `Ocr::load(&Models::in_dir(app_data/models)?)`**
-  instead of relying on `find()`.
-- Pipeline (copy of `OcrJob::run`, `engine/src/ocr.rs:107-157`): render at `scale = dpi/72` (300 dpi default, capped at the
-  scan's native resolution), call `recognize(&shot.rgba, w, h)`, then convert to **view space** with `word.rect.map(|v| v / scale)`
-  where `scale = shot.width as f32 / info.width`. Store that in our DB (same space as `TextGlyph.rect`).
-- Searchable export: the engine's `Edit::AddOcrText { page, words: Vec<pdfcraft_ocr::PlacedWord> }` (`engine/src/lib.rs:1657`),
-  or `Session::ocr_job` / `apply_ocr` (`ocr.rs:170, 194`). `PlacedWord::place(word, to_user)` (`ocr/src/lib.rs:178`) takes a
-  pixel→user closure: `|x, y| { let [u, v] = info.view_to_user(x/scale, y/scale); [u as f64, v as f64] }`.
-- `Ocr` is Send + Sync: the engine keeps it in `static Mutex<Option<Arc<Ocr>>>` (`engine/src/ocr.rs:77`), which requires both.
+
+**Engine-free "Searchable Image" (what `core-pdf::ocr` does, Fase 7).** The engine's `Edit::AddOcrText { page, words }`
+is literally `pdfcraft_edit::stamp(doc, page, "OCR", pdfcraft_ocr::text_layer(&words))` (`engine/src/lib.rs:2636`), and
+`pdfcraft-edit` depends only on lower crates, so `core-pdf` does the same thing without `pdfcraft-engine`:
+
+1. **Scan resolution**: `cos::Document::open(bytes)`, then for each page `pdfcraft_edit::page_images(&doc, p)`; for every
+   image (`width/height > 1`, not a Form): `max(width / hypot(m[0], m[1]), height / hypot(m[2], m[3]))` pixels per point;
+   the page's native scale is the largest (engine `Session::ocr_job`, `ocr.rs:170-190`).
+2. **Render scale**: `wanted = clamp(dpi, 72, 600) / 72` (300 dpi default); with images
+   `native.clamp(fit, wanted · fit)` where `fit = min(1, 842 / max(width, height))` (A4 long side: a page given in pixels
+   is measured as if shrunk to a sheet); without images `wanted` (engine `OcrJob::scale`).
+3. **Per page** with one `PageRenderer` (`RenderConfig { password, .. }`), one page at a time:
+   - `RequestKind::Text` → boxes of the non-blank glyphs (view space). With `skip_text_pages` and any glyph: skip the
+     page ("the page already contains text").
+   - Render pixels at the scale; `recognize(&shot.rgba, w, h)`; drop the RGBA before the next page.
+   - `scale = shot.width / info.width`; a word whose box (`rect / scale`) is covered ≥ 0.5 by the glyph boxes is
+     the page's own text read again (counted in `already_on_page`, not added).
+   - `PlacedWord::place(word, |x, y| info.view_to_user(x / scale, y / scale))` with `info` from
+     `pdfcraft_render::inspect` (§2.2).
+   - **Leitor addition**: a word whose pixel box reaches past the rendered image is left out (the edge of the sheet or
+     specks along it; its text would land off the page). PdfCraft keeps such words.
+4. **Write**: `cos::Document::open`, `stamp(&mut doc, page, "OCR", text_layer(&words))` per page with words, then
+   `cos::write_incremental(&doc, &SaveOptions::default())`: the original bytes stay as the prefix and the Info dictionary
+   (with `LeitorBookUid`) is untouched. `stamp` adds `/PCHelv` to the page resources and wraps the page's own content in
+   `q … Q` when it leaves graphics state set.
+5. **Detecting a layer**: the stamped content stream's dictionary has `/PCMark /OCR` (`edit/src/lib.rs:470-479`,
+   `stream_tag`/`tagged` are private, so `core-pdf` reads `/Contents` itself). `core_pdf::has_ocr_layer` checks that.
+
+Text extraction (`RequestKind::Text`, `page_words`, `extract_book_text`) returns the invisible text (render mode 3 is not
+filtered), so after OCR the vocabulary scan, `doc_words`, and PdfCraft's search/selection work on the scan.
+`text_fingerprint` hashes the content streams, so the OCR version gets a new lemma table on its own.
+
+- Model lookup: PdfCraft's `Models::find()` looks at `$PDFCRAFT_MODELS`, beside the exe and in its source tree; the app
+  never uses it. The Leitor uses `Models::in_dir` on: `LEITOR_OCR_MODELS_DIR` → `<resource_dir>/ocr-models` (Tauri
+  resource) → (debug builds) `src-tauri/resources/ocr-models` (`scripts/fetch-ocr-models.sh`).
+- Threads: `ocrs` runs on rten's own rayon pool (`rten::threading::thread_pool()`), one thread per **physical** core,
+  created on first use. The only knob is the process-wide `RTEN_NUM_THREADS` environment variable (read once, clamped
+  to 1..logical cores); `pdfcraft-ocr` does not expose `RunOptions::with_thread_pool`, and setting the variable from
+  inside the app needs `unsafe` (`std::env::set_var`, forbidden here). So it can't be capped to `cores − 1` from code:
+  on SMT machines the logical siblings stay free; without SMT the pool takes every core while a page is recognised
+  (bursts of ~1 s per page). The webview runs in its own processes, the job's own thread is one, and only one OCR
+  runs at a time. A launcher can set `RTEN_NUM_THREADS` if that ever matters.
+- Timing (Fase 7, `cargo test --release -p core-pdf --features testkit --test ocr -- --ignored --nocapture`, Letter
+  page scanned at 200 dpi, read at 300 dpi capped at the scan's 200, dev container): **784 ms/page** (812 and 755 ms;
+  render + recognition; writing the layer < 1 ms) on an Intel Core Ultra 9 275HX (24 cores, no SMT). In the test profile
+  (dependencies at opt-level 2, tests running in parallel) 0.7–5 s/page. The ignored test asserts ≤ 15 s/page.
+  Recognition quality on the generated fixtures (Helvetica 13 pt): 200 dpi scan turned 0.8° with 0.2 % specks: recall
+  0.99–1.00; 300 dpi clean: 0.91–0.92 (some words lose their last letter: "windmil", "har"); 200 dpi turned 1.2° with
+  1 % salt and pepper: recall 0.94–0.96 but ~200 extra garbage "words" per page from the specks.
+- `Ocr` is Send + Sync: the engine keeps it in `static Mutex<Option<Arc<Ocr>>>` (`engine/src/ocr.rs:77`), which requires
+  both; `core-pdf` asserts it in a unit test.
 
 ---
 

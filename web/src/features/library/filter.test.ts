@@ -69,3 +69,11 @@ describe('library filters', () => {
     expect(progressOf(b)).toEqual({ page: 5, total: 12, percent: 42 });
   });
 });
+
+describe('exportName', () => {
+  it('keeps the book format', async () => {
+    const { exportName } = await import('./filter');
+    expect(exportName({ title: 'Animal Farm', format: 'pdf' })).toBe('Animal Farm.pdf');
+    expect(exportName({ title: 'The Time Machine', format: 'epub' })).toBe('The Time Machine.epub');
+  });
+});

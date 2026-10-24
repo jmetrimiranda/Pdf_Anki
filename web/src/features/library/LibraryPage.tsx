@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from '@tanstack/react-router';
+import { useNavigate, useSearch } from '@tanstack/react-router';
 import { BookOpen, FileDown, LayoutGrid, List, Plus, Search, SearchX } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, EmptyState, Input, Kbd, Notice, SegmentedControl, Skeleton, useToast } from '../../components/ui';
 import { t } from '../../i18n';
 import { cn } from '../../lib/cn';
@@ -9,13 +9,21 @@ import { core, type BookPatch, type LibraryEntry } from '../../lib/core/client';
 import { q } from '../../lib/core/queries';
 import { useNarrow } from '../../lib/useMediaQuery';
 import { leitor } from '../leitor';
+import { OcrDialog, ocrEligible } from '../ocr';
 import { useShell } from '../shell/context';
 import { MoveDialog, RemoveDialog, RenameDialog, type BookDialogState } from './BookDialogs';
 import { BookItem, type BookAction, type LibraryView } from './BookItem';
-import { collectionsOf, filterBooks, sortBooks, type CollectionFilter } from './filter';
+import { collectionsOf, exportName, filterBooks, sortBooks, type CollectionFilter } from './filter';
 import { errorMessage } from './useBookImport';
 
 const VIEW_KEY = 'leitor.library.view';
+
+/** `?ocr=<uid>` (vocabulary wizard, captures): the book whose "Reconhecer texto" dialog opens. */
+function ocrParam(search: unknown): string | null {
+  if (typeof search !== 'object' || search === null || !('ocr' in search)) return null;
+  const v = search.ocr;
+  return typeof v === 'string' && v.trim() ? v.trim() : null;
+}
 
 function loadView(): LibraryView {
   try {
@@ -73,7 +81,7 @@ function DropOverlay() {
     >
       <FileDown size={28} strokeWidth={1.6} className="text-lime-dark" aria-hidden />
       <p className="text-md font-semibold">{t('library.dropTitle')}</p>
-      <p className="text-xs text-muted">{t('library.dropHint')}</p>
+      <p className="text-xs text-muted">{t('ocr.library.dropHint')}</p>
     </div>
   );
 }
@@ -110,6 +118,8 @@ export function LibraryPage() {
   const [query, setQuery] = useState('');
   const [collection, setCollection] = useState<CollectionFilter>(null);
   const [dialog, setDialog] = useState<BookDialogState>(null);
+  const [ocrUid, setOcrUid] = useState<string | null>(null);
+  const ocrBook = ocrUid ? (library.data?.find((b) => b.bookUid === ocrUid) ?? null) : null;
 
   const books = useMemo(() => sortBooks(library.data ?? []), [library.data]);
   const collections = useMemo(() => collectionsOf(books), [books]);
@@ -119,6 +129,15 @@ export function LibraryPage() {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['library'] });
 
   const navigate = useNavigate();
+  const requestedOcr = ocrParam(useSearch({ strict: false }));
+
+  // `?ocr=<uid>` opens the dialog once the library is loaded, then leaves the URL (a reload doesn't reopen it).
+  useEffect(() => {
+    if (!requestedOcr || !library.data) return;
+    // Only a book recognition makes sense for (a scanned PDF, a failed or running job); otherwise just drop the param.
+    if (ocrEligible(library.data.find((b) => b.bookUid === requestedOcr))) setOcrUid(requestedOcr);
+    void navigate({ to: '/biblioteca', search: {}, replace: true });
+  }, [requestedOcr, library.data, navigate]);
   const update = useMutation({
     mutationFn: ({ uid, patch }: { uid: string; patch: BookPatch }) => core.libraryUpdate(uid, patch),
     onSuccess: async () => {
@@ -155,7 +174,7 @@ export function LibraryPage() {
           setDialog({ kind: action, book });
           break;
         case 'export': {
-          const path = await core.pickExportPath(`${book.title}.pdf`);
+          const path = await core.pickExportPath(exportName(book));
           if (!path) return;
           await core.bookExport(book.bookUid, path);
           toast.show(t('library.exported'), { tone: 'success' });
@@ -169,6 +188,9 @@ export function LibraryPage() {
           break;
         case 'vocabReport':
           await navigate({ to: '/vocabulario', search: { livro: book.bookUid } });
+          break;
+        case 'ocr':
+          setOcrUid(book.bookUid);
           break;
       }
     } catch (err) {
@@ -260,7 +282,7 @@ export function LibraryPage() {
               className="py-16"
               icon={BookOpen}
               title={t('library.empty')}
-              description={t('library.emptyHint')}
+              description={t('ocr.library.emptyHint')}
               action={
                 <div className="flex flex-col items-center gap-3">
                   <Button variant="primary" icon={Plus} onClick={shell.addBooks}>
@@ -335,6 +357,7 @@ export function LibraryPage() {
           onSubmit={(folder) => update.mutate({ uid: dialog.book.bookUid, patch: { collectionFolder: folder } })}
         />
       )}
+      {ocrBook && <OcrDialog key={ocrBook.bookUid} book={ocrBook} sheet={narrow} onClose={() => setOcrUid(null)} />}
       {dialog?.kind === 'remove' && (
         <RemoveDialog
           book={dialog.book}

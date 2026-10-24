@@ -46,15 +46,23 @@ describe('mock core client', () => {
     expect(tree.currentDeckId).toBe(words.id);
   });
 
-  it('seeds three books: text, scanned and one in a collection', async () => {
+  it('seeds four books: text, scanned, one in a collection and an EPUB', async () => {
     const books = await mockClient.libraryList();
-    expect(books.map((b) => b.title).sort()).toEqual(['Animal Farm', 'Apostila digitalizada', 'ROS 2 na prática']);
+    expect(books.map((b) => b.title).sort()).toEqual([
+      'Animal Farm',
+      'Apostila digitalizada',
+      'ROS 2 na prática',
+      'The Time Machine',
+    ]);
     for (const b of books) {
       expect(b.bookUid).toMatch(/^[0-9a-f]{64}$/);
       expect(b.fileHash).toBe(b.bookUid);
       expect(b.fileVersion).toBe(1);
-      expect(b.format).toBe('pdf');
+      expect(b.format).toBe(b.title === 'The Time Machine' ? 'epub' : 'pdf');
     }
+    const epub = await bookByTitle('The Time Machine');
+    expect(epub.pages).toBe(8);
+    expect(epub.fileName).toBe('The Time Machine.epub');
     expect((await bookByTitle('ROS 2 na prática')).pages).toBe(12);
     expect((await bookByTitle('Apostila digitalizada')).hasText).toBe(false);
     expect((await bookByTitle('Animal Farm')).collectionFolder).toBe('Inglês');
@@ -287,7 +295,7 @@ describe('mock core client', () => {
     sessionStorage.setItem('leitor.mock', '{not json');
     vi.resetModules();
     const seeded = await import('./mock');
-    expect(await seeded.mockClient.libraryList()).toHaveLength(3);
+    expect(await seeded.mockClient.libraryList()).toHaveLength(4);
   });
 });
 

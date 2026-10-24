@@ -9,11 +9,13 @@ pub mod book_panel;
 pub mod code;
 mod commands;
 pub mod deep_link;
+pub mod epub;
 mod error;
 mod files;
 pub mod grants;
 pub mod jobs;
 pub mod library;
+pub mod ocr;
 pub mod open_paths;
 mod protocol;
 pub mod protocol_anki;
@@ -35,12 +37,13 @@ pub use book_panel::{
     BookCardKind, BookDeckInfo, BookDeckRole, BookPanelInfo, BookPanelPatch, WordDefinition,
 };
 pub use deep_link::{DeepLink, deep_links_from_args, parse_deep_link};
+pub use epub::{EpubAnnotation, EpubAnnotationInput, EpubMarkWord, EpubSectionMarks};
 pub use error::AppError;
 pub use files::BookFiles;
 pub use jobs::{JobKind, JobProgress, JobStage};
 pub use library::{AddedBook, BookOpen, SavedVersion};
 pub use open_paths::open_paths_from_args;
-pub use protocol::{cover_url, protocol_url, ui_origins_with};
+pub use protocol::{cover_response, cover_url, protocol_url, ui_origins_with};
 pub use reading::SessionStarted;
 pub use smoke::SmokeReport;
 pub use state::AppState;
@@ -161,7 +164,8 @@ fn build(launch_paths: Vec<String>) -> Result<App, Box<dyn std::error::Error>> {
     let state = AppState::new(data_dir);
     state.push_open_paths(launch_paths);
     if let Ok(dir) = app.path().resource_dir() {
-        state.set_vocab_resource_dir(dir);
+        state.set_vocab_resource_dir(dir.clone());
+        state.set_ocr_resource_dir(dir);
     }
     let web = anki_web::AnkiWeb::resolve(
         std::env::var_os(anki_web::ANKI_WEB_DIR_ENV).map(PathBuf::from),
@@ -322,6 +326,13 @@ macro_rules! app_commands {
             commands::vocab_data_info,
             commands::job_status,
             commands::job_cancel,
+            commands::ocr_info,
+            commands::ocr_start,
+            commands::ocr_cancel,
+            commands::epub_annotation_list,
+            commands::epub_annotation_upsert,
+            commands::epub_annotation_delete,
+            commands::vocab_epub_marks,
             $($extra),*
         ]
     };

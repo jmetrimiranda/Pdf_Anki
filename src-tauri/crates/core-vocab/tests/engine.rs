@@ -425,4 +425,14 @@ fn index_only_candidates_count_as_known() {
         marks[2].as_ref().map(|m| m.status),
         Some(core_vocab::MarkStatus::Learning)
     );
+    // The detailed status behind the colors (EPUB marks): same words, same verdicts.
+    let detailed = oracle.classify_detailed(&[("vlogs", false), ("news", false), ("blogs", false)]);
+    assert_eq!(detailed[0], None);
+    assert_eq!(detailed[1].as_ref().map(|d| d.1), Some(Status::Unknown));
+    assert_eq!(detailed[2].as_ref().map(|d| d.1), Some(Status::Learning));
+    // Same lemmas as the marks.
+    assert_eq!(
+        detailed[1].as_ref().map(|d| d.0.as_str()),
+        marks[1].as_ref().map(|m| m.lemma.as_str())
+    );
 }

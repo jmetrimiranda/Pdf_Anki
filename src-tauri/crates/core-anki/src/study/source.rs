@@ -1,17 +1,23 @@
-//! The note's `Fonte` field → "Abrir no livro" (spec 8.2, 10.2): `leitor://livro/<book_uid>?pagina=N&q=…`.
+//! The note's `Fonte` field → "Abrir no livro" (spec 8.2, 10.2, 7.1): `leitor://livro/<book_uid>?pagina=N&q=…` for a
+//! PDF page, `leitor://livro/<book_uid>?cap=N&cfi=…&q=…` for an EPUB chapter (section N in reading order) and the
+//! CFI position inside it.
 use std::sync::LazyLock;
 
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use regex::Regex;
 
-use super::types::SourceLink;
+use super::types::{SourceLink, SourceUnit};
 
 /// Name of the field that holds the link (compared case-insensitively).
 pub const SOURCE_FIELD: &str = "Fonte";
 /// Longest search text kept from `q`, in chars.
 pub const MAX_QUERY_CHARS: usize = 500;
+/// Longest `cfi` kept from a link, in bytes.
+pub const MAX_CFI_BYTES: usize = 2048;
 /// Longest `q` the app writes into a new Fonte ([`source_query`]), in chars.
 pub const SOURCE_QUERY_CHARS: usize = 80;
+/// Longest chapter label [`source_html_section`] writes, in chars.
+pub const SECTION_LABEL_CHARS: usize = 60;
 
 /// JavaScript's `encodeURIComponent` set: everything except `A-Z a-z 0-9 - _ . ! ~ * ' ( )` is escaped.
 const URI_COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
@@ -29,23 +35,7 @@ const URI_COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
 /// at most [`SOURCE_QUERY_CHARS`] chars (a first word longer than that is cut inside it). Never splits a char.
 pub fn source_query(text: &str) -> String {
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.chars().count() <= SOURCE_QUERY_CHARS {
-        return collapsed;
-    }
-    // Byte offset just past the SOURCE_QUERY_CHARS-th char.
-    let limit = collapsed
-        .char_indices()
-        .nth(SOURCE_QUERY_CHARS)
-        .map_or(collapsed.len(), |(i, _)| i);
-    let head = &collapsed[..limit];
-    // The char right after the cut is a space: the cut is already at a word boundary.
-    if collapsed[limit..].starts_with(' ') {
-        return head.trim_end().to_string();
-    }
-    match head.rfind(' ') {
-        Some(space) if space > 0 => head[..space].trim_end().to_string(),
-        _ => head.to_string(),
-    }
+    cut_at_word(&collapsed, SOURCE_QUERY_CHARS)
 }
 
 /// The Fonte field of a card created from a selection (spec 10.2), `page` 1-based:
@@ -58,6 +48,65 @@ pub fn source_html(book_uid: &str, title: &str, page: u32, query: &str) -> Strin
         href.push_str(&utf8_percent_encode(query, URI_COMPONENT).to_string());
     }
     format!("<a href=\"{href}\">{}, p. {page}</a>", escape_html(title))
+}
+
+/// The Fonte field of a card created from an EPUB selection (spec 7.1, 10.2), `section` 1-based:
+/// `<a href="leitor://livro/{uid}?cap={section}&amp;cfi={cfi}&amp;q={query}">{title}, {label}</a>`. `cfi` and the query
+/// are percent-encoded like `encodeURIComponent` and omitted when absent or empty; the label is the section's
+/// table-of-contents label cut at [`SECTION_LABEL_CHARS`] chars at a word boundary ([`section_label`]), or
+/// `cap. {section}` without one; title and label are HTML-escaped. The web app builds the same string.
+pub fn source_html_section(
+    book_uid: &str,
+    title: &str,
+    section: u32,
+    label: &str,
+    cfi: Option<&str>,
+    query: &str,
+) -> String {
+    let mut href = format!("leitor://livro/{book_uid}?cap={section}");
+    if let Some(cfi) = cfi.filter(|c| !c.is_empty()) {
+        href.push_str("&amp;cfi=");
+        href.push_str(&utf8_percent_encode(cfi, URI_COMPONENT).to_string());
+    }
+    if !query.is_empty() {
+        href.push_str("&amp;q=");
+        href.push_str(&utf8_percent_encode(query, URI_COMPONENT).to_string());
+    }
+    format!(
+        "<a href=\"{href}\">{}, {}</a>",
+        escape_html(title),
+        escape_html(&section_label(label, section))
+    )
+}
+
+/// The label of a chapter in a Fonte: the table-of-contents label with whitespace collapsed, cut at
+/// [`SECTION_LABEL_CHARS`] chars at a word boundary (a first word longer than that is cut inside it), or
+/// `cap. {section}` when it is empty.
+pub fn section_label(label: &str, section: u32) -> String {
+    let collapsed = label.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return format!("cap. {section}");
+    }
+    cut_at_word(&collapsed, SECTION_LABEL_CHARS)
+}
+
+/// `text` (whitespace already collapsed) cut to at most `max` chars at a word boundary; never splits a char.
+fn cut_at_word(collapsed: &str, max: usize) -> String {
+    if collapsed.chars().count() <= max {
+        return collapsed.to_string();
+    }
+    let limit = collapsed
+        .char_indices()
+        .nth(max)
+        .map_or(collapsed.len(), |(i, _)| i);
+    let head = &collapsed[..limit];
+    if collapsed[limit..].starts_with(' ') {
+        return head.trim_end().to_string();
+    }
+    match head.rfind(' ') {
+        Some(space) if space > 0 => head[..space].trim_end().to_string(),
+        _ => head.to_string(),
+    }
 }
 
 fn escape_html(text: &str) -> String {
@@ -102,17 +151,31 @@ pub fn parse_source(field_html: &str) -> Option<SourceLink> {
         .find_map(|m| parse_link(&anki::text::decode_entities(m.as_str()), ""))
 }
 
-/// Parses one `leitor://livro/…` URL. `label_html` is the link text (tags stripped; empty → "p. N").
+/// Parses one `leitor://livro/…` URL. `label_html` is the link text (tags stripped; empty → "p. N" or "cap. N").
+/// The number is `pagina=N` (a PDF page) or `cap=N` (an EPUB section); with both, `pagina` wins. `cfi` is kept only
+/// when it is a valid EPUB CFI; `q` is the text to find.
 pub fn parse_link(url: &str, label_html: &str) -> Option<SourceLink> {
     let c = LINK.captures(url)?;
     let book_uid = c[1].to_string();
     let mut page = None;
+    let mut chapter = None;
+    let mut cfi = None;
     let mut query = None;
     for pair in c.get(2).map_or("", |m| m.as_str()).split('&') {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         match k {
             "pagina" if page.is_none() => {
                 page = Some(v.parse::<u32>().ok().filter(|p| *p > 0)?);
+            }
+            "cap" if chapter.is_none() => {
+                chapter = Some(v.parse::<u32>().ok().filter(|p| *p > 0)?);
+            }
+            "cfi" if cfi.is_none() => {
+                let decoded = percent_decode_str(v).decode_utf8_lossy();
+                let decoded = decoded.trim();
+                if decoded.len() <= MAX_CFI_BYTES && core_epub::is_valid_cfi(decoded) {
+                    cfi = Some(decoded.to_string());
+                }
             }
             "q" if query.is_none() => {
                 let plus = v.replace('+', " ");
@@ -125,7 +188,13 @@ pub fn parse_link(url: &str, label_html: &str) -> Option<SourceLink> {
             _ => {}
         }
     }
-    let page = page?;
+    let (page, unit) = match (page, chapter) {
+        (Some(p), _) => (p, SourceUnit::Page),
+        (None, Some(c)) => (c, SourceUnit::Chapter),
+        (None, None) => return None,
+    };
+    // A position inside an EPUB chapter means nothing for a PDF page.
+    let cfi = cfi.filter(|_| unit == SourceUnit::Chapter);
     let label = if label_html.contains(['<', '&']) {
         anki::text::strip_html(label_html)
     } else {
@@ -137,11 +206,13 @@ pub fn parse_link(url: &str, label_html: &str) -> Option<SourceLink> {
     Some(SourceLink {
         book_uid,
         page,
+        unit,
+        cfi,
         query,
-        label: if label.is_empty() {
-            format!("p. {page}")
-        } else {
-            label
+        label: match (label.is_empty(), unit) {
+            (false, _) => label,
+            (true, SourceUnit::Page) => format!("p. {page}"),
+            (true, SourceUnit::Chapter) => format!("cap. {page}"),
         },
     })
 }
@@ -279,5 +350,99 @@ mod tests {
         let q = "a".repeat(800);
         let s = parse_link(&format!("leitor://livro/{UID}?pagina=1&q={q}"), "").unwrap();
         assert_eq!(s.query.unwrap().chars().count(), MAX_QUERY_CHARS);
+    }
+
+    #[test]
+    fn source_html_section_literal() {
+        // W2 mirrors these strings in web/src/features/anki/study/links.ts (fonte for EPUB).
+        assert_eq!(
+            source_html_section(
+                UID,
+                "Animal Farm",
+                3,
+                "Chapter III",
+                Some("epubcfi(/6/8!/4/2/1:0)"),
+                "the windmill"
+            ),
+            format!(
+                r#"<a href="leitor://livro/{UID}?cap=3&amp;cfi=epubcfi(%2F6%2F8!%2F4%2F2%2F1%3A0)&amp;q=the%20windmill">Animal Farm, Chapter III</a>"#
+            )
+        );
+        assert_eq!(
+            source_html_section(UID, "Animal Farm", 1, "", None, ""),
+            format!(r#"<a href="leitor://livro/{UID}?cap=1">Animal Farm, cap. 1</a>"#)
+        );
+        assert_eq!(
+            source_html_section(UID, "Animal Farm", 2, "  \n ", Some(""), "pigs"),
+            format!(r#"<a href="leitor://livro/{UID}?cap=2&amp;q=pigs">Animal Farm, cap. 2</a>"#)
+        );
+        assert_eq!(
+            source_html_section(
+                UID,
+                r#"Tom & "Jerry""#,
+                12,
+                "Part One: The Rebellion & the Windmill of Animal Farm, in which everything changes",
+                Some("epubcfi(/6/4!/4/2,/1:0,/1:12)"),
+                ""
+            ),
+            format!(
+                r#"<a href="leitor://livro/{UID}?cap=12&amp;cfi=epubcfi(%2F6%2F4!%2F4%2F2%2C%2F1%3A0%2C%2F1%3A12)">Tom &amp; &quot;Jerry&quot;, Part One: The Rebellion &amp; the Windmill of Animal Farm, in</a>"#
+            )
+        );
+        assert_eq!(section_label("<b>Intro</b>", 4), "<b>Intro</b>");
+        assert_eq!(section_label("", 4), "cap. 4");
+        assert_eq!(section_label(&"x".repeat(70), 4), "x".repeat(60));
+    }
+
+    #[test]
+    fn chapter_links_parse() {
+        let html = source_html_section(
+            UID,
+            "Animal Farm",
+            3,
+            "Chapter III",
+            Some("epubcfi(/6/8!/4/2/1:0)"),
+            "the windmill",
+        );
+        let s = parse_source(&html).unwrap();
+        assert_eq!(s.page, 3);
+        assert_eq!(s.unit, SourceUnit::Chapter);
+        assert_eq!(s.cfi.as_deref(), Some("epubcfi(/6/8!/4/2/1:0)"));
+        assert_eq!(s.query.as_deref(), Some("the windmill"));
+        assert_eq!(s.label, "Animal Farm, Chapter III");
+
+        // Bare link, default label.
+        let s = parse_link(&format!("leitor://livro/{UID}?cap=7"), "").unwrap();
+        assert_eq!((s.page, s.unit, s.cfi), (7, SourceUnit::Chapter, None));
+        assert_eq!(s.label, "cap. 7");
+
+        // pagina wins over cap; a cfi means nothing for a page.
+        let s = parse_link(
+            &format!("leitor://livro/{UID}?cap=7&pagina=2&cfi=epubcfi(%2F6%2F4!%2F4%2F2%2F1%3A0)"),
+            "",
+        )
+        .unwrap();
+        assert_eq!((s.page, s.unit, s.cfi), (2, SourceUnit::Page, None));
+        assert_eq!(s.label, "p. 2");
+
+        // An invalid cfi is dropped, the link stays.
+        for bad in [
+            "garbage",
+            "epubcfi(",
+            "%ZZ",
+            "epubcfi(/6/4!/4/2/1:0)%3Cscript%3E",
+        ] {
+            let s = parse_link(&format!("leitor://livro/{UID}?cap=2&cfi={bad}"), "").unwrap();
+            assert_eq!((s.page, s.cfi), (2, None), "{bad}");
+        }
+        assert!(parse_link(&format!("leitor://livro/{UID}?cap=0"), "").is_none());
+        assert!(parse_link(&format!("leitor://livro/{UID}?cap=x"), "").is_none());
+        assert!(parse_link(&format!("leitor://livro/{UID}?cfi=epubcfi(%2F6%2F4)"), "").is_none());
+        // PDF links are unchanged.
+        let s = parse_link(&format!("leitor://livro/{UID}?pagina=4"), "").unwrap();
+        assert_eq!(
+            (s.unit, s.cfi, s.label.as_str()),
+            (SourceUnit::Page, None, "p. 4")
+        );
     }
 }

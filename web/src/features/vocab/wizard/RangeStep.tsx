@@ -41,16 +41,30 @@ function useDebounced<T>(value: T, ms: number): T {
   return v;
 }
 
-/** "Cap 3 (p. 13–18) · 6 páginas". */
-export function resolvedLabel(r: ResolvedRange): string {
+/** What the range counts: PDF pages, or an EPUB's chapters (spine sections). */
+export type RangeUnit = 'page' | 'chapter';
+
+/** "Cap 3 (p. 13–18) · 6 páginas" / "Part I (cap. 1–4) · 4 capítulos". */
+export function resolvedLabel(r: ResolvedRange, unit: RangeUnit = 'page'): string {
   const n = pageCount(r.pages);
+  if (unit === 'chapter') {
+    return n === 1
+      ? t('vocab.chapter.resolvedOne', { trecho: r.display })
+      : t('vocab.chapter.resolved', { trecho: r.display, n });
+  }
   return n === 1
     ? t('vocab.range.resolvedOne', { trecho: r.display })
     : t('vocab.range.resolved', { trecho: r.display, n });
 }
 
-function itemPages(it: VocabOutlineItem): string {
-  if (it.startPage === null || it.endPage === null) return t('vocab.range.itemNoPage');
+function itemPages(it: VocabOutlineItem, unit: RangeUnit): string {
+  if (it.startPage === null || it.endPage === null)
+    return unit === 'chapter' ? t('vocab.chapter.itemNone') : t('vocab.range.itemNoPage');
+  if (unit === 'chapter') {
+    return it.startPage === it.endPage
+      ? t('vocab.chapter.short', { n: it.startPage + 1 })
+      : t('vocab.chapter.itemRange', { de: it.startPage + 1, ate: it.endPage + 1 });
+  }
   return it.startPage === it.endPage
     ? t('vocab.range.itemPage', { n: it.startPage + 1 })
     : t('vocab.range.itemPages', { de: it.startPage + 1, ate: it.endPage + 1 });
@@ -84,10 +98,13 @@ export function RangeStep({
   onIds,
   onPagesText,
   onValid,
+  unit = 'page',
 }: {
   bookUid: string;
-  /** The book's page count (for the "Livro inteiro" line). */
+  /** The book's page count (for the "Livro inteiro" line); an EPUB's chapter count. */
   pages: number;
+  /** `chapter` for an EPUB: "Por sumário" is its table of contents and "Capítulos" replaces "Páginas". */
+  unit?: RangeUnit;
   mode: RangeMode;
   ids: readonly string[];
   pagesText: string;
@@ -131,6 +148,7 @@ export function RangeStep({
   }
 
   const resolved = needsCheck && settled && check.isSuccess ? check.data : null;
+  const epub = unit === 'chapter';
   const error = needsCheck && settled && check.isError ? errorMessage(check.error) : null;
 
   return (
@@ -147,12 +165,16 @@ export function RangeStep({
         className="self-start"
         options={[
           { value: 'all', label: t('vocab.range.all') },
-          { value: 'outline', label: t('vocab.range.outline') },
-          { value: 'pages', label: t('vocab.range.pages') },
+          { value: 'outline', label: epub ? t('vocab.chapter.outline') : t('vocab.range.outline') },
+          { value: 'pages', label: epub ? t('vocab.chapter.ranges') : t('vocab.range.pages') },
         ]}
       />
 
-      {mode === 'all' && <p className="text-base text-muted">{t('vocab.range.allHint', { n: pages })}</p>}
+      {mode === 'all' && (
+        <p className="text-base text-muted">
+          {epub ? t('vocab.chapter.allHint', { n: pages }) : t('vocab.range.allHint', { n: pages })}
+        </p>
+      )}
 
       {mode === 'outline' && (
         <section className="rounded-box border border-line bg-card p-2">
@@ -165,19 +187,25 @@ export function RangeStep({
           {outline.isSuccess && nodes.length === 0 && (
             <EmptyState
               icon={BookmarkX}
-              title={t('vocab.range.noOutline')}
-              description={t('vocab.range.noOutlineHint')}
-              action={<Button onClick={() => onMode('pages')}>{t('vocab.range.usePages')}</Button>}
+              title={epub ? t('vocab.chapter.noOutline') : t('vocab.range.noOutline')}
+              description={epub ? t('vocab.chapter.noOutlineHint') : t('vocab.range.noOutlineHint')}
+              action={
+                <Button onClick={() => onMode('pages')}>
+                  {epub ? t('vocab.chapter.useRanges') : t('vocab.range.usePages')}
+                </Button>
+              }
             />
           )}
           {nodes.length > 0 && (
             <>
-              <p className="px-2 pt-1 pb-2 text-xs text-muted">{t('vocab.range.outlineHint')}</p>
+              <p className="px-2 pt-1 pb-2 text-xs text-muted">
+                {epub ? t('vocab.chapter.outlineHint') : t('vocab.range.outlineHint')}
+              </p>
               <Tree
                 nodes={nodes}
-                label={t('vocab.range.outlineTree')}
+                label={epub ? t('vocab.chapter.outlineTree') : t('vocab.range.outlineTree')}
                 defaultExpanded={defaultExpanded}
-                getLabel={(n) => `${n.data.title}, ${itemPages(n.data)}`}
+                getLabel={(n) => `${n.data.title}, ${itemPages(n.data, unit)}`}
                 onActivate={(n) => {
                   if (n.data.startPage !== null && !insideChecked(n.id, checked)) toggle(n.id, !checked.has(n.id));
                 }}
@@ -207,7 +235,7 @@ export function RangeStep({
                       />
                       <span className="min-w-0 flex-1 truncate">{it.title}</span>
                       <span className="shrink-0 text-xs text-muted tabular">
-                        {inherited ? t('vocab.range.included') : itemPages(it)}
+                        {inherited ? t('vocab.range.included') : itemPages(it, unit)}
                       </span>
                     </label>
                   );
@@ -219,7 +247,11 @@ export function RangeStep({
       )}
 
       {mode === 'pages' && (
-        <Field label={t('vocab.range.pagesLabel')} error={error} hint={error ? undefined : t('vocab.range.pagesHint')}>
+        <Field
+          label={epub ? t('vocab.chapter.ranges') : t('vocab.range.pagesLabel')}
+          error={error}
+          hint={error ? undefined : epub ? t('vocab.chapter.rangesHint') : t('vocab.range.pagesHint')}
+        >
           {({ id, describedBy, invalid }) => (
             <Input
               id={id}
@@ -228,7 +260,7 @@ export function RangeStep({
               value={pagesText}
               inputMode="numeric"
               autoComplete="off"
-              placeholder="21-45, 60, 72-80"
+              placeholder={epub ? '2-4' : '21-45, 60, 72-80'}
               onChange={(e) => onPagesText(e.target.value)}
               className="max-w-sm"
               data-testid="vocab-range-pages"
@@ -242,7 +274,7 @@ export function RangeStep({
           {mode === 'outline' && ids.length === 0 && nodes.length > 0 ? (
             <span className="text-muted">{t('vocab.range.chooseItems')}</span>
           ) : resolved ? (
-            <span className="font-semibold">{resolvedLabel(resolved)}</span>
+            <span className="font-semibold">{resolvedLabel(resolved, unit)}</span>
           ) : needsCheck && !error && (!settled || check.isFetching) ? (
             <span className="text-muted">{t('vocab.range.checking')}</span>
           ) : mode === 'outline' && error ? (

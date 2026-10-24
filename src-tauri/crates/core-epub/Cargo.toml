@@ -1,5 +1,6 @@
 [package]
 name = "core-epub"
+description = "EPUB core without UI: container/OPF/TOC parsing, cover and text per spine section (docs/tecnico/epub.md)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +9,23 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Synthetic EPUB builders for tests (also used by the app's tests as a dev-dependency).
+testkit = ["dep:png"]
+
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+hex.workspace = true
+percent-encoding.workspace = true
+zip.workspace = true
+quick-xml.workspace = true
+encoding_rs.workspace = true
+png = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
+# Tests, examples and benches always get the testkit (also under a plain `cargo test --workspace`).
+core-epub = { path = ".", features = ["testkit"] }

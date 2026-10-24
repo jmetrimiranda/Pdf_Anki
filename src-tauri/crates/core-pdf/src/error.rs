@@ -27,6 +27,9 @@ pub enum PdfError {
     Internal(String),
     #[error("A leitura do texto do livro foi cancelada.")]
     Cancelled,
+    /// Text recognition (OCR) could not run: models that don't load, or a recogniser failure.
+    #[error("Não foi possível reconhecer o texto.")]
+    Ocr(String),
 }
 
 impl PdfError {
@@ -44,6 +47,7 @@ impl PdfError {
             Self::Render(_) => "pdf_render",
             Self::Internal(_) => "internal",
             Self::Cancelled => "cancelled",
+            Self::Ocr(_) => "pdf_ocr",
         }
     }
 
@@ -56,7 +60,7 @@ impl PdfError {
             Self::Invalid(_) | Self::Unsupported(_) => 422,
             Self::Timeout => 504,
             Self::Cancelled => 499,
-            Self::Text(_) | Self::Render(_) | Self::Internal(_) => 500,
+            Self::Text(_) | Self::Render(_) | Self::Internal(_) | Self::Ocr(_) => 500,
         }
     }
 

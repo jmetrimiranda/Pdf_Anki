@@ -254,4 +254,45 @@ describe('Escanear vocabulário (wizard)', () => {
     ).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Escanear de novo' })).toBeTruthy();
   });
+
+  it('EPUB: ranges by the TOC (children included) and by chapters, in chapter wording', async () => {
+    const user = userEvent.setup();
+    await mockClient.vocabSettingsSet({ rootDeckId: await deckId('Vocabulário') });
+    const uid = (await mockClient.libraryList()).find((b) => b.format === 'epub')!.bookUid;
+    await renderApp(`/vocabulario/escanear?livro=${uid}&passo=trecho`);
+    await screen.findByTestId('vocab-step-trecho');
+    expect(screen.getByText('O livro todo: 8 capítulos.')).toBeTruthy();
+    await user.click(screen.getByRole('radio', { name: 'Por sumário' }));
+    const tree = await screen.findByRole('tree', { name: 'Sumário do livro' });
+    await user.click(within(tree).getByRole('checkbox', { name: 'Part I' }));
+    expect(within(tree).getByRole('checkbox', { name: 'Chapter II. The Machine' })).toHaveProperty('checked', true);
+    expect(within(tree).getAllByText('incluído')).toHaveLength(3);
+    await waitFor(() =>
+      expect(screen.getByTestId('vocab-range-resolved').textContent).toBe('Part I (cap. 1–4) · 4 capítulos'),
+    );
+    await user.click(screen.getByRole('radio', { name: 'Capítulos' }));
+    const input = screen.getByTestId('vocab-range-pages');
+    await user.type(input, '9');
+    expect(await screen.findByText('O capítulo 9 não existe (o livro tem 8 capítulos).')).toBeTruthy();
+    await user.clear(input);
+    await user.type(input, '2-4');
+    await waitFor(() => expect(screen.getByTestId('vocab-range-resolved').textContent).toBe('cap. 2–4 · 3 capítulos'));
+    expect(footerContinue()).toHaveProperty('disabled', false);
+  });
+
+  it('a scanned book offers "Reconhecer texto" (vocab_needs_ocr)', async () => {
+    const user = userEvent.setup();
+    await mockClient.vocabSettingsSet({ rootDeckId: await deckId('Vocabulário') });
+    mockHandle.vocab.setMapping('Vocab (Word)', 'Word');
+    mockHandle.vocab.setMapping('Oxford (Front/Back)', 'Front');
+    const uid = (await mockClient.libraryList()).find((b) => !b.hasText)!.bookUid;
+    const router = await renderApp(`/vocabulario/escanear?livro=${uid}&passo=criterio`);
+    await screen.findByTestId('vocab-step-criterio');
+    await user.click(footerContinue());
+    expect(
+      await screen.findByText('Este livro parece escaneado: reconheça o texto (OCR) antes de escanear o vocabulário.'),
+    ).toBeTruthy();
+    await user.click(screen.getByTestId('vocab-needs-ocr'));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/biblioteca'));
+  });
 });

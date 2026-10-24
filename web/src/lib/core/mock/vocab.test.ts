@@ -517,7 +517,8 @@ describe('vocabulary commands', () => {
     const scanned = (await mockClient.libraryList()).find((b) => !b.hasText)!;
     const root = await deckId('Vocabulário');
     await expect(mockClient.vocabScanStart(scanned.bookUid, root, [], { kind: 'all' }, CONFIG)).rejects.toMatchObject({
-      code: 'vocab_no_text',
+      code: 'vocab_needs_ocr',
+      message: 'Este livro parece escaneado: reconheça o texto (OCR) antes de escanear o vocabulário.',
     });
     mockHandle.vocab.setDataAvailable(false);
     await expect(

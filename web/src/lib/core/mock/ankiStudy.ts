@@ -377,30 +377,60 @@ export function parseDeepLink(url: string): DeepLink | null {
   const prefix = 'leitor://livro/';
   if (trimmed.slice(0, prefix.length).toLowerCase() !== prefix) return null;
   const link = parseLink(prefix + trimmed.slice(prefix.length), '');
-  return link ? { bookUid: link.bookUid, page: link.page, query: link.query } : null;
+  return link ? { bookUid: link.bookUid, page: link.page, unit: link.unit, cfi: link.cfi, query: link.query } : null;
 }
 
 function parseLink(url: string, labelHtml: string): SourceLink | null {
   const m = /^leitor:\/\/livro\/([0-9a-f]{64})(?:\?([^#]*))?(?:#.*)?$/.exec(url);
   if (!m) return null;
-  let page: number | null = null;
+  let pagina: number | null = null;
+  let cap: number | null = null;
   let query: string | null = null;
+  let cfi: string | null = null;
+  let cfiSeen = false;
+  const decodeExact = (v: string) => {
+    try {
+      return decodeURIComponent(v);
+    } catch {
+      return null;
+    }
+  };
+  const decode = (v: string) => decodeExact(v.replace(/\+/g, ' '));
   for (const pair of (m[2] ?? '').split('&')) {
-    const [k, v = ''] = pair.split('=');
-    if (k === 'pagina' && page === null) {
+    const eq = pair.indexOf('=');
+    const k = eq < 0 ? pair : pair.slice(0, eq);
+    const v = eq < 0 ? '' : pair.slice(eq + 1);
+    if (k === 'pagina' && pagina === null) {
       if (!/^\d+$/.test(v) || Number(v) < 1) return null;
-      page = Number(v);
+      pagina = Number(v);
+    } else if (k === 'cap' && cap === null) {
+      if (!/^\d+$/.test(v) || Number(v) < 1) return null;
+      cap = Number(v);
     } else if (k === 'q' && query === null) {
-      try {
-        query = decodeURIComponent(v.replace(/\+/g, ' ')).trim().slice(0, 500) || null;
-      } catch {
-        query = null;
-      }
+      query = decode(v)?.trim().slice(0, 500) || null;
+    } else if (k === 'cfi' && !cfiSeen) {
+      cfiSeen = true;
+      // Like core-anki's `parse_link`: no `+` → space in a CFI, at most 2048 bytes, a well-formed `epubcfi(/…)`.
+      const c = decodeExact(v)?.trim() ?? '';
+      cfi =
+        c && new TextEncoder().encode(c).length <= 2048 && /^epubcfi\(\/.*\)$/s.test(c) && !/[\u0000-\u001f<>"]/.test(c)
+          ? c
+          : null;
     }
   }
+  // `pagina` (a PDF page) wins over `cap` (an EPUB chapter), like the core.
+  const page = pagina ?? cap;
   if (page === null) return null;
+  const unit: SourceLink['unit'] = pagina !== null ? 'page' : 'chapter';
   const label = stripHtml(labelHtml).replace(/\s+/g, ' ');
-  return { bookUid: m[1]!, page, query, label: label || `p. ${page}` };
+  return {
+    bookUid: m[1]!,
+    page,
+    unit,
+    cfi: unit === 'chapter' ? cfi : null,
+    query,
+    label: label || `${unit === 'chapter' ? 'cap.' : 'p.'} ${page}`,
+  };
 }
 
 interface Rendered {

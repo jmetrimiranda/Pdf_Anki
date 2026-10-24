@@ -13,6 +13,11 @@ export function fileNameOf(path: string): string {
   return path.split(/[\\/]/).pop() || path;
 }
 
+/** Book formats the library takes (spec 6.6, 7.1); anything else is refused before reaching the core. */
+export function isBookPath(path: string): boolean {
+  return /\.(pdf|epub)$/i.test(fileNameOf(path));
+}
+
 /** The toast text for one successful import. */
 export function outcomeMessage(added: AddedBook): string {
   const titulo = added.book.title;
@@ -70,6 +75,10 @@ export function useBookImport() {
       const added: AddedBook[] = [];
       for (const [i, path] of paths.entries()) {
         const nome = fileNameOf(path);
+        if (!isBookPath(path)) {
+          toast.show(t('library.addFailed', { nome, mensagem: t('ocr.library.unsupported') }), { tone: 'error' });
+          continue;
+        }
         if (paths.length > 1) {
           toast.show(t('library.addingMany', { i: i + 1, n: paths.length, nome }), { id: progressId, durationMs: 0 });
         }

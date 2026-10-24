@@ -387,6 +387,36 @@ export const RANGE_MESSAGES = {
   itemWithoutPage: (title: string) => `“${title}” não aponta para uma página do livro.`,
 };
 
+/**
+ * What the numbers of a range count: PDF pages, or EPUB chapters (spine sections, 1-based in the UI, spec 12 for
+ * EPUB). Same messages as `core_vocab::RangeError` with the chapter wording.
+ */
+export type RangeUnit = 'page' | 'chapter';
+
+export const CHAPTER_RANGE_MESSAGES: typeof RANGE_MESSAGES = {
+  empty: () => 'Digite um capítulo, um intervalo ou uma lista, como 3, 2-4 ou 2-4, 7.',
+  notANumber: (part: string) => `“${part}” não é um capítulo válido. Use números, como 3, 2-4 ou 2-4, 7.`,
+  zero: () => 'Os capítulos começam em 1.',
+  reversed: RANGE_MESSAGES.reversed,
+  openEnded: (part: string) => `O intervalo “${part}” está incompleto. Informe o início e o fim, como 2-4.`,
+  beyondEnd: (n: number, count: number) =>
+    `O capítulo ${n} não existe (o livro tem ${count} ${count === 1 ? 'capítulo' : 'capítulos'}).`,
+  tooMany: (n: number) => `Use no máximo ${n} capítulos ou intervalos.`,
+  emptyBook: () => 'O livro não tem capítulos.',
+  noItems: RANGE_MESSAGES.noItems,
+  unknownItem: RANGE_MESSAGES.unknownItem,
+  itemWithoutPage: (title: string) => `“${title}” não aponta para um capítulo do livro.`,
+};
+
+function messagesFor(unit: RangeUnit): typeof RANGE_MESSAGES {
+  return unit === 'chapter' ? CHAPTER_RANGE_MESSAGES : RANGE_MESSAGES;
+}
+
+/** The short prefix of a unit: `p.` or `cap.`. */
+export function unitPrefix(unit: RangeUnit): string {
+  return unit === 'chapter' ? 'cap.' : 'p.';
+}
+
 export class VocabRangeError extends Error {
   readonly code = 'vocab_range_invalid';
 }
@@ -403,17 +433,21 @@ export function mergeIntervals(list: [number, number][]): [number, number][] {
   return out;
 }
 
-function parsePage(s: string): number {
+function parsePage(s: string, M: typeof RANGE_MESSAGES): number {
   const t = s.trim();
-  if (!t || !/^\d+$/.test(t)) throw new VocabRangeError(RANGE_MESSAGES.notANumber(t));
+  if (!t || !/^\d+$/.test(t)) throw new VocabRangeError(M.notANumber(t));
   const n = Number(t);
-  if (n > 0xffff_ffff) throw new VocabRangeError(RANGE_MESSAGES.notANumber(t));
-  if (n === 0) throw new VocabRangeError(RANGE_MESSAGES.zero());
+  if (n > 0xffff_ffff) throw new VocabRangeError(M.notANumber(t));
+  if (n === 0) throw new VocabRangeError(M.zero());
   return n;
 }
 
-/** Parses `37`, `21-45`, `21-45, 60, 72-80` (1-based, inclusive) into merged 0-based intervals. */
-export function parsePages(text: string, pageCount: number): [number, number][] {
+/**
+ * Parses `37`, `21-45`, `21-45, 60, 72-80` (1-based, inclusive) into merged 0-based intervals; `unit` 'chapter' for an
+ * EPUB's chapters (same syntax, chapter wording in the messages).
+ */
+export function parsePages(text: string, pageCount: number, unit: RangeUnit = 'page'): [number, number][] {
+  const RANGE_MESSAGES = messagesFor(unit);
   if (pageCount <= 0) throw new VocabRangeError(RANGE_MESSAGES.emptyBook());
   const norm = text.replace(/[–—−‐‑]/g, '-').replace(/;/g, ',');
   const items = norm
@@ -427,7 +461,7 @@ export function parsePages(text: string, pageCount: number): [number, number][] 
     let a: number;
     let b: number;
     const dash = item.indexOf('-');
-    if (dash < 0) a = b = parsePage(item);
+    if (dash < 0) a = b = parsePage(item, RANGE_MESSAGES);
     else {
       const left = item.slice(0, dash);
       const right = item.slice(dash + 1);
@@ -436,8 +470,8 @@ export function parsePages(text: string, pageCount: number): [number, number][] 
         throw new VocabRangeError(RANGE_MESSAGES.openEnded(item));
       }
       if (right.includes('-')) throw new VocabRangeError(RANGE_MESSAGES.notANumber(item));
-      a = parsePage(left);
-      b = parsePage(right);
+      a = parsePage(left, RANGE_MESSAGES);
+      b = parsePage(right, RANGE_MESSAGES);
       if (a > b) throw new VocabRangeError(RANGE_MESSAGES.reversed(a, b));
     }
     for (const p of [a, b]) if (p > pageCount) throw new VocabRangeError(RANGE_MESSAGES.beyondEnd(p, pageCount));
@@ -455,9 +489,9 @@ export function pagesText(pages: [number, number][]): string {
   return pagesWith(pages, '-');
 }
 
-/** `p. 21–45, 60, 72–80` (en dashes, for people). */
-export function pagesDisplay(pages: [number, number][]): string {
-  return `p. ${pagesWith(pages, '–')}`;
+/** `p. 21–45, 60, 72–80` (en dashes, for people); `cap. 2–4` for chapters. */
+export function pagesDisplay(pages: [number, number][], unit: RangeUnit = 'page'): string {
+  return `${unitPrefix(unit)} ${pagesWith(pages, '–')}`;
 }
 
 export function pageCountOf(pages: [number, number][]): number {
@@ -581,7 +615,13 @@ function subdeckOf(label: string): string {
 }
 
 /** Resolves a range against the book (spec 12.1 step 2, 12.6 naming), like `core_vocab::resolve_range`. */
-export function resolveRange(spec: VocabRangeSpec, outline: RawOutlineItem[], pageCount: number): ResolvedRange {
+export function resolveRange(
+  spec: VocabRangeSpec,
+  outline: RawOutlineItem[],
+  pageCount: number,
+  unit: RangeUnit = 'page',
+): ResolvedRange {
+  const RANGE_MESSAGES = messagesFor(unit);
   if (pageCount <= 0) throw new VocabRangeError(RANGE_MESSAGES.emptyBook());
   if (spec.kind === 'all') {
     return {
@@ -596,14 +636,14 @@ export function resolveRange(spec: VocabRangeSpec, outline: RawOutlineItem[], pa
     };
   }
   if (spec.kind === 'pages') {
-    const pages = parsePages(spec.text, pageCount);
+    const pages = parsePages(spec.text, pageCount, unit);
     const norm = pagesText(pages);
-    const label = `p. ${norm}`;
+    const label = `${unitPrefix(unit)} ${norm}`;
     return {
       kind: 'pages',
       pages,
       label,
-      display: pagesDisplay(pages),
+      display: pagesDisplay(pages, unit),
       slug: slugify(label),
       subdeck: subdeckOf(label),
       items: [],
@@ -635,7 +675,7 @@ export function resolveRange(spec: VocabRangeSpec, outline: RawOutlineItem[], pa
     kind: 'outline',
     pages,
     label,
-    display: `${label} (${pagesDisplay(pages)})`,
+    display: `${label} (${pagesDisplay(pages, unit)})`,
     slug: slugify(label),
     subdeck: subdeckOf(label),
     items: chosen.map((i) => flat[i]!.id),
@@ -690,7 +730,7 @@ export type ChapterRange = Pick<VocabChapter, 'index' | 'label' | 'startPage' | 
  * Chapters (spec 12.4): the outline's top-level items with a page (1-based index), in document order, each one after
  * the previous chapter (user bookmarks appended at the end of the root level are skipped); else blocks of 20 pages.
  */
-export function bookChapters(outline: RawOutlineItem[], pageCount: number): ChapterRange[] {
+export function bookChapters(outline: RawOutlineItem[], pageCount: number, unit: RangeUnit = 'page'): ChapterRange[] {
   if (pageCount <= 0) return [];
   const last = pageCount - 1;
   const tops: { title: string; page: number }[] = [];
@@ -703,7 +743,7 @@ export function bookChapters(outline: RawOutlineItem[], pageCount: number): Chap
     const out: ChapterRange[] = [];
     for (let start = 0, index = 1; start <= last; start += 20, index++) {
       const end = Math.min(last, start + 19);
-      out.push({ index, label: `p. ${start + 1}–${end + 1}`, startPage: start, endPage: end });
+      out.push({ index, label: `${unitPrefix(unit)} ${start + 1}–${end + 1}`, startPage: start, endPage: end });
     }
     return out;
   }

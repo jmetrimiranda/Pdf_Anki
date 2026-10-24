@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use core_anki::vocab::{NoteStatusRaw, VocabFolderInfo, VocabFolderRoot};
 use core_store::{
-    Book, BookLemmaPageRow, BookLemmaRow, NewVocabScan, VocabOverrideStatus, VocabScanMetrics,
-    VocabScanStatus, VocabTableState,
+    Book, BookFormat, BookLemmaPageRow, BookLemmaRow, NewVocabScan, VocabOverrideStatus,
+    VocabScanMetrics, VocabScanStatus, VocabTableState,
 };
 use core_vocab::{
     BookLemma, BookLemmaPage, BookTable, ChapterCoverage, CompareInput, FormCount, KnownIndex,
@@ -142,9 +142,13 @@ pub(crate) fn spec_of(range: &ResolvedRange) -> RangeSpec {
 pub(crate) fn needs_ocr() -> AppError {
     AppError::new(
         "vocab_needs_ocr",
-        "Este livro parece escaneado: não há texto para ler. O reconhecimento de texto (OCR) chega numa próxima \
-         versão.",
+        "Este livro parece escaneado: reconheça o texto (OCR) antes de escanear o vocabulário.",
     )
+}
+
+/// An EPUB without text to read (images only).
+pub(crate) fn no_text() -> AppError {
+    AppError::new("vocab_no_text", "Este EPUB não tem texto para escanear.")
 }
 
 fn cancelled_error() -> AppError {
@@ -248,12 +252,18 @@ pub(crate) struct LoadedTable {
 
 impl AppState {
     /// `"<ALGO_VERSION>:<fingerprint>"` of the current version (the fingerprint is cached per file hash).
+    /// For an EPUB: `"<ALGO_VERSION>:epub:<fingerprint of the section texts>"` (from the text cache).
     pub(crate) fn vocab_text_version(&self, book: &Book) -> Result<String, AppError> {
         if let Some(fp) = lock(&self.vocab.fingerprints).get(&book.file_hash) {
             return Ok(format!("{}:{fp}", core_vocab::ALGO_VERSION));
         }
-        let bytes = Arc::new(self.book_bytes(&book.book_uid)?);
-        let fp = core_pdf::text_fingerprint(bytes, None)?;
+        let fp = match book.format {
+            BookFormat::Epub => format!("epub:{}", self.epub_text_fingerprint(book)?),
+            BookFormat::Pdf => {
+                let bytes = Arc::new(self.book_bytes(&book.book_uid)?);
+                core_pdf::text_fingerprint(bytes, None)?
+            }
+        };
         let mut cache = lock(&self.vocab.fingerprints);
         if cache.len() > 64 {
             cache.clear();
@@ -581,7 +591,8 @@ impl AppState {
         }
     }
 
-    fn job_sink(&self) -> JobSink {
+    /// Where job progress goes (`job://<jobId>` events of the UI sink).
+    pub(crate) fn job_sink(&self) -> JobSink {
         let slot = Arc::clone(&self.ui_sink);
         Arc::new(move |p| crate::anki::emit_with(&slot, crate::anki::UiEvent::Job(p)))
     }
@@ -645,7 +656,7 @@ impl AppState {
         job.stage(JobStage::Compare, 1);
         let overrides = self.vocab_overrides_map()?;
         let previous = self.vocab_previous_notes(&uid)?;
-        let chapters = core_vocab::chapters(&w.outline, w.page_count);
+        let chapters = core_vocab::chapters_in(&w.outline, w.page_count, super::unit_word(&w.book));
         let result = core_vocab::compare(CompareInput {
             lemmas: &table.lemmas,
             pages: &table.pages,
@@ -707,6 +718,9 @@ impl AppState {
         w: &ScanJob,
         text_version: &str,
     ) -> Result<BookTable, AppError> {
+        if w.book.format == BookFormat::Epub {
+            return self.build_epub_table(job, w, text_version);
+        }
         if !w.book.has_text {
             return Err(needs_ocr());
         }
@@ -748,6 +762,62 @@ impl AppState {
             job.progress(u64::from(done), u64::from(total))
         })
         .map_err(super::vocab_error)?;
+        self.store_table(w, text_version, &table)?;
+        Ok(table)
+    }
+
+    /// The EPUB side of [`build_table`](Self::build_table): the section texts come from the `book_text` cache (read
+    /// from the file only when it is missing), units are sections and no line counts as a running header.
+    fn build_epub_table(
+        &self,
+        job: &JobHandle,
+        w: &ScanJob,
+        text_version: &str,
+    ) -> Result<BookTable, AppError> {
+        let total = u64::from(w.page_count);
+        job.stage(JobStage::Text, total);
+        let cancel = job.cancel_flag();
+        let rows = self.epub_section_texts(&w.book, &cancel, &mut |done, total| {
+            job.progress(u64::from(done), u64::from(total))
+        })?;
+        let chars: usize = rows
+            .iter()
+            .map(|r| r.text.chars().filter(|c| !c.is_whitespace()).count())
+            .sum();
+        if chars == 0 {
+            return Err(no_text());
+        }
+        if job.is_cancelled() {
+            return Err(cancelled_error());
+        }
+        job.stage(JobStage::Lemmas, total);
+        let inputs: Vec<PageInput> = rows
+            .iter()
+            .map(|r| PageInput {
+                unit: r.unit,
+                text: &r.text,
+            })
+            .collect();
+        let table = core_vocab::build_book_table_with(
+            &inputs,
+            &w.lex,
+            core_vocab::TableOptions {
+                strip_repeated: false,
+            },
+            &cancel,
+            &mut |done, total| job.progress(u64::from(done), u64::from(total)),
+        )
+        .map_err(super::vocab_error)?;
+        self.store_table(w, text_version, &table)?;
+        Ok(table)
+    }
+
+    fn store_table(
+        &self,
+        w: &ScanJob,
+        text_version: &str,
+        table: &BookTable,
+    ) -> Result<(), AppError> {
         let lemma_rows: Vec<BookLemmaRow> = table.lemmas.iter().map(lemma_row).collect();
         let page_rows: Vec<BookLemmaPageRow> = table.pages.iter().map(page_row).collect();
         let state = VocabTableState {
@@ -759,7 +829,7 @@ impl AppState {
         };
         let uid = w.book.book_uid.clone();
         self.with_store(|s| s.replace_vocab_table(&uid, &state, &lemma_rows, &page_rows))?;
-        Ok(table)
+        Ok(())
     }
 }
 

@@ -1,7 +1,8 @@
 //! Library v1.1: file versions (spec 6.5), the library listing with positions (spec 6.6).
 
 use core_store::{
-    AddOutcome, BookFormat, NewBook, ReadingPosition, Store, StoreError, book_uid_of,
+    AddOutcome, BookFormat, BookPatch, NewBook, OcrStatus, ReadingPosition, Store, StoreError,
+    book_uid_of,
 };
 
 fn new_book(bytes: &[u8], title: &str) -> NewBook {
@@ -159,12 +160,23 @@ fn reimporting_a_later_version_keeps_the_book_and_its_file() {
     assert_eq!(again.book.local_path.as_deref(), Some("/books/copy.pdf"));
     assert_eq!(again.book.local_hash, Some(later.file_hash.clone()));
 
-    // Removed and re-added from that copy: restored with its hash as a new version.
+    // Removed (with an OCR left running) and re-added from that copy: restored with its hash as a new
+    // version, and with no OCR status of the removed book (no job runs for it).
+    store
+        .update_book(
+            &uid,
+            &BookPatch {
+                ocr_status: Some(OcrStatus::Running),
+                ..BookPatch::default()
+            },
+        )
+        .unwrap();
     store.remove_book(&uid).unwrap();
     let restored = store.add_book(&later).unwrap();
     assert_eq!(restored.outcome, AddOutcome::Restored);
     assert_eq!(restored.book.file_hash, later.file_hash);
     assert_eq!(restored.book.file_version, 2);
+    assert_eq!(restored.book.ocr_status, OcrStatus::None);
 }
 
 #[test]

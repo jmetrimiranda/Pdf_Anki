@@ -40,10 +40,67 @@ const indexRoute = createRoute({
   },
 });
 
-const libraryRoute = createRoute({ getParentRoute: () => rootRoute, path: '/biblioteca', component: LibraryPage });
+// `?ocr=<uid>` opens "Reconhecer texto" for that book (from the vocabulary scan of a scanned book, spec 7.2).
+const libraryRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/biblioteca',
+  validateSearch: (s: Record<string, unknown>): { ocr?: string } => ({ ocr: parseText(s.ocr) }),
+  component: LibraryPage,
+});
+
+/**
+ * `/leitor?livro=<uid>` opens a book: `&pagina=<1-based>` (PDF) or `&cap=<1-based>&cfi=<CFI>` (EPUB), `&q=<text>` to
+ * find, `&lateral=sumario|anotacoes|busca` (EPUB side drawer), `&painel=card|revisar|definir&trecho=…` and `&realce=1`
+ * (captures, e2e, "Abrir no livro"). LeitorHost and BookPanel read them from the location.
+ */
+export interface LeitorSearch {
+  livro?: string;
+  pagina?: number;
+  cap?: number;
+  cfi?: string;
+  q?: string;
+  lateral?: 'sumario' | 'anotacoes' | 'busca';
+  painel?: 'card' | 'revisar' | 'definir';
+  trecho?: string;
+  realce?: number;
+}
+
+const LATERAL = ['sumario', 'anotacoes', 'busca'] as const;
+const PAINEL = ['card', 'revisar', 'definir'] as const;
+
+function oneOf<T extends string>(v: unknown, values: readonly T[]): T | undefined {
+  return typeof v === 'string' && (values as readonly string[]).includes(v) ? (v as T) : undefined;
+}
+
+export function validateLeitorSearch(s: Record<string, unknown>): LeitorSearch {
+  const out: LeitorSearch = {};
+  const livro = parseText(s.livro);
+  if (livro) out.livro = livro;
+  const pagina = parseId(s.pagina);
+  if (pagina) out.pagina = pagina;
+  const cap = parseId(s.cap);
+  if (cap) out.cap = cap;
+  const cfi = parseText(s.cfi);
+  if (cfi) out.cfi = cfi;
+  const q = parseText(s.q);
+  if (q) out.q = q;
+  const lateral = oneOf(s.lateral, LATERAL);
+  if (lateral) out.lateral = lateral;
+  const painel = oneOf(s.painel, PAINEL);
+  if (painel) out.painel = painel;
+  // The selected text is kept verbatim (not trimmed).
+  if (typeof s.trecho === 'string' && s.trecho) out.trecho = s.trecho;
+  if (parseFlag(s.realce)) out.realce = 1;
+  return out;
+}
 
 // The reader itself is <LeitorHost/>, kept mounted by AppShell; this route only selects the tab.
-const leitorRoute = createRoute({ getParentRoute: () => rootRoute, path: '/leitor', component: () => null });
+const leitorRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/leitor',
+  validateSearch: validateLeitorSearch,
+  component: () => null,
+});
 
 // ---------------------------------------------------------------- Anki tab (spec 8.2, 8.3)
 

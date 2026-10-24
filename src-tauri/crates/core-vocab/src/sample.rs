@@ -44,7 +44,13 @@ pub fn sample_tokens(
     n: usize,
     seed: u64,
 ) -> Vec<SampleRow> {
-    let Ok(book) = scan_book(pages, lex, &AtomicBool::new(false), &mut |_, _| {}) else {
+    let Ok(book) = scan_book(
+        pages,
+        lex,
+        crate::table::TableOptions::default(),
+        &AtomicBool::new(false),
+        &mut |_, _| {},
+    ) else {
         return Vec::new();
     };
     let all: Vec<(usize, usize)> = book

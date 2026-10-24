@@ -115,6 +115,9 @@ pub(crate) struct NoteBook<'a> {
     pub title: &'a str,
     /// Fill "Card 2" (the optional Português → Inglês card).
     pub card2: bool,
+    /// For an EPUB, the table-of-contents label of each section (by 0-based section): the Fonte points at the
+    /// chapter (`cap=N`) instead of a page. `None` for a PDF.
+    pub sections: Option<&'a [Option<String>]>,
 }
 
 /// The note of a row.
@@ -135,8 +138,27 @@ pub(crate) fn note_spec(
         card2,
     };
     let f = core_vocab::vocab_note_fields(row, &ctx);
-    let fonte =
-        core_anki::study::source::source_html(book_uid, title, f.fonte_page, &f.fonte_query);
+    let fonte = match book.sections {
+        None => {
+            core_anki::study::source::source_html(book_uid, title, f.fonte_page, &f.fonte_query)
+        }
+        Some(labels) => {
+            let label = f
+                .fonte_page
+                .checked_sub(1)
+                .and_then(|i| labels.get(i as usize))
+                .and_then(|l| l.as_deref())
+                .unwrap_or("");
+            core_anki::study::source::source_html_section(
+                book_uid,
+                title,
+                f.fonte_page,
+                label,
+                None,
+                &f.fonte_query,
+            )
+        }
+    };
     let traducao = match enrichment.translation {
         Some(t) if f.traducao.is_empty() => escape(&t),
         _ => f.traducao,
@@ -240,10 +262,14 @@ impl AppState {
         let occurrences = self.vocab_book_occurrences(uid);
         let book_tag = core_vocab::book_tag(&report.title);
         let range_tag = core_vocab::range_tag(&report.range);
+        let book = self.vocab_book(uid)?;
+        let labels =
+            (book.format == core_store::BookFormat::Epub).then(|| self.epub_section_labels(uid));
         let note_book = NoteBook {
             uid,
             title: &report.title,
             card2: options.card2,
+            sections: labels.as_deref(),
         };
         let mut decks: Vec<String> = Vec::new();
         let notes: Vec<VocabNoteSpec> = rows
@@ -354,7 +380,7 @@ impl AppState {
         let row = self.vocab_word_row(&book, &lemma, page, form, &lex)?;
         let (count, outline) = self.vocab_outline_nodes(&book)?;
         let mut tags = vec![core_vocab::book_tag(&book.title)];
-        let chapter = core_vocab::chapters(&outline, count)
+        let chapter = core_vocab::chapters_in(&outline, count, super::unit_word(&book))
             .into_iter()
             .find(|c| (c.start_page..=c.end_page).contains(&page));
         if let Some(c) = &chapter {
@@ -366,10 +392,13 @@ impl AppState {
             .copied()
             .unwrap_or(row.occurrences);
         let enrichment = WordNetEnricher { lex }.enrich(&row);
+        let labels =
+            (book.format == core_store::BookFormat::Epub).then(|| self.epub_section_labels(uid));
         let note_book = NoteBook {
             uid,
             title: &book.title,
             card2: false,
+            sections: labels.as_deref(),
         };
         let spec = note_spec(
             &row,

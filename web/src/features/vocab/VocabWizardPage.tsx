@@ -57,7 +57,14 @@ export function VocabWizardPage({
     );
   }
   return (
-    <Wizard bookUid={bookUid} title={book.title} author={book.author} pages={book.pages} initialStep={initialStep} />
+    <Wizard
+      bookUid={bookUid}
+      title={book.title}
+      author={book.author}
+      pages={book.pages}
+      unit={book.format === 'epub' ? 'chapter' : 'page'}
+      initialStep={initialStep}
+    />
   );
 }
 
@@ -66,12 +73,15 @@ function Wizard({
   title,
   author,
   pages,
+  unit,
   initialStep,
 }: {
   bookUid: string;
   title: string;
   author: string | null;
   pages: number;
+  /** `chapter` for an EPUB (ranges by chapters and by its TOC). */
+  unit: 'page' | 'chapter';
   initialStep?: VocabStepParam;
 }) {
   const navigate = useNavigate();
@@ -204,6 +214,7 @@ function Wizard({
               <RangeStep
                 bookUid={bookUid}
                 pages={pages}
+                unit={unit}
                 mode={mode}
                 ids={ids}
                 pagesText={pagesText}
@@ -243,6 +254,8 @@ function Wizard({
                   core.vocabScanStart(bookUid, rootId, [...excluded], rangeSpec(mode, ids, pagesText), config)
                 }
                 onBusy={setBusy}
+                unit={unit}
+                onNeedsOcr={() => void navigate({ to: '/biblioteca', search: { ocr: bookUid } })}
                 onBack={() => go('criterio')}
                 onDone={() => {
                   void qc.invalidateQueries({ queryKey: ['vocab'] });

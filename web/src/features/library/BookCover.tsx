@@ -4,11 +4,12 @@ import { t } from '../../i18n';
 import { cn } from '../../lib/cn';
 import { core, type LibraryEntry } from '../../lib/core/client';
 
-/** First-page cover from the core (`pdf://localhost/cover/…`), with an icon when there is none. */
+/** Cover from the core (`pdf://localhost/cover/…`: a PDF's first page, an EPUB's cover image), else an icon. */
 export function BookCover({ book, className }: { book: LibraryEntry; className?: string }) {
   const src = core.coverUrl(book.bookUid, book.fileVersion);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
-  const failed = book.pages === 0 || failedSrc === src;
+  // An EPUB's cover doesn't depend on its page count; an empty PDF has no first page to show.
+  const failed = (book.format === 'pdf' && book.pages === 0) || failedSrc === src;
   return (
     <div
       className={cn(

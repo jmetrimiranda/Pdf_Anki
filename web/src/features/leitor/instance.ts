@@ -4,9 +4,12 @@ import { core, type CoreClient } from '../../lib/core/client';
 import type { FlushReason } from './autosave';
 import {
   LeitorController,
+  type EpubDrawer,
   type LeitorCore,
+  type LeitorFront,
   type LeitorSnapshot,
   type MarkClick,
+  type OpenOptions,
   type PanelRequest,
 } from './controller';
 import type { LeitorTiming } from './timings';
@@ -30,8 +33,18 @@ export function leitorCore(c: CoreClient): LeitorCore {
   };
   return {
     openInfo: async (uid) => {
-      const { book, page } = await c.bookOpen(uid);
-      return { name: book.fileName, title: book.title, page, pages: book.pages, fileVersion: book.fileVersion };
+      const info = await c.bookOpen(uid);
+      const { book, page } = info;
+      const format = (info.format ?? book.format) === 'epub' ? 'epub' : 'pdf';
+      return {
+        name: book.fileName,
+        title: book.title,
+        page,
+        pages: book.pages,
+        fileVersion: book.fileVersion,
+        format,
+        cfi: format === 'epub' ? (info.cfi ?? book.position?.cfi ?? null) : null,
+      };
     },
     bytes: (uid) => c.bookBytes(uid),
     saveVersion: async (uid, bytes, baseVersion) => {
@@ -42,7 +55,9 @@ export function leitorCore(c: CoreClient): LeitorCore {
     exportBook: (uid, path) => c.bookExport(uid, path),
     exportBytes: (path, bytes) => c.exportBytes(path, exactBuffer(bytes)),
     openExternal: (uid) => c.bookOpenExternal(uid),
-    positionSet: (uid, page, progress) => c.positionSet(uid, page, progress),
+    positionSet: async (uid, page, progress, cfi) => {
+      await (cfi === undefined ? c.positionSet(uid, page, progress) : c.positionSet(uid, page, progress, cfi));
+    },
     setPages: async (uid, pages) => {
       await c.libraryUpdate(uid, { pages });
     },
@@ -54,6 +69,14 @@ export function leitorCore(c: CoreClient): LeitorCore {
         return await c.vocabMarks(uid, pages);
       } catch (e) {
         // Never scanned (or the scan is gone): no marks, not a failure.
+        if (isNotScanned(e)) return null;
+        throw e;
+      }
+    },
+    epubMarks: async (uid, sections) => {
+      try {
+        return await c.vocabEpubMarks(uid, sections);
+      } catch (e) {
         if (isNotScanned(e)) return null;
         throw e;
       }
@@ -78,9 +101,20 @@ export function leitorController(): LeitorController {
 }
 
 export const leitor = {
-  /** `page` 0-based; `find`: text PdfCraft looks for on that page (`pdfcraft:goto`). */
-  openBook: (uid: string, opts?: { page?: number; find?: string | null }): Promise<boolean> =>
-    controller.openBook(uid, opts),
+  /**
+   * `page` 0-based (an EPUB's spine section); `find`: text to look for there (`pdfcraft:goto` / the EPUB reader's
+   * find); `cfi`: an EPUB location (wins over `page`). EPUBs open in the EPUB reader, PDFs in PdfCraft.
+   */
+  openBook: (uid: string, opts?: Omit<OpenOptions, 'quiet'>): Promise<boolean> => controller.openBook(uid, opts),
+  /** Brings PdfCraft ("Voltar aos PDFs") or the EPUB reader to front; the other stays loaded. */
+  showFront: (front: LeitorFront): void => controller.showFront(front),
+  /** Opens the EPUB reader's drawer (table of contents, annotations, search) for the EPUB `uid` in the reader. */
+  openEpubDrawer: (uid: string, which: EpubDrawer): Promise<void> => controller.openEpubDrawer(uid, which),
+  /**
+   * After OCR wrote a new version (spec 7.2): saves PdfCraft's edits, recreates PdfCraft and reopens its books at
+   * their pages, so the recognized text is searchable/selectable. A no-op when PdfCraft doesn't have `uid` open.
+   */
+  reloadPdfcraftBook: (uid: string): Promise<void> => controller.reloadPdfcraftBook(uid),
   togglePanel: (open?: boolean): void => controller.togglePanel(open),
   flushSaves: (reason: FlushReason = 'manual'): Promise<boolean> => controller.flushSaves(reason),
   /** "Card da seleção" (Ctrl+Shift+N / Alt+C / the panel's button): opens the panel with the card form. */

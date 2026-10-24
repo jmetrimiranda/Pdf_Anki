@@ -1,5 +1,5 @@
-//! Library and book files (spec 6.5, 6.6): import, versions saved by PdfCraft, export, covers and
-//! the words of a page. Plain [`AppState`] methods; the commands only move them off the runtime.
+//! Library and book files (spec 6.5, 6.6, 7.1): import (PDF here, EPUB in [`crate::epub`]), versions saved by
+//! PdfCraft, export, covers and the words of a page. Plain [`AppState`] methods; the commands only move them off the runtime.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,12 +45,15 @@ pub struct AddedBook {
     pub outcome: AddOutcome,
 }
 
-/// `book_open`: the book and the 0-based page to open it at.
+/// `book_open`: the book and where to open it: the 0-based page (PDF) or section (EPUB), and for EPUB the last
+/// CFI position.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BookOpen {
     pub book: LibraryEntry,
     pub page: u32,
+    pub format: BookFormat,
+    pub cfi: Option<String>,
 }
 
 /// `book_save_version`: `changed` is false when the bytes were already the current version.
@@ -127,7 +130,9 @@ impl AppState {
     /// replaces that version when `replace` is set (otherwise: [`AddOutcome::OtherVersion`]); the
     /// replaced version is kept as a `replaced-` copy that pruning never deletes.
     pub fn library_add(&self, path: &Path, replace: bool) -> Result<AddedBook, AppError> {
-        check_extension(path)?;
+        if check_extension(path)? == BookFormat::Epub {
+            return self.library_add_epub(path);
+        }
         let imported = self.read_import(path)?;
         let _guard = self.library_guard();
         let target = imported
@@ -312,7 +317,11 @@ impl AppState {
 
     /// For a book row in any state (tombstones included): the version `file_hash` gets when it
     /// is added (the current one if unchanged, else the next). `None` when there is no row.
-    fn next_version_any(&self, uid: &str, file_hash: &str) -> Result<Option<u32>, AppError> {
+    pub(crate) fn next_version_any(
+        &self,
+        uid: &str,
+        file_hash: &str,
+    ) -> Result<Option<u32>, AppError> {
         let row = self.with_store(|s| {
             use rusqlite::OptionalExtension;
             s.connection()
@@ -354,8 +363,9 @@ impl AppState {
         png
     }
 
-    /// The cover PNG of the current version (cached under `covers/`), or `None` when the book is
-    /// unknown or has no cover (locked or unreadable first page).
+    /// The cover of the current version (cached under `covers/`), or `None` when the book is unknown or has no
+    /// cover (locked or unreadable first page; an EPUB without a cover image). PDF covers are PNG; EPUB covers are
+    /// the book's own image (PNG, JPEG, GIF or WebP; see [`image_type`]).
     pub fn cover_png(&self, uid: &str) -> Result<Option<Vec<u8>>, AppError> {
         let Some(book) = self.with_store(|s| s.get_book(uid))? else {
             return Ok(None);
@@ -363,6 +373,15 @@ impl AppState {
         let cached = self.files().cover_path(uid, book.file_version);
         if let Ok(png) = std::fs::read(&cached) {
             return Ok(Some(png));
+        }
+        if book.format == BookFormat::Epub {
+            let Some(image) = self.epub_cover(&book) else {
+                return Ok(None);
+            };
+            if let Err(e) = self.files().write_cover(uid, book.file_version, &image) {
+                tracing::warn!(book_uid = %uid, %e, "could not cache the cover");
+            }
+            return Ok(Some(image));
         }
         let bytes = Arc::new(self.read_current(&book)?);
         match self.render_cover(&bytes) {
@@ -380,9 +399,14 @@ impl AppState {
     }
 
     pub fn library_remove(&self, uid: &str) -> Result<(), AppError> {
+        // Its OCR stops (it would hold the OCR slot and every core for nothing); a job past its last cancel point
+        // finds the book gone under the lock and writes nothing.
+        self.ocr_cancel(uid);
         let _guard = self.library_guard();
         self.with_store(|s| s.remove_book(uid))?;
         self.invalidate_docs(uid);
+        self.invalidate_epub(uid);
+        self.ocr_forget(uid);
         self.files().remove_book(uid);
         Ok(())
     }
@@ -401,7 +425,17 @@ impl AppState {
         } else {
             page
         };
-        Ok(BookOpen { book, page })
+        let format = book.book.format;
+        let cfi = match format {
+            BookFormat::Epub => book.position.as_ref().and_then(|p| p.cfi.clone()),
+            BookFormat::Pdf => None,
+        };
+        Ok(BookOpen {
+            book,
+            page,
+            format,
+            cfi,
+        })
     }
 
     pub fn library_entry(&self, uid: &str) -> Result<LibraryEntry, AppError> {
@@ -483,7 +517,12 @@ impl AppState {
         if bytes.len() as u64 > MAX_PDF_BYTES {
             return Err(too_big());
         }
-        self.book(uid)?;
+        if self.book(uid)?.format == BookFormat::Epub {
+            return Err(AppError::new(
+                "not_pdf",
+                "Livros EPUB não têm versões: as anotações ficam no app.",
+            ));
+        }
         let bytes = Arc::new(bytes);
         match core_pdf::read_info(Arc::clone(&bytes), LEITOR_BOOK_UID_KEY) {
             Ok(None) => {}
@@ -503,8 +542,61 @@ impl AppState {
 
         let _guard = self.library_guard();
         let book = self.book(uid)?;
+        self.save_version_locked(&book, bytes, base_version)
+    }
+
+    /// The OCR's save (spec 7.2): `bytes` become the new version only if `base_version` is still the current one,
+    /// checked and committed under the library lock, and `after_commit` runs under that same lock (so no PdfCraft
+    /// save can come between the new version and what the OCR keeps about it). `Ok(None)` when the current
+    /// version is no longer `base_version` (PdfCraft saved meanwhile): nothing was written, start over from the
+    /// newer version. `proceed` also runs under the lock, first: its error (e.g. the job was cancelled, as library
+    /// removal does before it takes the lock) stops the save. `bytes` must be a PDF stamped with this book's
+    /// `LeitorBookUid`.
+    pub(crate) fn book_save_version_if_current(
+        &self,
+        uid: &str,
+        bytes: Vec<u8>,
+        base_version: u32,
+        proceed: &dyn Fn() -> Result<(), AppError>,
+        after_commit: impl FnOnce(&SavedVersion),
+    ) -> Result<Option<SavedVersion>, AppError> {
+        if bytes.len() as u64 > MAX_PDF_BYTES {
+            return Err(too_big());
+        }
+        let _guard = self.library_guard();
+        proceed()?;
+        let book = self.book(uid)?;
+        if book.format != BookFormat::Pdf {
+            return Err(AppError::new(
+                "not_pdf",
+                "Livros EPUB não têm versões: as anotações ficam no app.",
+            ));
+        }
+        if book.file_version != base_version {
+            return Ok(None);
+        }
+        let saved = self.save_version_locked(&book, Arc::new(bytes), Some(base_version))?;
+        after_commit(&saved);
+        Ok(Some(saved))
+    }
+
+    /// The part of a save that runs under [`library_guard`](Self::library_guard), with `book` read under it.
+    fn save_version_locked(
+        &self,
+        book: &Book,
+        bytes: Arc<Vec<u8>>,
+        base_version: Option<u32>,
+    ) -> Result<SavedVersion, AppError> {
+        let uid = book.book_uid.as_str();
+        let stale_base = base_version.is_some_and(|base| base != book.file_version);
+        // A save based on a version from before an OCR gets the text layer back (spec 7.2).
+        let bytes = if stale_base {
+            Arc::new(self.ocr_merge_into_save(uid, Arc::unwrap_or_clone(bytes), base_version)?)
+        } else {
+            bytes
+        };
         let file_hash = book_uid_of(&bytes);
-        if file_hash == book.file_hash && self.current_file(&book).is_ok() {
+        if file_hash == book.file_hash && self.current_file(book).is_ok() {
             return Ok(SavedVersion {
                 file_hash,
                 file_version: book.file_version,
@@ -525,7 +617,6 @@ impl AppState {
                 kept_newer: false,
             });
         }
-        let stale_base = base_version.is_some_and(|base| base != book.file_version);
         if stale_base {
             tracing::warn!(
                 book_uid = %uid,
@@ -533,7 +624,7 @@ impl AppState {
                 current = book.file_version,
                 "save based on an older version; keeping the current one"
             );
-            self.keep_replaced(&book)?;
+            self.keep_replaced(book)?;
         }
         let version = book.file_version.saturating_add(1);
         let rel = self
@@ -572,7 +663,7 @@ impl AppState {
         Ok(())
     }
 
-    fn remove_rel(&self, rel: &str) {
+    pub(crate) fn remove_rel(&self, rel: &str) {
         if let Some(path) = self.files().resolve(rel) {
             let _ = std::fs::remove_file(path);
         }
@@ -581,6 +672,13 @@ impl AppState {
     /// "Exportar cópia": the current version at `dest`, always carrying `LeitorBookUid` so that
     /// adding it back finds the book.
     pub fn book_export(&self, uid: &str, dest: &Path) -> Result<(), AppError> {
+        let book = self.book(uid)?;
+        if book.format == BookFormat::Epub {
+            // The file never changes (annotations live in the app): a plain copy.
+            check_export_path_as(dest, "epub")?;
+            let bytes = self.read_current(&book)?;
+            return files::write_atomic(dest, &bytes).map_err(|e| files::write_error(dest, &e));
+        }
         check_export_path(dest)?;
         let bytes = self.book_bytes(uid)?;
         let shared = Arc::new(bytes);
@@ -614,7 +712,11 @@ impl AppState {
         Ok(self.pdf().page_words(doc, page)?)
     }
 
+    /// The open PDF of a book's current version (`not_pdf` for an EPUB).
     pub(crate) fn book_doc(&self, book: &Book) -> Result<DocHandle, AppError> {
+        if book.format != BookFormat::Pdf {
+            return Err(crate::epub::not_pdf());
+        }
         self.cached_doc(&book.book_uid, &book.file_hash, || {
             let bytes = Arc::new(self.read_current(book)?);
             Ok(self.pdf().open(bytes, None)?)
@@ -625,57 +727,85 @@ impl AppState {
         self.with_store(|s| s.get_reading_position(uid))
     }
 
-    /// Saves the page from `pdfcraft:page` (0-based); `progress` is clamped to 0..=1.
+    /// Saves the page from `pdfcraft:page` (0-based) or, for an EPUB, the section and the CFI of the reader;
+    /// `progress` is clamped to 0..=1. An invalid CFI is `invalid_input`.
     pub fn position_set(
         &self,
         uid: &str,
         page: u32,
         progress: f64,
+        cfi: Option<String>,
     ) -> Result<ReadingPosition, AppError> {
         let progress = if progress.is_finite() {
             progress.clamp(0.0, 1.0)
         } else {
             0.0
         };
+        let cfi = cfi.map(|c| c.trim().to_owned()).filter(|c| !c.is_empty());
+        if let Some(c) = &cfi
+            && !core_epub::is_valid_cfi(c)
+        {
+            return Err(AppError::new(
+                "invalid_input",
+                "A posição de leitura (CFI) é inválida.",
+            ));
+        }
         let pos = ReadingPosition {
             page,
             progress,
+            cfi,
             ..ReadingPosition::default()
         };
         self.with_store(|s| s.set_reading_position(uid, &pos))
     }
 }
 
-fn check_extension(path: &Path) -> Result<(), AppError> {
+fn check_extension(path: &Path) -> Result<BookFormat, AppError> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
     match ext.as_deref() {
-        Some("pdf") => Ok(()),
-        Some("epub") => Err(AppError::new(
-            "unsupported_format",
-            "EPUB chega numa próxima versão.",
-        )),
+        Some("pdf") => Ok(BookFormat::Pdf),
+        Some("epub") => Ok(BookFormat::Epub),
         _ => Err(AppError::new(
             "unsupported_format",
-            "Formato não suportado: escolha um arquivo PDF.",
+            "Formato não suportado: escolha um arquivo PDF ou EPUB.",
         )),
     }
 }
 
 fn check_export_path(dest: &Path) -> Result<(), AppError> {
-    let is_pdf = dest
+    check_export_path_as(dest, "pdf")
+}
+
+fn check_export_path_as(dest: &Path, ext: &str) -> Result<(), AppError> {
+    let matches = dest
         .extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
-    if !dest.is_absolute() || !is_pdf {
+        .is_some_and(|e| e.eq_ignore_ascii_case(ext));
+    if !dest.is_absolute() || !matches {
         return Err(AppError::new(
             "invalid_path",
-            "Escolha um caminho de arquivo .pdf para exportar.",
+            format!("Escolha um caminho de arquivo .{ext} para exportar."),
         ));
     }
     Ok(())
+}
+
+/// The image type of a cover from its magic bytes (`None` for anything else, SVG included).
+pub fn image_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 fn invalid_pdf(what: &str, e: &PdfError) -> AppError {

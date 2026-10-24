@@ -76,6 +76,9 @@ tokio = { workspace = true, features = ["net"] }
 pdfcraft-testkit.workspace = true
 pdfcraft-cos.workspace = true
 pdfcraft-organize.workspace = true
+# The scanned-PDF generator of the OCR tests and the EPUB builders of the EPUB tests (spec 20, generated in code).
+core-pdf = { workspace = true, features = ["testkit"] }
+core-epub = { workspace = true, features = ["testkit"] }
 
 [lints]
 workspace = true

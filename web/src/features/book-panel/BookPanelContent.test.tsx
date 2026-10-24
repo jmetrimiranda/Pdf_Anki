@@ -51,13 +51,16 @@ afterEach(() => vi.restoreAllMocks());
 const farmUid = () => mockHandle.books.find((b) => b.title === 'Animal Farm')!.bookUid;
 const deckId = async (name: string) => (await mockClient.ankiDeckNames()).find((d) => d.name === name)!.id;
 
-function renderContent(opts: { page?: number; selection?: LeitorSelection | null } = {}) {
-  const uid = farmUid();
+function renderContent(
+  opts: { page?: number; selection?: LeitorSelection | null; uid?: string; unit?: 'page' | 'chapter' } = {},
+) {
+  const uid = opts.uid ?? farmUid();
   const onCardDone = vi.fn();
   const utils = renderWithProviders(
     <BookPanelContent
       bookUid={uid}
       title="Animal Farm"
+      unit={opts.unit ?? 'page'}
       page={opts.page ?? 0}
       selection={opts.selection ?? null}
       cardRequest={null}
@@ -144,6 +147,31 @@ describe('BookPanelContent', () => {
     expect(fake.current.leitor.openBook).toHaveBeenCalledWith(uid, { page: 0, find: 'Manor Farm' });
     fireEvent.click(within(list).getByRole('button', { name: /Editar a nota/ }));
     expect(screen.getByRole('dialog', { name: 'editor' })).toBeTruthy();
+  });
+
+  it('EPUB: lists the cards of the chapter in front and opens them at their CFI', async () => {
+    const uid = mockHandle.books.find((b) => b.format === 'epub')!.bookUid;
+    const basic = (await mockClient.ankiNotetypes()).find((n) => n.appType === 'Básico (Leitor)')!;
+    const cfi = 'epubcfi(/6/8!/4/2/1:0)';
+    const fonte = `<a href="leitor://livro/${uid}?cap=3&amp;cfi=${encodeURIComponent(cfi)}&amp;q=Filby">The Time Machine, Chapter II</a>`;
+    await mockClient.ankiNoteAdd({
+      notetypeId: basic.id,
+      deckId: await deckId('Livros::Animal Farm'),
+      fields: ['Who is Filby?', 'An argumentative person', fonte],
+      tags: [],
+    });
+    renderContent({ uid, unit: 'chapter', page: 2 });
+    const section = await screen.findByRole('region', { name: 'Cards deste capítulo (cap. 3)' });
+    const list = await within(section).findByTestId('book-page-cards');
+    fireEvent.click(within(list).getByRole('button', { name: /Mostrar o trecho no livro: Who is Filby/ }));
+    expect(fake.current.leitor.openBook).toHaveBeenCalledWith(uid, { page: 2, find: 'Filby', cfi });
+  });
+
+  it('EPUB: an empty chapter', async () => {
+    const uid = mockHandle.books.find((b) => b.format === 'epub')!.bookUid;
+    renderContent({ uid, unit: 'chapter', page: 0 });
+    const section = await screen.findByRole('region', { name: 'Cards deste capítulo (cap. 1)' });
+    await within(section).findByText('Nenhum card deste capítulo ainda.');
   });
 
   it('shows the empty state of a page without cards', async () => {

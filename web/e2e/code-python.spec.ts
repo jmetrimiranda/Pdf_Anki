@@ -3,9 +3,8 @@
 // tests; `while True: pass` is interrupted after 5 s (the worker is terminated) and the next run works on a new
 // worker; the same flow under the app's Tauri CSP (as a response header) and with every request outside
 // localhost blocked (offline).
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import type { Page } from '@playwright/test';
+import { dropDevWebsocketErrors, withCsp } from './csp';
 import { expect, stubPdfcraft, test } from './fixtures';
 
 const SOMA = 'def soma_pares(xs):\n    return sum(x for x in xs if x % 2 == 0)';
@@ -14,46 +13,6 @@ const LOOP = 'while True:\n    pass';
 const studyUrl = '/anki/estudar?nome=' + encodeURIComponent('Programação');
 const panel = (page: Page) => page.getByTestId('code-panel');
 const verdict = (page: Page) => page.getByTestId('code-verdict');
-
-/** The production CSP of the desktop app (src-tauri/app/tauri.conf.json `app.security.csp`). */
-function tauriCsp(): Record<string, string> {
-  const conf = JSON.parse(
-    readFileSync(fileURLToPath(new URL('../../src-tauri/app/tauri.conf.json', import.meta.url)), 'utf8'),
-  ) as {
-    app: { security: { csp: Record<string, string> } };
-  };
-  return conf.app.security.csp;
-}
-
-/**
- * The app's CSP as a header of every response of the dev server (the page, its modules, the worker script and
- * Pyodide). Only what Vite's dev server itself needs is added: its inline React refresh preamble ('unsafe-inline' in
- * script-src) and the HMR websocket. Nothing is added for Python: no 'unsafe-eval'.
- */
-function devServedCsp(): string {
-  const csp = { ...tauriCsp() };
-  expect(csp['script-src']).not.toContain("'unsafe-eval'");
-  csp['script-src'] = `${csp['script-src']} 'unsafe-inline'`;
-  csp['connect-src'] = `${csp['connect-src']} ws://localhost:* http://localhost:*`;
-  return Object.entries(csp)
-    .map(([k, v]) => `${k} ${v}`)
-    .join('; ');
-}
-
-async function withCsp(page: Page, violations: string[], withPolicy: string[]) {
-  const header = devServedCsp();
-  await page.context().route(/^http:\/\/localhost:\d+\//, async (route) => {
-    if (route.request().url().includes('/@vite/client') || route.request().resourceType() === 'websocket') {
-      return route.continue();
-    }
-    const res = await route.fetch();
-    withPolicy.push(route.request().url());
-    await route.fulfill({ response: res, headers: { ...res.headers(), 'content-security-policy': header } });
-  });
-  page.on('console', (m) => {
-    if (/Content Security Policy|Refused to/i.test(m.text())) violations.push(m.text());
-  });
-}
 
 async function typeCode(page: Page, code: string) {
   const editor = panel(page).getByTestId('code-editor');
@@ -148,12 +107,7 @@ test.describe('Python with the real Pyodide', () => {
     expect(withPolicy.some((u) => u.includes('/anki/estudar'))).toBe(true);
     expect(withPolicy.some((u) => u.includes('python.worker'))).toBe(true);
     expect(withPolicy.some((u) => u.includes('/pyodide/pyodide.asm.wasm'))).toBe(true);
-    // Chromium refuses Vite's HMR websocket for a document fulfilled by the route (local network access checks):
-    // a dev-server artifact, not the app's (the app has no websocket).
-    for (let i = consoleErrors.length - 1; i >= 0; i--) {
-      if (/WebSocket connection to 'ws:\/\/localhost|\[vite\] failed to connect to websocket/.test(consoleErrors[i]!))
-        consoleErrors.splice(i, 1);
-    }
+    dropDevWebsocketErrors(consoleErrors);
   });
 
   test('offline: every request outside localhost is blocked and Python still runs', async ({ page }) => {

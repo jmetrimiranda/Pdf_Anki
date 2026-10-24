@@ -7,6 +7,7 @@ import { core } from '../../lib/core/client';
 import { q } from '../../lib/core/queries';
 import type { DeepLink } from '../../lib/core/types';
 import { AnkiImportProvider, useAnkiImport } from '../anki/import/AnkiImportProvider';
+import { openOptions } from '../anki/study/links';
 import { useNarrow } from '../../lib/useMediaQuery';
 import { leitor, LeitorHost } from '../leitor';
 import { ReplaceVersionDialog } from '../library/BookDialogs';
@@ -131,7 +132,7 @@ function Shell() {
         toast.show(t('leitor.deepLinkUnknownBook'), { tone: 'info' });
         return;
       }
-      await leitor.openBook(link.bookUid, { page: Math.max(0, link.page - 1), find: link.query });
+      await leitor.openBook(link.bookUid, openOptions(link));
     },
     [queryClient, toast],
   );

@@ -7,8 +7,13 @@ The reading screen **is PdfCraft's own UI**: the web build of `third_party/pdfcr
 WebGL canvas) runs in an iframe at the same origin under `/pdfcraft/`, and talks to the app only through `postMessage`
 (the bridge, spec 6.2). The app adds things *around* the iframe (tabs Biblioteca | Leitor | Anki, the "Painel Anki do
 livro") and never restyles what is inside. Annotations and bookmarks are PdfCraft's, saved inside the PDF (autosave →
-new file version, spec 6.5). `core-pdf` uses only `pdfcraft-render`/`-annot`/`-ocr`/`-cos` (+ `-organize` for the Info dict) for page text with word rects,
-covers, metadata/Info (`LeitorBookUid`) and OCR — no `pdfcraft-engine`, no reading renderer.
+new file version, spec 6.5). `core-pdf` uses only `pdfcraft-render`/`-annot`/`-ocr`/`-cos` (+ `-organize` for the Info dict,
+`-edit` for the OCR text layer: `stamp` + `page_images`) for page text with word rects, covers, metadata/Info
+(`LeitorBookUid`) and OCR — no `pdfcraft-engine`, no reading renderer.
+
+EPUBs do **not** open in PdfCraft: the same Leitor tab shows them in foliate-js (vendored, pinned, `web/vendor/foliate-js/`,
+`web/src/features/epub/`); `core-epub` parses them (TOC, cover, text per spine section). EPUB annotations live in the
+app DB (`epub_annotation`, CFI ranges), never in the file; an EPUB's unit is its spine section (`page` = section).
 
 Decisions: [docs/decisoes.md](docs/decisoes.md) · Progress per phase: [docs/progresso.md](docs/progresso.md) · Upstream API notes: [docs/tecnico/](docs/tecnico/).
 
@@ -52,11 +57,15 @@ Mesa for software WebGL). Without VS Code: `scripts/dev.sh <cmd…>` runs a comm
 | Headless vocabulary scan | `LEITOR_DATA_DIR=<dir> cargo run -p leitor-estudos --example vocab_scan -- <book uid> <root deck> [pages]` (e.g. as `LEITOR_CAPTURE_SETUP`, with `LEITOR_CAPTURE_SEED_ARGS=--vocab`) |
 | Real app Anki probes (WebKitGTK, Xvfb, fixture) | `scripts/anki-real-app.sh isolation` (card iframe isolation) · `scripts/anki-real-app.sh pages` (Anki's pages over the `anki` protocol) → `web/test-results/anki-realapp/summary.txt` |
 | Record Anki page requests for the bridge tests | `scripts/record-anki-posts.sh` → `src-tauri/crates/core-anki/tests/fixtures/bridge/` (commit them) |
-| Real app captures with the fixture | `bash -c 'LEITOR_CAPTURE_SEED=1 scripts/capture.sh docs/capturas/fase-N /anki "/anki/opcoes/{deck:5000 palavras}"'` (env vars must be set inside `scripts/dev.sh`, which doesn't forward them); with a book: `python3 -I scripts/sample-book-pdf.py "/tmp/cap/Animal Farm.pdf"` and `LEITOR_CAPTURE_PDF="/tmp/cap/Animal Farm.pdf"` (imports it; `{book}` in a route = its uid, e.g. `/leitor?livro={book}&painel=card&trecho=…`); `LEITOR_CAPTURE_EMBEDDED=1` captures the production frontend (`vite build` + `tauri/custom-protocol`, real CSP; combine with `LEITOR_DEV_NETWORK=none` for offline) and `LEITOR_CAPTURE_SETUP` runs after the import (e.g. insert a `notetype_mapping` row) |
+| Real app captures with the fixture | `bash -c 'LEITOR_CAPTURE_SEED=1 scripts/capture.sh docs/capturas/fase-N /anki "/anki/opcoes/{deck:5000 palavras}"'` (env vars must be set inside `scripts/dev.sh`, which doesn't forward them); with a book: `python3 -I scripts/sample-book-pdf.py "/tmp/cap/Animal Farm.pdf"` and `LEITOR_CAPTURE_BOOK="/tmp/cap/Animal Farm.pdf"` (old name `LEITOR_CAPTURE_PDF`; a `.epub` works too; imports it; `{book}` in a route = its uid, e.g. `/leitor?livro={book}&painel=card&trecho=…`); `LEITOR_CAPTURE_EMBEDDED=1` captures the production frontend (`vite build` + `tauri/custom-protocol`, real CSP; combine with `LEITOR_DEV_NETWORK=none` for offline) and `LEITOR_CAPTURE_SETUP` runs after the import (e.g. insert a `notetype_mapping` row) |
 | Local Anki sync server (official `anki==26.9.3` + TLS dev CA, network `leitor-dev`) | `scripts/ankisync-dev-certs.sh` (dev CA + server cert into `server/ankisync-dev/certs/`, gitignored), then `docker compose -f compose.dev.yml up -d --build --wait`; `docker compose -f compose.dev.yml down -v` after. Never sync with any other server. Docs: `docs/tecnico/anki-sync-dev.md` |
 | Sync integration tests (host, repo root) | `scripts/sync-test.sh [all\|core-anki\|app\|crosscheck]` (recreates the server empty, checks 26.9.3, runs the gated Rust suites on `leitor-dev` under the keyring, the official Python client cross-check, then `down -v`) |
 | Keychain in the container (Secret Service) | `scripts/with-keyring.sh <cmd…>` (private D-Bus + unlocked gnome-keyring, sets `LEITOR_TEST_KEYRING=1`); debug builds also accept `LEITOR_SECRET_STORE=memory` |
 | Deep link `leitor://livro/<uid>?pagina=N&q=…` (dev) | Run-time registration (background thread, never on the startup path) is off in debug builds and for non-AppImage Linux runs (the bundler registers `.deb`/`.rpm`); `LEITOR_DEEP_LINK_REGISTER=1` forces it (e.g. to check with `xdg-mime query default x-scheme-handler/leitor`), `=0` disables it; it never takes the scheme from another handler; test a running app with a second launch: `src-tauri/target/debug/leitor-estudos 'leitor://livro/<uid>?pagina=3&q=windmill'` |
+| foliate-js (EPUB reader, vendored) | `scripts/fetch-foliate.sh` (pinned commit, sha256-checked) · `--check` verifies the committed copy offline (suite, CI) · `--check-dist web/dist` after `vite build` (no pdf.js, no foliate chunk > 1 MB) · docs: `docs/tecnico/foliate.md` |
+| EPUB core / sample book | `cargo test -p core-epub` (robustness: 2 000 mutations, garbage, DRM, zip bomb) · perf: `cargo test --release -p core-epub --test text -- --ignored --nocapture` · sample EPUB 3 (nested TOC, image, cover): `cargo run -p core-epub --features testkit --example sample_epub -- "/tmp/cap/The Time Machine.epub"` · docs: `docs/tecnico/epub.md` |
+| OCR models | `scripts/fetch-ocr-models.sh` (ocrs, CC BY-SA 4.0, sha256-checked → `src-tauri/resources/ocr-models/`, gitignored; bundled as the Tauri resource `ocr-models/`). Lookup: `LEITOR_OCR_MODELS_DIR` → `<resource_dir>/ocr-models` → (debug) `src-tauri/resources/ocr-models`. Tests skip without them unless `LEITOR_REQUIRE_OCR_MODELS=1` |
+| OCR tests / timing / bridge fixtures | `cargo test -p core-pdf --features testkit --test ocr` · ms/page (release): `cargo test --release -p core-pdf --features testkit --test ocr -- --ignored --nocapture` · fixtures for `e2e/bridge/ocr.spec.ts`: `cargo run -p core-pdf --features testkit --example ocr_fixture -- target/fixtures/ocr` (default dir; `LEITOR_OCR_FIXTURE_DIR` points the bridge test elsewhere) |
 | Rust ↔ TS contract snapshot | `LEITOR_UPDATE_CONTRACT=1 cargo test -p leitor-estudos --test contract` rewrites `web/src/lib/core/__fixtures__/contract.json` (Vitest `contract.test.ts` checks the mock against it) |
 
 ## PdfCraft fork workflow
@@ -85,6 +94,9 @@ Mesa for software WebGL). Without VS Code: `scripts/dev.sh <cmd…>` runs a comm
 - Never `preventDefault` a key PdfCraft uses (it owns Ctrl+1/2/3, Ctrl+P, Ctrl+Shift+N…): app shortcuts are listed in
   docs/decisoes.md.
 - Untrusted input (PDF, EPUB, .apkg) never panics the app — errors become pt-BR messages.
+- EPUB content is hostile: foliate's section iframes are same-origin with `allow-scripts`, so every XHTML/SVG/CSS goes
+  through `web/src/features/epub/sanitize.ts` before it loads, and `script-src` never gets `blob:`/`unsafe-inline` in
+  production. Never vendor foliate's pdf.js; never modify the vendored files (re-fetch with `fetch-foliate.sh`).
 - UI text in pt-BR in `web/src/i18n/pt-BR.ts`; code, commands and commits in English.
 - Custom protocol URLs only through `protocolUrl(scheme, path)` (Windows uses `http://<scheme>.localhost/`).
 

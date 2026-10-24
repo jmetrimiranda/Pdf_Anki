@@ -32,11 +32,16 @@ export function sortBooks(books: LibraryEntry[]): LibraryEntry[] {
   return [...books].sort((a, b) => key(b) - key(a) || a.title.localeCompare(b.title, 'pt-BR'));
 }
 
-/** "p. N de M" values, or null when the book was never opened. */
+/** "p. N de M" values (an EPUB shows only `percent`, its stored reading fraction), or null when never opened. */
 export function progressOf(b: LibraryEntry): { page: number; total: number; percent: number } | null {
   if (!b.position) return null;
   const total = Math.max(1, b.pages);
   const page = Math.min(total, b.position.page + 1);
   const percent = Math.round(Math.max(0, Math.min(1, b.position.progress)) * 100);
   return { page, total, percent };
+}
+
+/** The suggested name of an exported copy: the title with the book's own format. */
+export function exportName(book: Pick<LibraryEntry, 'title' | 'format'>): string {
+  return `${book.title}.${book.format === 'epub' ? 'epub' : 'pdf'}`;
 }

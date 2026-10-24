@@ -11,9 +11,12 @@ import {
   type PdfcraftTheme,
   type Rect,
 } from './bridge';
+import type { EpubMarkWord, EpubSectionMarks } from '../../lib/core/types';
+import { EpubVocab } from './epubVocab';
 import { SessionWiring, type StopReason } from './sessions';
 import { frameLoad, LeitorTimings } from './timings';
 import { VOCAB_SET, VocabMarks, type VocabMark, type VocabPageMarks } from './vocabMarks';
+export type { EpubMarkWord, EpubSectionMarks };
 
 /** What the controller needs from the core (adapted from `CoreClient` in index.ts; faked in tests). */
 export interface LeitorCore {
@@ -35,32 +38,109 @@ export interface LeitorCore {
   exportBook(uid: string, path: string): Promise<void>;
   exportBytes(path: string, bytes: Uint8Array): Promise<void>;
   openExternal(uid: string): Promise<void>;
-  positionSet(uid: string, page: number, progress: number): Promise<void>;
+  /** `cfi`: the EPUB location (absent for a PDF). */
+  positionSet(uid: string, page: number, progress: number, cfi?: string | null): Promise<void>;
   setPages(uid: string, pages: number): Promise<void>;
   sessionStart(uid: string, page: number): Promise<void>;
   sessionHeartbeat(uid: string, page: number): Promise<void>;
   sessionStop(uid: string, reason: StopReason): Promise<void>;
   /** vocab_marks(uid, pages): the vocabulary marks of those pages; `null` when the book was never scanned. */
   vocabMarks(uid: string, pages: number[]): Promise<VocabPageMarks[] | null>;
+  /** vocab_epub_marks(uid, sections): the marks of those EPUB sections; `null` when never scanned. */
+  epubMarks(uid: string, sections: number[]): Promise<EpubSectionMarks[] | null>;
   log(level: 'info' | 'warn' | 'error', message: string): void;
 }
 
 export interface OpenInfo {
   name: string;
   title: string;
+  /** Last page read (0-based); for an EPUB the spine section. */
   page: number;
+  /** Page count; for an EPUB the spine section count. */
   pages: number;
   fileVersion: number;
+  /** `epub` books open in the app's EPUB reader, not in PdfCraft (spec 7.1). */
+  format: 'pdf' | 'epub';
+  /** The EPUB's last location read (null: never opened, or a PDF). */
+  cfi: string | null;
 }
+
+/** Where the EPUB reader is (its `onLocation`). */
+export interface EpubLocation {
+  /** 0-based spine section on screen. */
+  section: number;
+  sectionCount: number;
+  cfi: string;
+  /** 0..=1 through the book. */
+  fraction: number;
+  /** The TOC label of the section on screen (null: none). */
+  tocLabel: string | null;
+}
+
+/** A selection in the EPUB reader. */
+export interface EpubSelectionInfo {
+  text: string;
+  /** CFI range of the selection. */
+  cfi: string;
+  section: number;
+  tocLabel: string | null;
+}
+
+/**
+ * What the controller drives in the EPUB reader (features/epub's handle, adapted in LeitorHost). One EPUB at a time.
+ */
+export interface EpubFront {
+  /** Loads a book; resolves with its section count once it shows, null on failure (the reader shows the error). */
+  open(o: {
+    uid: string;
+    bytes: ArrayBuffer | Uint8Array;
+    title: string;
+    cfi: string | null;
+    section?: number;
+    find?: string | null;
+  }): Promise<{ sectionCount: number } | null>;
+  /** Goes to a CFI, or a section (finding `find` there). Resolves whether `find` was found (true without find). */
+  goTo(o: { cfi?: string | null; section?: number; find?: string | null }): Promise<boolean>;
+  openDrawer(which: EpubDrawer): void;
+  /** The vocabulary forms underlined in `section` (`null` clears that section). */
+  setVocabMarks(section: number, words: EpubMarkWord[] | null): void;
+  clearVocabMarks(): void;
+  /** The current selection, right now (null: none). */
+  selectionNow(): EpubSelectionInfo | null;
+  /** Writes the pending location now (before another book replaces this one). */
+  flush?(): void;
+}
+
+export type EpubDrawer = 'toc' | 'annotations' | 'search';
+
+/** The EPUB in the reader (spec 7.1); `section`/`sectionCount` play the role of page/pageCount when it is in front. */
+export interface EpubState {
+  uid: string;
+  title: string;
+  section: number;
+  sectionCount: number;
+  cfi: string | null;
+  fraction: number;
+  tocLabel: string | null;
+}
+
+/** Which reader is in front in the Leitor tab: PdfCraft (PDFs) or the EPUB reader. */
+export type LeitorFront = 'pdfcraft' | 'epub';
 
 /** The text selected in the book in front (`pdfcraft:selection`). */
 export interface LeitorSelection {
   id: string;
-  /** 0-based PdfCraft page. */
+  /** 0-based PdfCraft page; for an EPUB the spine section. */
   page: number;
   text: string;
-  /** Page view space points, y down. */
+  /** Page view space points, y down (empty for an EPUB). */
   rects: Rect[];
+  /** EPUB only: the selection's CFI range. */
+  cfi?: string | null;
+  /** `chapter` for an EPUB selection (absent: a PDF page). */
+  unit?: 'page' | 'chapter';
+  /** EPUB only: the TOC label of the section (the Fonte's label). */
+  label?: string | null;
 }
 
 /** The selection a panel request carries; `id` is null for a document outside the library. */
@@ -90,10 +170,10 @@ export interface FoundResult {
   found: boolean;
 }
 
-/** A click on a highlighted word (`pdfcraft:mark-click` of the 'vocab' set) the popover shows. */
+/** A click on a highlighted word (`pdfcraft:mark-click` of the 'vocab' set, or the EPUB reader's) the popover shows. */
 export interface MarkClick {
   id: string;
-  /** 0-based page. */
+  /** 0-based page (an EPUB's spine section). */
   page: number;
   /** The mark's index on the page (as sent). */
   index: number;
@@ -130,7 +210,9 @@ export interface LeitorUi {
       | 'leitor.gotoNotFound'
       | 'bookPanel.selectFirst'
       | 'bookPanel.notInLibrary'
-      | 'vocabReading.marksFailed',
+      | 'vocabReading.marksFailed'
+      | 'reader.reloadedAfterOcr'
+      | 'epub.openFailed',
     tone: 'error' | 'success' | 'info',
     vars?: Record<string, string>,
   ): void;
@@ -190,6 +272,14 @@ export interface LeitorSnapshot {
   found: FoundResult | null;
   /** The app's items in the last selection menu PdfCraft showed. */
   menuShown: MenuShown | null;
+  /** Which reader is in front; activeId/activeTitle/page/pageCount follow it. */
+  front: LeitorFront;
+  /** The EPUB loaded in the EPUB reader (stays loaded while PdfCraft is in front). */
+  epub: EpubState | null;
+  /** PdfCraft has library books open (the EPUB reader offers "Voltar aos PDFs"). */
+  pdfOpen: boolean;
+  /** The EPUB reader is mounted (the first EPUB opened; never unmounted, like the iframe). */
+  epubMounted: boolean;
 }
 
 const PANEL_KEY = 'leitor.panelOpen';
@@ -235,6 +325,19 @@ export const GOTO_GRACE_MS = 1_500;
 /** `openFailures` value for a goto PdfCraft answered as for a tab it doesn't have. */
 const MISSING_TAB = '\u0000missing-tab';
 
+/** `openBook` options: where to open (`page` 0-based; for an EPUB the spine section), what to find, the EPUB CFI. */
+export interface OpenOptions {
+  page?: number;
+  find?: string | null;
+  /** EPUB only: the location to open at (wins over `page`). */
+  cfi?: string | null;
+  /** Internal: reopen without switching to the Leitor tab or bringing the reader to front. */
+  quiet?: boolean;
+}
+
+/** How long `openBook` waits for the EPUB reader to mount before giving up. */
+export const EPUB_FRONT_TIMEOUT_MS = 10_000;
+
 export class StartFailed extends Error {
   constructor(readonly reason: StartError) {
     super(`PdfCraft did not start (${reason})`);
@@ -274,6 +377,8 @@ export class LeitorController {
   /** The `fileVersion` each open PdfCraft tab holds (sent with its saves, spec 6.5). */
   private readonly baseVersions = new Map<string, number>();
   private readonly openWaits = new Map<string, OpenWait>();
+  /** The last page PdfCraft reported for each open book (reopened there after OCR). */
+  private readonly lastPages = new Map<string, number>();
   private readonly positionTimers = new Map<string, { timer: unknown; page: number; pageCount: number }>();
   private closeResolver: ((ok: boolean) => void) | null = null;
   private readonly openFailures = new Map<string, string>();
@@ -285,6 +390,22 @@ export class LeitorController {
   /** `pdfcraft:selection-now` requests waiting for their `pdfcraft:selection-sent`, by seq. */
   private readonly selectionWaits = new Map<number, { resolve: () => void; timer: unknown }>();
   private selectionSeq = 0;
+  /** PdfCraft's own view (the snapshot shows it while PdfCraft is in front). */
+  private pdfView: Pick<LeitorSnapshot, 'activeId' | 'activeTitle' | 'page' | 'pageCount'> = {
+    activeId: null,
+    activeTitle: null,
+    page: 0,
+    pageCount: 0,
+  };
+  /** The EPUB reader's handle (registered by LeitorHost once mounted). */
+  private epubFront: EpubFront | null = null;
+  private epubFrontWaits: ((f: EpubFront) => void)[] = [];
+  /** The EPUB location not written yet (debounced like the PDF pages). */
+  private epubPending: { timer: unknown; uid: string; loc: EpubLocation } | null = null;
+  /** Bumped by every EPUB open: a slower earlier open never takes over. */
+  private epubSeq = 0;
+  /** The vocabulary highlight of the EPUB reader (spec 12.7 for EPUB). */
+  readonly epubVocab: EpubVocab;
   constructor(opts: ControllerOptions) {
     this.core = opts.core;
     this.timers = opts.timers ?? realTimers;
@@ -317,6 +438,10 @@ export class LeitorController {
       selection: null,
       found: null,
       menuShown: null,
+      front: 'pdfcraft',
+      epub: null,
+      pdfOpen: false,
+      epubMounted: false,
     };
     this.bridge = new BridgeClient({
       host,
@@ -376,6 +501,17 @@ export class LeitorController {
         if (first) this.ui?.toast('vocabReading.marksFailed', 'error');
       },
     });
+    this.epubVocab = new EpubVocab({
+      fetch: (uid, sections) => this.core.epubMarks(uid, sections),
+      show: (uid, section, words) => {
+        if (this.snap.epub?.uid === uid) this.epubFront?.setVocabMarks(section, words);
+      },
+      clear: (uid) => {
+        if (this.snap.epub?.uid === uid) this.epubFront?.clearVocabMarks();
+      },
+      isOn: (uid) => this.vocab.isOn(uid),
+      onError: (uid, e) => this.warn(`vocab_epub_marks ${uid.slice(0, 8)}`, e),
+    });
     this.sessions = new SessionWiring({
       start: (uid, page) => void this.core.sessionStart(uid, page).catch((e) => this.warn('session start', e)),
       heartbeat: (uid, page) =>
@@ -394,14 +530,32 @@ export class LeitorController {
 
   snapshot = (): LeitorSnapshot => this.snap;
 
+  /**
+   * Patches the snapshot. `activeId`/`activeTitle`/`page`/`pageCount` in a patch are PdfCraft's view; the snapshot
+   * shows the EPUB's (section as the page) instead while the EPUB reader is in front.
+   */
   private set(patch: Partial<LeitorSnapshot>) {
+    for (const k of ['activeId', 'activeTitle', 'page', 'pageCount'] as const) {
+      if (k in patch) (this.pdfView as Record<string, unknown>)[k] = patch[k];
+    }
     const next = { ...this.snap, ...patch };
+    const epubFront = next.front === 'epub' && next.epub !== null;
+    const view = epubFront
+      ? {
+          activeId: next.epub!.uid,
+          activeTitle: next.epub!.title,
+          page: next.epub!.section,
+          pageCount: next.epub!.sectionCount,
+        }
+      : this.pdfView;
     const openIds = [...this.bridge.state.openIds].sort();
     this.snap = {
       ...next,
+      ...view,
       ready: next.status === 'ready',
-      activeBookUid: next.activeId,
+      activeBookUid: view.activeId,
       openIds: openIds.join() === this.snap.openIds.join() ? this.snap.openIds : openIds,
+      pdfOpen: openIds.length > 0,
     };
     for (const fn of this.listeners) fn();
   }
@@ -451,15 +605,19 @@ export class LeitorController {
       activeTitle: null,
       openingId: null,
       openingTitle: null,
-      selection: null,
-      found: null,
-      menuShown: null,
+      ...this.pdfFrontReset(),
     });
+  }
+
+  /** What a new PdfCraft document clears in the snapshot: the selection and finds, when PdfCraft is in front. */
+  private pdfFrontReset(): Partial<LeitorSnapshot> {
+    return this.snap.front === 'pdfcraft' ? { selection: null, found: null, menuShown: null } : { menuShown: null };
   }
 
   /** The iframe loaded a new document (it reloaded itself): nothing is open in it any more. */
   frameReloaded() {
-    this.sessions.active(null, 0);
+    // The EPUB reader's session is not PdfCraft's to end.
+    if (this.snap.front === 'pdfcraft') this.sessions.active(null, 0);
     this.bridge.reset();
     this.vocab.reset();
     for (const id of [...this.openWaits.keys()]) this.resolveOpen(id, false);
@@ -471,9 +629,7 @@ export class LeitorController {
       openingTitle: null,
       page: 0,
       pageCount: 0,
-      selection: null,
-      found: null,
-      menuShown: null,
+      ...this.pdfFrontReset(),
     });
   }
 
@@ -492,7 +648,7 @@ export class LeitorController {
     this.set({ visible });
     if (visible && this.snap.status === 'ready') this.timings.shown(this.frameWindow);
     // Back from another tab (a scan, a generated deck, "Já sei" in the report): the marks may have changed.
-    if (visible) this.vocab.refresh();
+    if (visible) this.refreshVocab();
     if (!visible) {
       this.timings.hidden();
       // Leaving the Leitor tab (spec 6.4/6.5): save now, record the page, end the session.
@@ -566,19 +722,20 @@ export class LeitorController {
         return;
       case 'pdfcraft:page': {
         if (m.id === null) return;
-        const pageCount = m.pageCount ?? (m.id === this.snap.activeId ? this.snap.pageCount : 0);
-        if (m.id === this.snap.activeId) {
+        const pageCount = m.pageCount ?? (m.id === this.pdfView.activeId ? this.pdfView.pageCount : 0);
+        if (m.id === this.pdfView.activeId) {
           this.set({ page: m.page, ...(m.pageCount !== null ? { pageCount: m.pageCount } : {}) });
         }
+        this.lastPages.set(m.id, m.page);
         this.schedulePosition(m.id, m.page, pageCount);
-        this.sessions.activity(m.id, m.page);
+        if (this.snap.front === 'pdfcraft') this.sessions.activity(m.id, m.page);
         this.vocab.view(m.id, m.page, pageCount);
         return;
       }
       case 'pdfcraft:activity':
         if (m.id === null) return;
         this.autosave.activity(m.id);
-        this.sessions.activity(m.id);
+        if (this.snap.front === 'pdfcraft') this.sessions.activity(m.id);
         return;
       case 'pdfcraft:dirty':
         this.autosave.setDirty(this.bridge.state.dirtyIds);
@@ -606,7 +763,7 @@ export class LeitorController {
         }
         const selection = m.text.trim() ? { id: m.id, page: m.page, text: m.text, rects: m.rects } : null;
         // The menu may beat the debounced `pdfcraft:selection`: the clicked selection is the current one.
-        if (m.id !== null && m.id === this.snap.activeId && selection)
+        if (m.id !== null && m.id === this.pdfView.activeId && selection)
           this.set({ selection: { ...selection, id: m.id } });
         this.emitPanelRequest({ kind: m.key, via: 'menu', selection, anchor: this.viewportAnchor(m.anchor) });
         return;
@@ -656,7 +813,7 @@ export class LeitorController {
 
   private onSelection(id: string | null, page: number, text: string, rects: Rect[]) {
     // Only the book in front has a selection the panel can use; id-less documents are not the library's.
-    if (id === null || id !== this.snap.activeId) return;
+    if (id === null || id !== this.pdfView.activeId || this.snap.front !== 'pdfcraft') return;
     if (!text.trim()) {
       if (this.snap.selection !== null) this.set({ selection: null });
       return;
@@ -700,7 +857,7 @@ export class LeitorController {
   }
 
   private onActive(id: string | null, page: number, pageCount: number) {
-    const previous = this.snap.activeId;
+    const previous = this.pdfView.activeId;
     if (previous !== id) {
       if (previous !== null) {
         // Document switch (spec 6.4/6.5): record its page, save its edits.
@@ -713,11 +870,12 @@ export class LeitorController {
       activeTitle: id ? (this.titles.get(id) ?? null) : null,
       page,
       pageCount,
-      ...(previous !== id ? { selection: null, menuShown: null } : {}),
+      ...(previous !== id && this.snap.front === 'pdfcraft' ? { selection: null, menuShown: null } : {}),
       ...(id !== null && this.snap.openError?.uid === id ? { openError: null } : {}),
     });
-    this.sessions.active(id, page);
+    if (this.snap.front === 'pdfcraft') this.sessions.active(id, page);
     if (id !== null) {
+      this.lastPages.set(id, page);
       this.resolveOpen(id, true);
       this.vocab.view(id, page, pageCount);
       const known = this.knownPages.get(id);
@@ -768,6 +926,7 @@ export class LeitorController {
     for (const id of [...this.positionTimers.keys()]) {
       if (only === undefined || id === only) this.writePosition(id);
     }
+    if (only === undefined || this.epubPending?.uid === only) this.flushEpubPosition();
   }
 
   // ------------------------------------------------------------ public API
@@ -789,9 +948,29 @@ export class LeitorController {
    * when it failed or timed out (the overlay offers the system viewer and a retry). Without page and find, a book
    * PdfCraft already has is brought to front where the reader left it.
    */
-  async openBook(uid: string, opts?: { page?: number; find?: string | null }): Promise<boolean> {
-    this.ui?.navigateToLeitor();
+  async openBook(uid: string, opts?: OpenOptions): Promise<boolean> {
+    if (!opts?.quiet) this.ui?.navigateToLeitor();
+    // An EPUB the reader already holds needs nothing from PdfCraft.
+    if (this.snap.epub?.uid === uid) return this.openEpub(uid, null, opts);
     this.set({ openError: null, openingId: uid, openingTitle: this.titles.get(uid) ?? null });
+    let info: OpenInfo;
+    try {
+      info = await this.core.openInfo(uid);
+    } catch (e) {
+      this.warn('book_open', e);
+      this.set({
+        openingId: null,
+        openingTitle: null,
+        openError: { uid, title: this.titles.get(uid) ?? '', kind: 'core', error: errorText(e) },
+      });
+      return false;
+    }
+    this.titles.set(uid, info.title);
+    if (info.format === 'epub') {
+      if (this.snap.openingId === uid) this.set({ openingId: null, openingTitle: null });
+      return this.openEpub(uid, info, opts);
+    }
+    if (!opts?.quiet) this.showFront('pdfcraft');
     try {
       await this.whenReady();
     } catch {
@@ -804,11 +983,9 @@ export class LeitorController {
     const goto = hasPage || find !== null;
     // A tab PdfCraft already has only needs a goto: don't read the file.
     const gotoOnly = goto && this.bridge.isOpen(uid);
-    let info: OpenInfo;
     let bytes: ArrayBuffer | Uint8Array | null = null;
     try {
-      if (gotoOnly) info = await this.core.openInfo(uid);
-      else [info, bytes] = await Promise.all([this.core.openInfo(uid), this.core.bytes(uid)]);
+      if (!gotoOnly) bytes = await this.core.bytes(uid);
     } catch (e) {
       this.warn('book_open', e);
       this.set({
@@ -818,17 +995,17 @@ export class LeitorController {
       });
       return false;
     }
-    this.titles.set(uid, info.title);
     this.knownPages.set(uid, info.pages);
-    if (this.snap.activeId === uid && !goto) {
+    if (this.pdfView.activeId === uid && !goto) {
       // Already in front and no page asked for: nothing to wait for.
       this.set({ openingId: null, openingTitle: null, activeTitle: info.title });
       return true;
     }
     if (this.snap.openingId === uid) this.set({ openingTitle: info.title });
     if (find !== null) this.set({ found: null });
-    const pages = this.snap.activeId === uid && this.snap.pageCount > 0 ? this.snap.pageCount : info.pages;
-    const wanted = hasPage ? Math.floor(askedPage) : this.snap.activeId === uid ? this.snap.page : info.page;
+    const pv = this.pdfView;
+    const pages = pv.activeId === uid && pv.pageCount > 0 ? pv.pageCount : info.pages;
+    const wanted = hasPage ? Math.floor(askedPage) : pv.activeId === uid ? pv.page : info.page;
     const page = pages > 0 ? Math.min(Math.max(0, wanted), pages - 1) : Math.max(0, wanted);
 
     let ok: boolean;
@@ -869,6 +1046,305 @@ export class LeitorController {
     return ok;
   }
 
+  // ------------------------------------------------------------ EPUB (spec 7.1)
+
+  /** The EPUB reader mounted (LeitorHost) or went away. */
+  setEpubFront(front: EpubFront | null) {
+    this.epubFront = front;
+    if (front) for (const resolve of this.epubFrontWaits.splice(0)) resolve(front);
+  }
+
+  private whenEpubFront(): Promise<EpubFront | null> {
+    if (this.epubFront) return Promise.resolve(this.epubFront);
+    return new Promise((resolve) => {
+      const timer = this.timers.setTimeout(() => {
+        const i = this.epubFrontWaits.indexOf(done);
+        if (i >= 0) this.epubFrontWaits.splice(i, 1);
+        resolve(null);
+      }, EPUB_FRONT_TIMEOUT_MS);
+      const done = (f: EpubFront) => {
+        this.timers.clearTimeout(timer);
+        resolve(f);
+      };
+      this.epubFrontWaits.push(done);
+    });
+  }
+
+  /**
+   * Brings PdfCraft or the EPUB reader to front (the other stays loaded behind, spec 7.1). The reading session, the
+   * selection and the panel follow the reader in front.
+   */
+  showFront(front: LeitorFront) {
+    if (front === 'epub' && !this.snap.epub) return;
+    if (front === this.snap.front) return;
+    if (this.snap.front === 'epub') this.flushEpubPosition();
+    else {
+      const pdf = this.pdfView.activeId;
+      if (pdf !== null) {
+        this.flushPositions(pdf);
+        void this.autosave.flush('doc', [pdf]);
+      }
+    }
+    this.set({ front, selection: null, menuShown: null });
+    if (front === 'epub') this.sessions.active(this.snap.epub!.uid, this.snap.epub!.section);
+    else this.sessions.active(this.pdfView.activeId, this.pdfView.page);
+  }
+
+  /** Opens (or goes to a place in) an EPUB in the EPUB reader; `info` is null when the reader already holds it. */
+  private async openEpub(uid: string, info: OpenInfo | null, opts?: OpenOptions): Promise<boolean> {
+    const seq = ++this.epubSeq;
+    const askedPage = opts?.page;
+    const section = askedPage !== undefined && Number.isFinite(askedPage) ? Math.max(0, Math.floor(askedPage)) : null;
+    const cfi = opts?.cfi?.trim() || null;
+    const find = normalizeFind(opts?.find);
+    const current = this.snap.epub;
+    if (current && current.uid === uid) {
+      if (!opts?.quiet) this.showFront('epub');
+      this.set({ openError: null });
+      if (cfi === null && section === null && find === null) return true;
+      const front = await this.whenEpubFront();
+      if (!front || seq !== this.epubSeq) return false;
+      if (find !== null) this.set({ found: null });
+      const found = await front.goTo({ cfi, ...(section !== null ? { section } : {}), find }).catch(() => false);
+      if (find !== null && seq === this.epubSeq) this.applyEpubFound(uid, section ?? current.section, find, found);
+      return true;
+    }
+    if (!info) return false;
+    // One EPUB at a time: the one in the reader records where it was first.
+    if (current) {
+      try {
+        this.epubFront?.flush?.();
+      } catch (e) {
+        this.warn('epub flush', e);
+      }
+      this.flushEpubPosition();
+    }
+    if (!this.snap.epubMounted) this.set({ epubMounted: true });
+    let bytes: ArrayBuffer | Uint8Array;
+    try {
+      bytes = await this.core.bytes(uid);
+    } catch (e) {
+      this.warn('book_bytes', e);
+      this.ui?.toast('epub.openFailed', 'error', { titulo: info.title });
+      return false;
+    }
+    const front = await this.whenEpubFront();
+    if (seq !== this.epubSeq) return false;
+    if (!front) {
+      this.ui?.toast('epub.openFailed', 'error', { titulo: info.title });
+      return false;
+    }
+    const start = section ?? (cfi === null && info.cfi === null ? info.page : null);
+    const pages = Math.max(0, info.pages);
+    this.set({
+      epub: {
+        uid,
+        title: info.title,
+        section: start !== null ? Math.min(start, Math.max(0, pages - 1)) : Math.max(0, info.page),
+        sectionCount: pages,
+        cfi: cfi ?? info.cfi,
+        fraction: pages > 0 ? Math.min(1, (Math.max(0, info.page) + 1) / pages) : 0,
+        tocLabel: null,
+      },
+      openError: null,
+      ...(find !== null ? { found: null } : {}),
+    });
+    this.epubVocab.setBook(uid, pages);
+    if (!opts?.quiet) {
+      if (this.snap.front === 'epub') {
+        this.set({ selection: null });
+        this.sessions.active(uid, this.snap.epub!.section);
+      } else this.showFront('epub');
+    }
+    let opened: { sectionCount: number } | null;
+    try {
+      // The passage is looked for after the book shows (goTo answers whether it was found).
+      opened = await front.open({
+        uid,
+        bytes,
+        title: info.title,
+        cfi: cfi ?? (section === null ? info.cfi : null),
+        ...(start !== null ? { section: start } : {}),
+        find: null,
+      });
+    } catch (e) {
+      this.warn('epub open', e);
+      opened = null;
+    }
+    if (seq !== this.epubSeq) return opened !== null;
+    if (!opened) {
+      this.ui?.toast('epub.openFailed', 'error', { titulo: info.title });
+      return false;
+    }
+    const epub = this.snap.epub;
+    if (epub?.uid === uid && opened.sectionCount > 0 && opened.sectionCount !== epub.sectionCount) {
+      this.set({ epub: { ...epub, sectionCount: opened.sectionCount } });
+      this.epubVocab.setBook(uid, opened.sectionCount);
+    }
+    // The vocabulary highlight starts where the reader opened.
+    if (this.snap.epub?.uid === uid) this.epubVocab.shown(uid, this.snap.epub.section);
+    if (find !== null) {
+      const at = section ?? this.snap.epub?.section ?? 0;
+      const found = await front.goTo({ cfi, ...(section !== null ? { section } : {}), find }).catch(() => false);
+      if (seq === this.epubSeq) this.applyEpubFound(uid, at, find, found);
+    }
+    return true;
+  }
+
+  private applyEpubFound(uid: string, section: number, query: string, found: boolean) {
+    const result: FoundResult = { id: uid, page: section, query, found };
+    this.set({ found: result });
+    if (!found) this.ui?.toast('leitor.gotoNotFound', 'info', { pagina: String(section + 1) });
+  }
+
+  /** The EPUB reader moved (`onLocation`): progress (debounced), session activity and the vocabulary marks. */
+  epubLocation(uid: string, loc: EpubLocation) {
+    const epub = this.snap.epub;
+    if (!epub || epub.uid !== uid) return;
+    const section = Math.max(0, Math.floor(loc.section));
+    const sectionCount = loc.sectionCount > 0 ? loc.sectionCount : epub.sectionCount;
+    this.set({
+      epub: {
+        ...epub,
+        section,
+        sectionCount,
+        cfi: loc.cfi || epub.cfi,
+        fraction: Number.isFinite(loc.fraction) ? Math.max(0, Math.min(1, loc.fraction)) : epub.fraction,
+        tocLabel: loc.tocLabel,
+      },
+    });
+    if (loc.cfi) this.scheduleEpubPosition(uid, { ...loc, section, sectionCount });
+    if (this.snap.front === 'epub') this.sessions.activity(uid, section);
+    this.epubVocab.shown(uid, section, sectionCount);
+  }
+
+  /** Reading activity in the EPUB reader (scroll, keys, selection): keeps the session alive (spec 6.4). */
+  epubActivity(uid: string) {
+    if (this.snap.epub?.uid !== uid || this.snap.front !== 'epub') return;
+    this.sessions.activity(uid);
+  }
+
+  /** The EPUB reader's selection changed (null: cleared). */
+  epubSelection(uid: string, sel: EpubSelectionInfo | null) {
+    if (this.snap.epub?.uid !== uid || this.snap.front !== 'epub') return;
+    if (!sel || !sel.text.trim()) {
+      if (this.snap.selection !== null) this.set({ selection: null });
+      return;
+    }
+    this.set({ selection: this.epubSelectionOf(uid, sel) });
+  }
+
+  private epubSelectionOf(uid: string, sel: EpubSelectionInfo): LeitorSelection {
+    return {
+      id: uid,
+      page: sel.section,
+      text: sel.text,
+      rects: [],
+      cfi: sel.cfi,
+      unit: 'chapter',
+      label: sel.tocLabel,
+    };
+  }
+
+  /** "Criar card" / "Criar cards com IA" / "Definir palavra" from the EPUB reader's selection menu. */
+  epubMenu(
+    uid: string,
+    key: string,
+    sel: EpubSelectionInfo | null,
+    anchor: { x: number; y: number; width: number; height: number } | null,
+  ) {
+    if (!isPanelKind(key) || this.snap.epub?.uid !== uid) return;
+    const selection = sel && sel.text.trim() ? this.epubSelectionOf(uid, sel) : null;
+    if (selection && this.snap.front === 'epub') this.set({ selection });
+    this.emitPanelRequest({ kind: key, via: 'menu', selection, anchor });
+  }
+
+  /** The EPUB reader shows `section` (rendered): the vocabulary marks of it and the next. */
+  epubSectionShown(uid: string, section: number) {
+    if (this.snap.epub?.uid !== uid) return;
+    this.epubVocab.shown(uid, section);
+  }
+
+  /** A click on an underlined word in the EPUB reader (`form` as reported); `anchor` in viewport CSS px. */
+  epubVocabClick(
+    uid: string,
+    section: number,
+    form: string,
+    lemma: string,
+    anchor: { x: number; y: number; width: number; height: number },
+  ) {
+    if (this.snap.epub?.uid !== uid) return;
+    const word = this.epubVocab.markFor(section, form);
+    if (!word && !lemma) return;
+    const status = word?.status === 'learning' || word?.status === 'new' ? 'learning' : 'unknown';
+    const mark: VocabMark = { lemma: word?.lemma ?? lemma, form: word?.form ?? form, status, rects: [] };
+    for (const fn of [...this.markListeners]) fn({ id: uid, page: section, index: -1, mark, anchor });
+  }
+
+  /** Opens the EPUB reader's side drawer (`&lateral=sumario|anotacoes|busca`). */
+  async openEpubDrawer(uid: string, which: EpubDrawer): Promise<void> {
+    if (this.snap.epub?.uid !== uid) return;
+    const front = await this.whenEpubFront();
+    front?.openDrawer(which);
+  }
+
+  private scheduleEpubPosition(uid: string, loc: EpubLocation) {
+    if (this.epubPending) this.timers.clearTimeout(this.epubPending.timer);
+    const timer = this.timers.setTimeout(() => this.flushEpubPosition(), POSITION_DEBOUNCE_MS);
+    this.epubPending = { timer, uid, loc };
+  }
+
+  private flushEpubPosition() {
+    const p = this.epubPending;
+    if (!p) return;
+    this.epubPending = null;
+    this.timers.clearTimeout(p.timer);
+    const progress = Math.max(0, Math.min(1, Number.isFinite(p.loc.fraction) ? p.loc.fraction : 0));
+    void this.core
+      .positionSet(p.uid, p.loc.section, progress, p.loc.cfi)
+      .then(() => this.ui?.libraryChanged())
+      .catch((e) => this.warn('position_set', e));
+  }
+
+  // ------------------------------------------------------------ after OCR (spec 7.2)
+
+  /**
+   * The book got a new version with recognized text (OCR): PdfCraft keeps the old content in its open tab and has no
+   * "close tab" message, so its pending edits are saved, the iframe is recreated and the books it had open are opened
+   * again at their pages (the one in front last, so it stays in front). A no-op when PdfCraft doesn't have `uid`.
+   */
+  async reloadPdfcraftBook(uid: string): Promise<void> {
+    if (!this.bridge.isOpen(uid)) return;
+    await this.flushSaves('ocr');
+    const ids = [...this.bridge.state.openIds];
+    const active = this.pdfView.activeId;
+    const pages = new Map(ids.map((id) => [id, this.lastPages.get(id)] as const));
+    this.restart();
+    if (this.snap.front === 'pdfcraft') this.sessions.active(null, 0);
+    for (const id of ids) this.baseVersions.delete(id);
+    if (!(await this.waitStatus())) return;
+    const order = [...ids.filter((id) => id !== active), ...(active !== null && ids.includes(active) ? [active] : [])];
+    for (const id of order) {
+      const page = pages.get(id);
+      await this.openBook(id, { quiet: true, ...(page !== undefined ? { page } : {}) });
+    }
+    this.ui?.toast('reader.reloadedAfterOcr', 'success');
+  }
+
+  /** Resolves true once PdfCraft is ready, false when it failed to start (no reliance on one `readyWait`). */
+  private waitStatus(): Promise<boolean> {
+    if (this.snap.status === 'ready') return Promise.resolve(true);
+    if (this.snap.status === 'failed') return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const stop = this.subscribe(() => {
+        if (this.snap.status === 'ready' || this.snap.status === 'failed') {
+          stop();
+          resolve(this.snap.status === 'ready');
+        }
+      });
+    });
+  }
+
   /** Sends with `send()` and waits for `pdfcraft:active` of `uid` (false on failure or timeout). */
   private async waitActive(uid: string, size: number, send: () => boolean, goto = false): Promise<boolean> {
     const d = deferred<boolean>();
@@ -891,8 +1367,20 @@ export class LeitorController {
    * Leitor tab, the panel stays as it is.
    */
   async requestCardFromSelection(via: 'shortcut' | 'button' = 'shortcut'): Promise<void> {
-    // A selection made just before the shortcut may still be in PdfCraft's 300 ms debounce: ask for it first.
-    await this.selectionNow();
+    if (this.snap.front === 'epub' && this.snap.epub) {
+      // The EPUB reader answers at once (no debounce across a frame boundary).
+      const uid = this.snap.epub.uid;
+      let sel: EpubSelectionInfo | null = null;
+      try {
+        sel = this.epubFront?.selectionNow() ?? null;
+      } catch (e) {
+        this.warn('epub selection', e);
+      }
+      if (sel && sel.text.trim()) this.set({ selection: this.epubSelectionOf(uid, sel) });
+    } else {
+      // A selection made just before the shortcut may still be in PdfCraft's 300 ms debounce: ask for it first.
+      await this.selectionNow();
+    }
     if (!this.snap.selection?.text.trim()) {
       this.ui?.toast('bookPanel.selectFirst', 'info');
       return;
@@ -905,7 +1393,7 @@ export class LeitorController {
    * Nothing to wait for when PdfCraft isn't running, has no book in front or isn't on screen (no fresh selection).
    */
   private selectionNow(): Promise<void> {
-    if (this.snap.status !== 'ready' || this.snap.activeId === null || !this.snap.visible) return Promise.resolve();
+    if (this.snap.status !== 'ready' || this.pdfView.activeId === null || !this.snap.visible) return Promise.resolve();
     const seq = ++this.selectionSeq;
     return new Promise<void>((resolve) => {
       const timer = this.timers.setTimeout(() => this.endSelectionWait(seq), SELECTION_NOW_TIMEOUT_MS);
@@ -952,11 +1440,13 @@ export class LeitorController {
   /** Turns the vocabulary highlight of `uid` on or off (remembered per book). */
   setHighlight(uid: string, on: boolean) {
     this.vocab.setOn(uid, on);
+    this.epubVocab.setOn(uid, on);
   }
 
   /** The marks of `uid` (every book when absent) changed in the core: send the visible pages again. */
   refreshVocab(uid?: string) {
     this.vocab.refresh(uid);
+    this.epubVocab.refresh(uid);
   }
 
   /** The panel's mini-review ("Revisar aqui", spec 6.4/10.1) opened or closed: the reading session pauses. */

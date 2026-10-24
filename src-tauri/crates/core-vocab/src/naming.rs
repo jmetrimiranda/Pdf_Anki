@@ -7,6 +7,27 @@ use crate::known::fold_accents;
 
 const SLUG_MAX: usize = 40;
 
+/// What the numbered units of a book are, for range labels, subdeck names, tags and error messages: pages of a PDF
+/// ("p. 21-45", `trecho::p-21-45`) or chapters of an EPUB, i.e. its sections in reading order ("cap. 2-4",
+/// `trecho::cap-2-4`). Data is 0-based either way; only the words change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UnitWord {
+    #[default]
+    Page,
+    Chapter,
+}
+
+impl UnitWord {
+    /// The abbreviation before a number or list: "p." or "cap.".
+    pub fn abbrev(self) -> &'static str {
+        match self {
+            Self::Page => "p.",
+            Self::Chapter => "cap.",
+        }
+    }
+}
+
 /// A tag/URL slug: lowercase, accents folded to ASCII, anything else non-alphanumeric → '-', collapsed and trimmed,
 /// at most 40 characters ("Animal Farm" → "animal-farm", "p. 21-45, 60" → "p-21-45-60").
 pub fn slug(s: &str) -> String {

@@ -39,12 +39,14 @@
   ],
   "BookCard": [
     "cardIds",
+    "cfi",
     "deckId",
     "noteId",
     "notetype",
     "page",
     "preview",
-    "query"
+    "query",
+    "unit"
   ],
   "BookDeckInfo": [
     "counts",
@@ -52,6 +54,12 @@
     "exists",
     "name",
     "role"
+  ],
+  "BookOpen": [
+    "book",
+    "cfi",
+    "format",
+    "page"
   ],
   "BookPanelInfo": [
     "bookUid",
@@ -195,8 +203,31 @@
   ],
   "DeepLink": [
     "bookUid",
+    "cfi",
     "page",
-    "query"
+    "query",
+    "unit"
+  ],
+  "EpubAnnotation": [
+    "bookUid",
+    "cfi",
+    "color",
+    "comment",
+    "kind",
+    "section",
+    "text",
+    "uid",
+    "updatedAt"
+  ],
+  "EpubMarkWord": [
+    "color",
+    "form",
+    "lemma",
+    "status"
+  ],
+  "EpubSectionMarks": [
+    "section",
+    "words"
   ],
   "FieldInfo": [
     "fontName",
@@ -266,6 +297,25 @@
     "noteCount",
     "templates"
   ],
+  "OcrInfo": [
+    "available",
+    "hasText",
+    "job",
+    "lastError",
+    "pages",
+    "status"
+  ],
+  "OcrJobInfo": [
+    "fileVersion",
+    "msPerPage",
+    "pagesRead",
+    "pagesSkipped",
+    "words"
+  ],
+  "OcrStarted": [
+    "alreadyRunning",
+    "jobId"
+  ],
   "QueueCounts": [
     "learn",
     "new",
@@ -291,9 +341,11 @@
   ],
   "SourceLink": [
     "bookUid",
+    "cfi",
     "label",
     "page",
-    "query"
+    "query",
+    "unit"
   ],
   "StudiedToday": [
     "cards",

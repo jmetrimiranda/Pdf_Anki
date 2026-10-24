@@ -84,7 +84,10 @@ export function ReportTable({
   onOpen,
   onToggleAll,
   scroller,
+  unit = 'page',
 }: {
+  /** `chapter` for an EPUB: first occurrence as "cap. N". */
+  unit?: 'page' | 'chapter';
   items: readonly TableItem[];
   selected: ReadonlySet<string>;
   onToggle: (lemma: string, on: boolean) => void;
@@ -157,7 +160,7 @@ export function ReportTable({
           {t('vocab.table.occurrences')}
         </span>
         <span role="columnheader" className="text-right">
-          {t('vocab.table.firstPage')}
+          {unit === 'chapter' ? t('vocab.chapter.first') : t('vocab.table.firstPage')}
         </span>
         <span role="columnheader" className="hidden md:block">
           {t('vocab.table.general')}
@@ -215,7 +218,11 @@ export function ReportTable({
                 <button
                   type="button"
                   className="block w-full min-w-0 rounded-ctl text-left"
-                  aria-label={t('vocab.table.open', { palavra: row.form, n: row.firstPage + 1 })}
+                  aria-label={
+                    unit === 'chapter'
+                      ? t('vocab.chapter.open', { palavra: row.form, n: row.firstPage + 1 })
+                      : t('vocab.table.open', { palavra: row.form, n: row.firstPage + 1 })
+                  }
                   onClick={() => onOpen(row)}
                 >
                   <WordCell row={row} />
@@ -225,7 +232,9 @@ export function ReportTable({
                 {row.occurrences}
               </span>
               <span role="cell" className="text-right text-muted tabular">
-                {t('vocab.table.page', { n: row.firstPage + 1 })}
+                {unit === 'chapter'
+                  ? t('vocab.chapter.short', { n: row.firstPage + 1 })
+                  : t('vocab.table.page', { n: row.firstPage + 1 })}
               </span>
               <span role="cell" className="hidden text-muted md:block">
                 {row.group === 'proper'

@@ -209,6 +209,8 @@ function bookCards(uid: string): BookCard[] {
       deckId: cards[0]!.deckId,
       notetype: nt.name,
       page: link.page,
+      unit: link.unit,
+      cfi: link.cfi,
       query: link.query,
       preview: preview(note.fields[0] ?? ''),
     });

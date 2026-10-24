@@ -11,7 +11,8 @@ use core_anki::fixture::{
     BOOK_UID, DECK_ANIMAL_FARM, DECK_BOOKS, DECK_OXFORD, DECK_OXFORD_3000, DECK_WORDS,
 };
 use core_anki::notetypes::{BASIC_LEITOR, CLOZE_LEITOR, VOCAB_BOOK, stock_basic};
-use core_anki::study::source::{parse_source, source_html, source_query};
+use core_anki::study::SourceUnit;
+use core_anki::study::source::{parse_source, source_html, source_html_section, source_query};
 use core_anki::{Collection, Error};
 
 use common::fixture;
@@ -144,6 +145,52 @@ async fn book_cards_filter_parse_and_sort() -> anyhow::Result<()> {
             "{bad}"
         );
     }
+    Ok(())
+}
+
+/// EPUB cards (spec 7.1): a Fonte from `source_html_section` comes back as a chapter with its CFI.
+#[tokio::test]
+async fn book_cards_of_epub_chapters_keep_unit_and_cfi() -> anyhow::Result<()> {
+    let fx = fixture()?;
+    let farm = fx.info.decks[DECK_ANIMAL_FARM];
+    let note = fx
+        .svc
+        .call(move |col| {
+            let basic = notetype(col, BASIC_LEITOR)?;
+            add(
+                col,
+                &basic,
+                farm,
+                &[
+                    "From the EPUB",
+                    "x",
+                    &source_html_section(
+                        OTHER_UID,
+                        "Livro EPUB",
+                        2,
+                        "Chapter Two",
+                        Some("epubcfi(/6/6!/4/2/1:0)"),
+                        "the windmill",
+                    ),
+                ],
+            )
+        })
+        .await?;
+    let cards = fx.svc.book_cards(OTHER_UID.to_string()).await?;
+    assert_eq!(cards.len(), 1);
+    let c = &cards[0];
+    assert_eq!(c.note_id, note);
+    assert_eq!((c.page, c.unit), (2, SourceUnit::Chapter));
+    assert_eq!(c.cfi.as_deref(), Some("epubcfi(/6/6!/4/2/1:0)"));
+    assert_eq!(c.query.as_deref(), Some("the windmill"));
+    let v = serde_json::to_value(c)?;
+    assert_eq!(v["unit"], "chapter");
+    // PDF cards say so too.
+    let pdf = fx.svc.book_cards(BOOK_UID.to_string()).await?;
+    assert!(
+        pdf.iter()
+            .all(|c| c.unit == SourceUnit::Page && c.cfi.is_none())
+    );
     Ok(())
 }
 

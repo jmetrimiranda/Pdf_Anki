@@ -4,7 +4,10 @@
 //!   previous version are kept; older ones are pruned after a new version is recorded.
 //! - `books/{book_uid}/replaced-v{n}-{file_hash[..8]}.pdf`: a version that an imported copy
 //!   replaced (spec 6.6). Never pruned; deleted only with the book.
-//! - `covers/{book_uid}-v{n}.png`: the cover cache (created on import or on the first request).
+//! - `books/{book_uid}/v{n}-{file_hash[..8]}.epub`: the file of an EPUB book (it never changes: its annotations live
+//!   in the app database, spec 7.1).
+//! - `covers/{book_uid}-v{n}.png`: the cover cache (created on import or on the first request). For EPUB books it
+//!   holds the book's own cover image as is (PNG, JPEG, GIF or WebP; the `pdf` protocol sniffs the type).
 //!
 //! The database stores paths relative to the data dir (`book_file.local_path`), so a moved data
 //! dir keeps working. Writes are atomic: temp file in the same directory, fsync, rename, fsync of
@@ -75,6 +78,26 @@ impl BookFiles {
         bytes: &[u8],
     ) -> Result<String, AppError> {
         let rel = Self::version_rel_path(uid, version, file_hash);
+        let path = self.data_dir.join(&rel);
+        write_atomic(&path, bytes).map_err(|e| write_error(&path, &e))?;
+        Ok(rel)
+    }
+
+    /// `books/{uid}/v{n}-{hash8}.epub`, relative to the data dir.
+    pub fn epub_rel_path(uid: &str, version: u32, file_hash: &str) -> String {
+        let short = file_hash.get(..8).unwrap_or(file_hash);
+        format!("{BOOKS_DIR}/{uid}/v{version}-{short}.epub")
+    }
+
+    /// Writes the file of an EPUB book atomically and returns its relative path.
+    pub fn write_epub(
+        &self,
+        uid: &str,
+        version: u32,
+        file_hash: &str,
+        bytes: &[u8],
+    ) -> Result<String, AppError> {
+        let rel = Self::epub_rel_path(uid, version, file_hash);
         let path = self.data_dir.join(&rel);
         write_atomic(&path, bytes).map_err(|e| write_error(&path, &e))?;
         Ok(rel)

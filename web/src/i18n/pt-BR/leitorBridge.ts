@@ -9,6 +9,8 @@ export const leitorBridgeMessages = {
   'leitor.deepLinkUnknownBook': 'Este livro não está na Biblioteca deste computador.',
   'leitor.deepLinkFailed': 'Não foi possível abrir o link do livro.',
 
+  'reader.reloadedAfterOcr': 'O livro foi reaberto com o texto reconhecido.',
+
   'shortcuts.cardFromSelectionNote':
     'Dentro do leitor, Ctrl+Shift+N é o “Ir para a página” do PdfCraft: lá use Alt+C ou o item “Criar card” do menu da seleção. Alt+C funciona em qualquer lugar.',
 } as const;

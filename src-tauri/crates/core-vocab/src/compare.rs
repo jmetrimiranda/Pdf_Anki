@@ -356,8 +356,12 @@ impl Classifier<'_> {
         if let Some(s) = best {
             return self.plain(s, Some(StatusSource::Deck), RowGroup::Main);
         }
-        // 4. Function words.
-        if self.config.function_words_known && self.lex.is_function_word(&lower) {
+        // 4. Function words: the lemma, or every form seen in the book (WordNet's morphy turns "his" into the
+        // noun "hi", so the key alone would miss it).
+        if self.config.function_words_known
+            && (self.lex.is_function_word(&lower)
+                || (!forms.is_empty() && forms.iter().all(|f| self.lex.is_function_word(f))))
+        {
             return self.plain(Status::Known, Some(StatusSource::Function), RowGroup::Main);
         }
         // I. Derivatives of a known word.
