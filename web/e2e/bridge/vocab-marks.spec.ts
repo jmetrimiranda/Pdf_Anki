@@ -3,17 +3,20 @@
 // draws the underlines under the right words (located in a screenshot of the iframe, no fixed coordinates), a click
 // on one gives `pdfcraft:mark-click` and the popover, a double-click there selects that same word, and the marks never
 // reach the saved PDF, never make it dirty and survive PdfCraft's undo. No sleeps: PdfCraft frames are awaited with
-// `pdfcraftFrames`, and every assertion is about what is drawn or sent, never about how fast.
+// `pdfcraftFrames`, clicks and the double-click go through `pdfcraftClick`/`doubleClickSelect` (helpers.ts), and every
+// assertion is about what is drawn or sent, never about how fast.
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
 import {
   absNow,
+  doubleClickSelect,
   expect,
   fromHost,
   fromPdfcraft,
   importBytes,
   now,
+  pdfcraftClick,
   pdfcraftFrame,
   pdfcraftFrames,
   requestSave,
@@ -386,11 +389,7 @@ test('marks underline exactly the unknown and learning words, where PdfCraft dra
   const cx = (windmill.dark!.x0 + windmill.dark!.x1) / 2;
   const cy = (windmill.dark!.y0 + windmill.dark!.y1) / 2;
   const clickAt = await now(page);
-  await page.mouse.move(cx, cy);
-  await pdfcraftFrames(page, 2);
-  await page.mouse.down();
-  await pdfcraftFrames(page, 1);
-  await page.mouse.up();
+  await pdfcraftClick(page, cx, cy);
   const click = await waitForMessage(
     page,
     { type: 'pdfcraft:mark-click', id: uid, page: 0, index: 2 },
@@ -417,15 +416,10 @@ test('marks underline exactly the unknown and learning words, where PdfCraft dra
   await expect(pop).toHaveCount(0);
 
   // A double-click on the same spot selects exactly that word in PdfCraft: the mark and PdfCraft's text agree.
-  // First a click on the blank page far from the word: PdfCraft counts quick presses at the same spot as one
-  // multi-click, and the earlier click on the mark must not make this a triple click (the line).
-  await page.mouse.click(cx, cy + 120);
-  await pdfcraftFrames(page, 3);
-  await page.mouse.move(cx, cy);
-  await pdfcraftFrames(page, 3);
-  const dblAt = await now(page);
-  await page.mouse.dblclick(cx, cy);
-  const sel = await waitForMessage(page, { type: 'pdfcraft:selection', id: uid, page: 0 }, { after: dblAt });
+  // (doubleClickSelect keeps it from joining the earlier click on the mark, and makes it again when PdfCraft's frames
+  // split its presses into two clicks.)
+  const sel = await doubleClickSelect(page, uid, cx, cy, (t) => t !== '', { description: 'the double-clicked word' });
+  expect(sel.page).toBe(0);
   expect((sel.text ?? '').trim()).toBe('windmill');
   const mark = words.find((w) => w.text === 'windmill')!.rects[0]!;
   const selRect = sel.rects![0]!;
@@ -433,9 +427,18 @@ test('marks underline exactly the unknown and learning words, where PdfCraft dra
   expect(Math.abs(selRect[0] + selRect[2] - (mark[0] + mark[2]))).toBeLessThanOrEqual(3);
   expect(selRect[1]).toBeLessThan(mark[1] + mark[3]);
   expect(selRect[1] + selRect[3]).toBeGreaterThan(mark[1]);
-  // Clear the selection (a click on the blank page below the line).
-  await page.mouse.click(cx, cy + 120);
-  await pdfcraftFrames(page, 3);
+  // The double-click's clicks on the mark opened the vocabulary popover too (a click on a mark still does what it
+  // always does). It hangs over PdfCraft below the word, and clicks inside the iframe never reach the app to close
+  // it: close it from inside (a click on its padding, then Esc), as a person would.
+  await expect(pop).toBeVisible();
+  await pop.click({ position: { x: 4, y: 4 } });
+  await page.keyboard.press('Escape');
+  await expect(pop).toHaveCount(0);
+  // Clear the selection: a click on the blank page above the line.
+  const blankY = windmill.box.y - 2 * windmill.box.h;
+  const clearAt = await now(page);
+  await pdfcraftClick(page, cx, blankY);
+  await waitForMessage(page, { type: 'pdfcraft:selection', id: uid, text: '' }, { after: clearAt });
 
   // Ctrl+Z inside PdfCraft: marks are not in its undo history.
   await page.keyboard.press('Control+z');
@@ -474,8 +477,7 @@ test('marks underline exactly the unknown and learning words, where PdfCraft dra
   // A bookmark made in PdfCraft goes into the saved PDF's outline (the Trecho tree reads it from there).
   const bm = page.getByTestId('book-panel');
   await expect(bm).toBeVisible();
-  await page.mouse.click(cx, cy + 120);
-  await pdfcraftFrames(page);
+  await pdfcraftClick(page, cx, blankY);
   await page.keyboard.press('Control+b');
   await waitForMessage(page, { type: 'pdfcraft:dirty', dirty: true }, { after: withoutAt });
   await pdfcraftFrames(page);
@@ -506,11 +508,7 @@ test('popover: "Adicionar ao deck do livro" turns the mark amber; "Já sei" and 
     const [found] = await inkUntil(page, [target(w)], (all) => !!all[0]!.dark, `glyphs of ${w}`);
     const d = found!.dark!;
     const at = await now(page);
-    await page.mouse.move((d.x0 + d.x1) / 2, (d.y0 + d.y1) / 2);
-    await pdfcraftFrames(page, 2);
-    await page.mouse.down();
-    await pdfcraftFrames(page, 1);
-    await page.mouse.up();
+    await pdfcraftClick(page, (d.x0 + d.x1) / 2, (d.y0 + d.y1) / 2);
     await waitForMessage(page, { type: 'pdfcraft:mark-click', id: uid, page: 0, index }, { after: at });
     const pop = page.getByTestId('vocab-popover');
     await expect(pop).toContainText(w);

@@ -16,12 +16,13 @@ import {
   dragAcross,
   expect,
   fromHost,
-  fromPdfcraft,
   importBytes,
   locatePageRect,
   now,
+  pdfcraftClick,
   pdfcraftFrame,
   pdfcraftFrames,
+  selectByDrag,
   test,
   waitForMessage,
   WEB_ROOT,
@@ -99,13 +100,6 @@ async function find(page: Page, uid: string, pageIndex: number, word: string): P
   return waitForMessage(page, { type: 'pdfcraft:found', id: uid, query: word }, { after });
 }
 
-const collapse = (s: string | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
-
-/** Every `pdfcraft:selection` PdfCraft sent after `after`. */
-async function selections(page: Page, after: number): Promise<Logged[]> {
-  return (await fromPdfcraft(page)).filter((m) => m.type === 'pdfcraft:selection' && m.at >= after);
-}
-
 test('a recognised scan: PdfCraft finds, selects and highlights an OCR word; the saved version keeps the text', async ({
   page,
 }) => {
@@ -119,21 +113,9 @@ test('a recognised scan: PdfCraft finds, selects and highlights an OCR word; the
   // (b) Selection: a drag across the word (located through PdfCraft's own page mapping) reports its text.
   const box = await locatePageRect(page, uid, fx.page, fx.rect);
   const y = (box.y0 + box.y1) / 2;
-  const t0 = await now(page);
-  await dragAcross(page, box.x0 + 1, box.x1 - 1, y);
-  let texts: string[] = [];
-  await expect
-    .poll(
-      async () => {
-        texts = (await selections(page, t0)).map((m) => collapse(m.text));
-        return texts.some((s) => s.toLowerCase().includes(fx.word.toLowerCase()));
-      },
-      { timeout: 30_000, message: `pdfcraft:selection with “${fx.word}”` },
-    )
-    .toBe(true)
-    .catch((e: Error) => {
-      throw new Error(`${e.message}\nselections reported: ${JSON.stringify(texts)}`);
-    });
+  await selectByDrag(page, uid, box.x0 + 1, box.x1 - 1, y, (t) => t.toLowerCase().includes(fx.word.toLowerCase()), {
+    description: `“${fx.word}”`,
+  });
   await expect
     .poll(() => page.evaluate(() => window.__leitor!.state().selection?.text ?? ''))
     .toMatch(new RegExp(fx.word, 'i'));
@@ -141,6 +123,8 @@ test('a recognised scan: PdfCraft finds, selects and highlights an OCR word; the
   // (c) Annotation: PdfCraft's "Highlight text" over the word, its note, then the autosave. The word is located again
   // first (PdfCraft may have scrolled to show the selection bar).
   const again = await locatePageRect(page, uid, fx.page, fx.rect);
+  // Unsaved work from here on (the command may already highlight the selected word; the drag certainly does).
+  const highlightAt = await now(page);
   await page.keyboard.press('Control+k');
   await pdfcraftFrames(page);
   await page.keyboard.type('Highlight text');
@@ -148,12 +132,11 @@ test('a recognised scan: PdfCraft finds, selects and highlights an OCR word; the
   await page.keyboard.press('Enter');
   await pdfcraftFrames(page);
   await dragAcross(page, again.x0 + 1, again.x1 - 1, (again.y0 + again.y1) / 2);
-  await waitForMessage(page, { type: 'pdfcraft:dirty', dirty: true });
+  await waitForMessage(page, { type: 'pdfcraft:dirty', dirty: true }, { after: highlightAt });
   // A new highlight opens its note; PdfCraft holds host saves while it is open (bridge.spec.ts): Comments panel
   // (right rail, first icon), type the note, Ctrl+Enter.
   const frame = (await (await pdfcraftFrame(page).frameElement()).boundingBox())!;
-  await page.mouse.click(frame.x + frame.width - 23, frame.y + 113);
-  await pdfcraftFrames(page);
+  await pdfcraftClick(page, frame.x + frame.width - 23, frame.y + 113);
   await page.keyboard.type('Nota OCR');
   await pdfcraftFrames(page);
   await page.keyboard.press('Control+Enter');

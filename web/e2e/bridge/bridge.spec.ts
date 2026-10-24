@@ -5,10 +5,12 @@ import { makePdf } from '../../src/lib/pdf/minimalPdf';
 import {
   bookUid,
   canvasVariance,
+  dragAcross,
   expect,
   fromPdfcraft,
   importBytes,
   now,
+  pdfcraftClick,
   pdfcraftFrame,
   pdfcraftFrames,
   test,
@@ -41,6 +43,39 @@ async function requestSave(page: Page, id: string) {
   }, id);
 }
 
+/** The last page PdfCraft reported for `uid`, or -1. */
+async function lastPage(page: Page, uid: string): Promise<number> {
+  return (await fromPdfcraft(page)).filter((m) => m.type === 'pdfcraft:page' && m.id === uid).at(-1)?.page ?? -1;
+}
+
+/**
+ * Turns the wheel inside PdfCraft `notches` times, each in its own PdfCraft frames (on a slow machine several wheel
+ * events in one egui pass would scroll as one), then waits until PdfCraft's reported page stays the same for 20 of
+ * its frames (its scroll animation is over), and returns that page.
+ */
+async function wheelPdfcraft(page: Page, uid: string, dy: number, notches: number): Promise<number> {
+  for (let i = 0; i < notches; i++) {
+    await page.mouse.wheel(0, dy);
+    await pdfcraftFrames(page, 2);
+  }
+  let shown = await lastPage(page, uid);
+  for (let i = 0; i < 30; i++) {
+    await pdfcraftFrames(page, 20);
+    const again = await lastPage(page, uid);
+    if (again === shown) break;
+    shown = again;
+  }
+  return shown;
+}
+
+/** Resolves when the finite animations and transitions under `el` are over (endless ones, e.g. a pulse, are not). */
+async function finishedAnimations(el: Element): Promise<void> {
+  const finite = el
+    .getAnimations({ subtree: true })
+    .filter((a) => Number.isFinite(Number(a.effect?.getComputedTiming().endTime ?? Infinity)));
+  await Promise.all(finite.map((a) => a.finished.catch(() => undefined)));
+}
+
 async function frameBox(page: Page) {
   const box = await (await pdfcraftFrame(page).frameElement()).boundingBox();
   if (!box) throw new Error('iframe has no box');
@@ -69,19 +104,11 @@ test('ready → open(id, page) → active → page → activity → request-save
   const box = await frameBox(page);
   await page.mouse.move(box.x + box.width * 0.45, box.y + box.height * 0.5);
   const beforeScroll = await now(page);
-  for (let i = 0; i < 6; i++) {
-    await page.mouse.wheel(0, 500);
-    await page.waitForTimeout(150);
-  }
-  await expect
-    .poll(
-      async () => (await fromPdfcraft(page)).filter((m) => m.type === 'pdfcraft:page' && m.at > beforeScroll).length,
-    )
-    .toBeGreaterThan(0);
-  const lastPage = async () =>
-    (await fromPdfcraft(page)).filter((m) => m.type === 'pdfcraft:page' && m.id === uid).at(-1)?.page ?? -1;
-  await page.waitForTimeout(1500);
-  const shown = await lastPage();
+  await pdfcraftFrames(page, 2);
+  const shown = await wheelPdfcraft(page, uid, 500, 6);
+  expect(
+    (await fromPdfcraft(page)).filter((m) => m.type === 'pdfcraft:page' && m.at > beforeScroll).length,
+  ).toBeGreaterThan(0);
   expect(shown).toBeGreaterThan(4);
   await expect.poll(() => page.evaluate((id) => window.__leitorMock!.positions[id]?.page, uid)).toBe(shown);
   const progress = await page.evaluate((id) => window.__leitorMock!.positions[id]!.progress, uid);
@@ -89,10 +116,7 @@ test('ready → open(id, page) → active → page → activity → request-save
 
   // Activity of the book in front, at most one every 10 s.
   await waitForMessage(page, { type: 'pdfcraft:activity', id: uid });
-  for (let i = 0; i < 3; i++) {
-    await page.mouse.wheel(0, -200);
-    await page.waitForTimeout(300);
-  }
+  await wheelPdfcraft(page, uid, -200, 3);
   const activity = (await fromPdfcraft(page)).filter((m) => m.type === 'pdfcraft:activity');
   for (let i = 1; i < activity.length; i++) {
     expect(activity[i]!.at - activity[i - 1]!.at).toBeGreaterThanOrEqual(9_900);
@@ -123,8 +147,7 @@ test('annotate and bookmark inside PdfCraft → autosave → restart → still t
   // Every step that needs the UI changed by the previous one waits for PdfCraft frames, not for time (see
   // pdfcraftFrames): on a slow machine the inputs would otherwise be handled in the same egui pass and get lost.
   // A bookmark at the current page (Ctrl+B, PdfCraft's own shortcut) with a name.
-  await page.mouse.click(box.x + box.width * 0.45, box.y + box.height * 0.4);
-  await pdfcraftFrames(page);
+  await pdfcraftClick(page, box.x + box.width * 0.45, box.y + box.height * 0.4);
   await page.keyboard.press('Control+b');
   // The new bookmark is unsaved work; its name field takes the typing from the next frame on.
   await waitForMessage(page, { type: 'pdfcraft:dirty', dirty: true });
@@ -140,20 +163,12 @@ test('annotate and bookmark inside PdfCraft → autosave → restart → still t
   await pdfcraftFrames(page);
   await page.keyboard.press('Enter');
   await pdfcraftFrames(page);
-  await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.3);
-  await pdfcraftFrames(page, 1);
-  await page.mouse.down();
-  await pdfcraftFrames(page, 1);
-  for (let i = 1; i <= 8; i++) {
-    await page.mouse.move(box.x + box.width * (0.4 + 0.015 * i), box.y + box.height * (0.3 + 0.00375 * i));
-    await pdfcraftFrames(page, 1);
-  }
-  await page.mouse.up();
-  await pdfcraftFrames(page);
+  await dragAcross(page, box.x + box.width * 0.4, box.x + box.width * 0.52, box.y + box.height * 0.3, {
+    y1: box.y + box.height * 0.33,
+  });
   // A new highlight opens its note for typing; PdfCraft holds host saves while it is open. Show the Comments panel
   // (right rail, first icon), type the note and save it (Ctrl+Enter).
-  await page.mouse.click(box.x + box.width - 23, box.y + 113);
-  await pdfcraftFrames(page);
+  await pdfcraftClick(page, box.x + box.width - 23, box.y + 113);
   await page.keyboard.type('Nota E2E');
   await pdfcraftFrames(page);
   await page.keyboard.press('Control+Enter');
@@ -181,27 +196,24 @@ test('annotate and bookmark inside PdfCraft → autosave → restart → still t
 
   // Leave at a known page, then "restart the app" (reload: the mock core persists, PdfCraft starts over).
   await page.mouse.move(box.x + box.width * 0.45, box.y + box.height * 0.5);
-  for (let i = 0; i < 4; i++) {
-    await page.mouse.wheel(0, 500);
-    await page.waitForTimeout(150);
-  }
-  await page.waitForTimeout(1500);
+  await pdfcraftFrames(page, 2);
+  await wheelPdfcraft(page, uid, 500, 4);
   // Leaving the tab flushes the position right away.
   await page
     .getByRole('tab', { name: 'Biblioteca' })
     .or(page.getByRole('link', { name: 'Biblioteca' }))
     .first()
     .click();
-  const lastPage = (await fromPdfcraft(page)).filter((m) => m.type === 'pdfcraft:page' && m.id === uid).at(-1)!.page!;
-  await expect.poll(() => page.evaluate((id) => window.__leitorMock!.positions[id]?.page, uid)).toBe(lastPage);
+  const last = await lastPage(page, uid);
+  await expect.poll(() => page.evaluate((id) => window.__leitorMock!.positions[id]?.page, uid)).toBe(last);
 
   await page.reload();
   const uidAfter = await openFromLibrary(page, ROS);
   expect(uidAfter).toBe(uid);
   const open = (await fromHost(page)).find((m) => m.type === 'pdfcraft:open')!;
   // PdfCraft received the latest version (with the annotations), at the last page read.
-  expect(open).toMatchObject({ id: uid, page: lastPage, size: save.size });
-  await waitForMessage(page, { type: 'pdfcraft:active', id: uid, page: lastPage });
+  expect(open).toMatchObject({ id: uid, page: last, size: save.size });
+  await waitForMessage(page, { type: 'pdfcraft:active', id: uid, page: last });
 
   // And the annotations are still in the document PdfCraft has open: a save of it still carries them.
   const t0 = await now(page);
@@ -296,7 +308,7 @@ test("Ctrl+Shift+P and Alt+1 work from inside PdfCraft; Ctrl+2 stays PdfCraft's"
   const panel = page.getByTestId('book-panel');
   await expect(panel).toHaveAttribute('data-open', 'true');
   const box = await frameBox(page);
-  await page.mouse.click(box.x + box.width * 0.45, box.y + box.height * 0.5);
+  await pdfcraftClick(page, box.x + box.width * 0.45, box.y + box.height * 0.5);
 
   await page.keyboard.press('Control+Shift+P');
   await expect(panel).toHaveAttribute('data-open', 'false');
@@ -305,11 +317,12 @@ test("Ctrl+Shift+P and Alt+1 work from inside PdfCraft; Ctrl+2 stays PdfCraft's"
 
   // PdfCraft's zoom shortcut: not taken by the app (no tab switch).
   await page.keyboard.press('Control+2');
-  await page.waitForTimeout(500);
+  // PdfCraft handles it in its next frames; the app would have switched tabs at the keydown.
+  await pdfcraftFrames(page, 3);
   await expect(page).toHaveURL(/\/leitor/);
 
   // Alt+1 is forwarded: Biblioteca.
-  await page.mouse.click(box.x + box.width * 0.45, box.y + box.height * 0.5);
+  await pdfcraftClick(page, box.x + box.width * 0.45, box.y + box.height * 0.5);
   await page.keyboard.press('Alt+1');
   await expect(page).toHaveURL(/\/biblioteca/);
 });
@@ -327,7 +340,8 @@ test('a compact window keeps PdfCraft wide: the panel starts closed and floats o
   await expect(panel).toHaveAttribute('data-open', 'true');
   // Opening it never resizes PdfCraft.
   expect((await frameBox(page)).width).toBe(closed.width);
-  await page.waitForTimeout(400);
+  // The capture after the panel's slide-in, not during it.
+  await panel.evaluate(finishedAnimations);
   await page.screenshot({ path: `test-results/screens/leitor-compact-${info.project.name}.png` });
   await page.keyboard.press('Escape');
   await expect(panel).toHaveAttribute('data-open', 'false');
@@ -343,21 +357,21 @@ for (const scheme of ['light', 'dark'] as const) {
   test(`the panel's neutral tones follow PdfCraft's ${scheme} theme`, async ({ page }, info) => {
     await openFromLibrary(page, ROS);
     if (scheme === 'dark') {
-      // PdfCraft's own theme button (top right of its tab band) until it reports dark.
+      // PdfCraft's own theme button (top right of its tab band); it reports the theme it switched to.
       const box = await frameBox(page);
-      for (let i = 0; i < 3; i++) {
-        if ((await fromPdfcraft(page)).filter((m) => m.type === 'pdfcraft:theme').at(-1)?.theme === 'dark') break;
-        await page.mouse.click(box.x + box.width - 24, box.y + 19);
-        await page.waitForTimeout(600);
-      }
+      const after = await now(page);
+      await pdfcraftClick(page, box.x + box.width - 24, box.y + 19);
+      await waitForMessage(page, { type: 'pdfcraft:theme', theme: 'dark' }, { after });
     }
     await waitForMessage(page, { type: 'pdfcraft:theme', theme: scheme });
     const panel = page.getByTestId('book-panel');
     await expect(panel).toHaveAttribute('data-theme-pdfcraft', scheme);
     await expect(panel).toHaveCSS('background-color', scheme === 'dark' ? 'rgb(38, 38, 42)' : 'rgb(255, 255, 255)');
     await expect.poll(() => canvasVariance(page, pdfcraftFrame(page)), { timeout: 20_000 }).toBeGreaterThan(40);
+    // Pointer off PdfCraft (no hover highlight in the capture), redrawn, and the app's transitions over.
     await page.mouse.move(600, 10);
-    await page.waitForTimeout(800);
+    await pdfcraftFrames(page, 3);
+    await page.locator('body').evaluate(finishedAnimations);
     await page.screenshot({ path: `test-results/screens/leitor-${scheme}-${info.project.name}.png` });
   });
 }

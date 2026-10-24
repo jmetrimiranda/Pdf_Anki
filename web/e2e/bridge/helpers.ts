@@ -119,6 +119,20 @@ function recorder() {
   w.__recording = true;
   w.__fromPdfcraft = [];
   w.__fromHost = [];
+  // Inside the iframe: when each press and release reaches PdfCraft (its clock). eframe runs an egui pass
+  // synchronously in its pointerdown/pointerup handlers, right after these capture listeners, so these are the times
+  // egui tells clicks, long presses and multi-clicks apart with (see pdfcraftClick and doubleClickSelect).
+  if (window.parent !== window) {
+    const buttons: { down: boolean; button: number; t: number }[] = [];
+    (window as unknown as { __pdfcraftButtons: typeof buttons }).__pdfcraftButtons = buttons;
+    for (const type of ['pointerdown', 'pointerup'] as const) {
+      addEventListener(
+        type,
+        (e) => buttons.push({ down: type === 'pointerdown', button: e.button, t: performance.now() }),
+        { capture: true },
+      );
+    }
+  }
   // trunk's loader announces the instance: keep it to read the WebAssembly memory size (perf.spec.ts).
   addEventListener('TrunkApplicationStarted', (e) => {
     (window as unknown as { __wasm?: unknown }).__wasm = (e as CustomEvent<{ wasm: unknown }>).detail?.wasm;
@@ -211,11 +225,13 @@ export function pdfcraftFrame(page: Page): Frame {
  * On a slow machine (4 vCPUs, software WebGL, another test in parallel) one frame takes hundreds of milliseconds, so
  * fixed sleeps let inputs that need the UI changed by an earlier input land in the same egui pass: Ctrl+K opens the
  * palette, but the text typed in that pass reaches no field and the Enter picks nothing. Each requestAnimationFrame
- * callback queued here runs after eframe's, so `n` of them are `n` real PdfCraft frames.
+ * callback queued here runs after eframe's, so `n` of them are `n` real PdfCraft frames. Returns PdfCraft's clock
+ * (the iframe's `performance.now()`) after them.
  */
-export async function pdfcraftFrames(page: Page, n = 3): Promise<void> {
-  await pdfcraftFrame(page).evaluate(async (count) => {
+export async function pdfcraftFrames(page: Page, n = 3): Promise<number> {
+  return pdfcraftFrame(page).evaluate(async (count) => {
     for (let i = 0; i < count; i++) await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    return performance.now();
   }, n);
 }
 
@@ -406,20 +422,274 @@ export async function locatePageRect(
   return { x0, x1, y0: bottom - h, y1: bottom };
 }
 
+// ---------------------------------------------------------------- driving PdfCraft with the mouse
+
 /**
- * Drags from `(x0, y)` to `(x1, y)` the way a person does, one PdfCraft frame per step (pointer move, press, moves,
- * release land in separate egui passes on any machine speed).
+ * egui's `InputOptions::max_double_click_delay` (PdfCraft keeps the default): two presses at the same spot further
+ * apart than this on PdfCraft's clock are two clicks, closer ones one multi-click.
  */
-export async function dragAcross(page: Page, x0: number, x1: number, y: number, steps = 8): Promise<void> {
+export const PDFCRAFT_DOUBLE_CLICK_MS = 300;
+/** The PdfCraft debounce of `pdfcraft:selection` (bridge level 2): the message follows 300 ms without a change. */
+export const SELECTION_DEBOUNCE_MS = 300;
+
+/** Records a gesture made again (test annotation + a line in the log), so a CI run shows when the harness retried. */
+function noteRetry(description: string) {
+  base.info().annotations.push({ type: 'pdfcraft-gesture-retry', description });
+  console.warn(`[pdfcraft-gesture-retry] ${base.info().title}: ${description}`);
+}
+
+/** Every press and release that reached PdfCraft (iframe clock, DOM button number), recorded by the init script. */
+async function pdfcraftButtons(page: Page): Promise<{ down: boolean; button: number; t: number }[]> {
+  return pdfcraftFrame(page).evaluate(
+    () =>
+      (window as unknown as { __pdfcraftButtons?: { down: boolean; button: number; t: number }[] }).__pdfcraftButtons ??
+      [],
+  );
+}
+
+/** When each primary press reached PdfCraft (iframe clock). */
+async function pdfcraftPresses(page: Page): Promise<number[]> {
+  return (await pdfcraftButtons(page)).filter((b) => b.down && b.button === 0).map((b) => b.t);
+}
+
+/** Waits until `n` button events after the first `from` have reached PdfCraft, and returns them. */
+async function newButtons(page: Page, from: number, n: number) {
+  let got: { down: boolean; button: number; t: number }[] = [];
+  await expect
+    .poll(async () => (got = (await pdfcraftButtons(page)).slice(from)).length, {
+      // None at all: the input hit something over the iframe (an app popover, a dialog), not PdfCraft.
+      message: `${n} pointer presses/releases reach PdfCraft (nothing of the app over the iframe there)`,
+    })
+    .toBeGreaterThanOrEqual(n);
+  return got;
+}
+
+/** Waits, frame by frame, until PdfCraft's clock (the iframe's `performance.now()`) has reached `t`. */
+async function pdfcraftClockAt(page: Page, t: number): Promise<void> {
+  await pdfcraftFrame(page).evaluate(async (until) => {
+    while (performance.now() < until) await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  }, t);
+}
+
+/**
+ * Waits until a new press can't join the previous one in a multi-click: egui counts presses at the same spot less
+ * than PDFCRAFT_DOUBLE_CLICK_MS apart (on PdfCraft's clock) as a double or triple click. Usually already the case.
+ */
+export async function pdfcraftQuiet(page: Page): Promise<void> {
+  const last = (await pdfcraftPresses(page)).at(-1);
+  if (last !== undefined) await pdfcraftClockAt(page, last + PDFCRAFT_DOUBLE_CLICK_MS + 50);
+}
+
+/**
+ * egui's `InputOptions::max_click_duration` (0.8 s, PdfCraft keeps the default): a press released later than this
+ * on PdfCraft's clock is a long press, not a click.
+ */
+export const PDFCRAFT_CLICK_MS = 800;
+
+/**
+ * A click inside PdfCraft the way a person makes it: never part of a multi-click with an earlier press, the pointer
+ * moved there (and PdfCraft drawn with it under the pointer) before the press, and press and release as two inputs
+ * (eframe runs a separate egui pass in its pointerdown and pointerup handlers, on any machine speed).
+ *
+ * egui only takes press + release as a click if they reach it less than PDFCRAFT_CLICK_MS apart on its clock. A frame
+ * PdfCraft paints between the two inputs (hundreds of ms with software WebGL on a slow machine) can push them past
+ * that: then PdfCraft rightly saw a long press, which does nothing, and the click is made again (at most 3 times) —
+ * a harness artefact, recognised from when the inputs reached PdfCraft (the init script records it), never a retry
+ * of a click PdfCraft did get.
+ */
+export async function pdfcraftClick(
+  page: Page,
+  x: number,
+  y: number,
+  opts: { button?: 'left' | 'right' } = {},
+): Promise<void> {
+  const gaps: number[] = [];
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await pdfcraftQuiet(page);
+    await page.mouse.move(x, y);
+    await pdfcraftFrames(page, 2);
+    const from = (await pdfcraftButtons(page)).length;
+    await page.mouse.down({ button: opts.button });
+    await page.mouse.up({ button: opts.button });
+    const [down, up] = await newButtons(page, from, 2);
+    await pdfcraftFrames(page, 1);
+    const gap = up!.t - down!.t;
+    gaps.push(Math.round(gap));
+    // egui reads its clock at the start of each pass, microseconds after the recorder's capture listener. On the
+    // border, count it as taken: a click PdfCraft did take must never be made twice (a toggle would undo itself).
+    if (gap <= PDFCRAFT_CLICK_MS + 10) return;
+    noteRetry(`click held by a PdfCraft frame: released ${Math.round(gap)} ms after the press on its clock`);
+  }
+  throw new Error(
+    `PdfCraft got every click's release too late on its clock (${gaps.join(', ')} ms > ${PDFCRAFT_CLICK_MS} ms): ` +
+      'its frames are too slow on this machine for a click',
+  );
+}
+
+/**
+ * Drags from `(x0, y)` to `(x1, y1 ?? y)` the way a person does, one PdfCraft frame per step (pointer move, press,
+ * moves, release land in separate egui passes on any machine speed). `beforeLastMove` and `beforeRelease` run at
+ * those points (phase4.spec.ts times the selection debounce with them).
+ */
+export async function dragAcross(
+  page: Page,
+  x0: number,
+  x1: number,
+  y: number,
+  opts: {
+    y1?: number;
+    steps?: number;
+    beforeLastMove?: () => Promise<void>;
+    beforeRelease?: () => Promise<void>;
+  } = {},
+): Promise<void> {
+  const steps = opts.steps ?? 8;
+  const y1 = opts.y1 ?? y;
+  await pdfcraftQuiet(page);
   await page.mouse.move(x0, y);
   await pdfcraftFrames(page, 2);
   await page.mouse.down();
   await pdfcraftFrames(page, 1);
   for (let i = 1; i <= steps; i++) {
-    await page.mouse.move(x0 + ((x1 - x0) * i) / steps, y);
+    if (i === steps) await opts.beforeLastMove?.();
+    await page.mouse.move(x0 + ((x1 - x0) * i) / steps, y + ((y1 - y) * i) / steps);
     await pdfcraftFrames(page, 1);
   }
+  // Let PdfCraft extend the selection to the last move before the release (one egui pass may hold both).
   await pdfcraftFrames(page, 2);
+  await opts.beforeRelease?.();
   await page.mouse.up();
   await pdfcraftFrames(page);
+}
+
+const collapse = (s: string | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
+
+/** The latest `pdfcraft:selection` of `id` after `after` (top-frame `now`), if any. */
+async function lastSelection(page: Page, id: string, after: number): Promise<Logged | undefined> {
+  return (await fromPdfcraft(page))
+    .filter((m) => m.type === 'pdfcraft:selection' && m.id === id && m.at >= after)
+    .at(-1);
+}
+
+/**
+ * Waits for the latest `pdfcraft:selection` of `id` since `after` to satisfy `matches` (its text, spaces collapsed).
+ * With `frames`, gives up (returns undefined) once PdfCraft has drawn that many frames AND its clock is past the
+ * selection debounce: a budget that grows with the machine's slowness instead of a wall-clock one. Without it, waits
+ * up to `timeout` and fails with the selections PdfCraft reported.
+ */
+async function waitForSelection(
+  page: Page,
+  id: string,
+  after: number,
+  matches: (text: string) => boolean,
+  opts: { frames?: number; description: string; timeout?: number },
+): Promise<Logged | undefined> {
+  if (opts.frames !== undefined) {
+    const until = (await pdfcraftFrames(page, 0)) + SELECTION_DEBOUNCE_MS + 100;
+    for (let drawn = 0; ; drawn += 2) {
+      const last = await lastSelection(page, id, after);
+      if (last && matches(collapse(last.text))) return last;
+      const clock = await pdfcraftFrames(page, 2);
+      if (drawn >= opts.frames && clock >= until) return undefined;
+    }
+  }
+  let last: Logged | undefined;
+  await expect
+    .poll(
+      async () => {
+        last = await lastSelection(page, id, after);
+        return !!last && matches(collapse(last.text));
+      },
+      { timeout: opts.timeout ?? 30_000, message: `pdfcraft:selection with ${opts.description}` },
+    )
+    .toBe(true)
+    .catch(async (e: Error) => {
+      const all = (await fromPdfcraft(page)).filter((m) => m.type === 'pdfcraft:selection' && m.at >= after);
+      throw new Error(`${e.message}\nselections reported: ${JSON.stringify(all.map((m) => m.text)) || 'none'}`);
+    });
+  return last;
+}
+
+/**
+ * Selects text in PdfCraft by dragging from `(x0, y)` to `(x1, y)` (dragAcross) and returns the `pdfcraft:selection`
+ * whose text (spaces collapsed) satisfies `matches`. PdfCraft reports changes only: start from another selection
+ * (or none).
+ *
+ * If no such selection arrives within `frames` PdfCraft frames (and its debounce), the drag is made once more. That
+ * retry is legitimate: on a starved machine (CI: 4 vCPUs, software WebGL, frames of hundreds of ms) a synthetic
+ * gesture can lose a step to a frame it was not meant to share — a harness artefact, not something a person's drag
+ * meets — while what the test asserts is the selection that results, which must still be exactly the expected one
+ * (a product that selects the wrong text fails both times). `beforeLastMove`/`beforeRelease` get the top-frame
+ * `now` at the start of the attempt they run in.
+ */
+export async function selectByDrag(
+  page: Page,
+  id: string,
+  x0: number,
+  x1: number,
+  y: number,
+  matches: (text: string) => boolean,
+  opts: {
+    description: string;
+    frames?: number;
+    beforeLastMove?: (attemptAt: number) => Promise<void>;
+    beforeRelease?: (attemptAt: number) => Promise<void>;
+  },
+): Promise<Logged> {
+  const first = await now(page);
+  for (let attempt = 1; ; attempt++) {
+    const at = attempt === 1 ? first : await now(page);
+    await dragAcross(page, x0, x1, y, {
+      beforeLastMove: opts.beforeLastMove && (() => opts.beforeLastMove!(at)),
+      beforeRelease: opts.beforeRelease && (() => opts.beforeRelease!(at)),
+    });
+    if (attempt >= 2) break;
+    const got = await waitForSelection(page, id, first, matches, { ...opts, frames: opts.frames ?? 40 });
+    if (got) return got;
+    noteRetry(`drag selection of ${opts.description}: none after ${opts.frames ?? 40} PdfCraft frames`);
+  }
+  return (await waitForSelection(page, id, first, matches, opts))!;
+}
+
+/**
+ * Double-clicks `(x, y)` in PdfCraft and returns the `pdfcraft:selection` whose text satisfies `matches` (a word).
+ *
+ * egui counts the two presses of a double-click on its own clock: the time of the egui pass that handles each one
+ * (eframe runs a pass synchronously in its pointerdown handler), not the time the input was made. Playwright sends
+ * press, release, press, release as separate inputs; when PdfCraft paints a frame between them (hundreds of ms with
+ * software WebGL on a slow machine), the presses reach PdfCraft more than PDFCRAFT_DOUBLE_CLICK_MS apart and it
+ * rightly sees two single clicks (CI run 40092488534: two `mark-click`s 936 ms apart, no selection). The init script
+ * records when each press reached PdfCraft, so such a split gesture is recognised and made again (at most 3 times);
+ * a gesture whose presses were close enough must give the selection, and nothing else is retried.
+ */
+export async function doubleClickSelect(
+  page: Page,
+  id: string,
+  x: number,
+  y: number,
+  matches: (text: string) => boolean,
+  opts: { description: string },
+): Promise<Logged> {
+  const first = await now(page);
+  const gaps: number[] = [];
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await pdfcraftQuiet(page);
+    await page.mouse.move(x, y);
+    await pdfcraftFrames(page, 2);
+    const from = (await pdfcraftButtons(page)).length;
+    await page.mouse.dblclick(x, y);
+    const presses = (await newButtons(page, from, 4)).filter((b) => b.down).map((b) => b.t);
+    const gap = presses[1]! - presses[0]!;
+    gaps.push(Math.round(gap));
+    // egui reads its clock at the start of the pass, microseconds after the recorder's capture listener.
+    if (gap <= PDFCRAFT_DOUBLE_CLICK_MS - 10) {
+      // A selection made by an earlier, borderline attempt is the same word and may not be reported again.
+      return (await waitForSelection(page, id, first, matches, { ...opts, timeout: 60_000 }))!;
+    }
+    noteRetry(`double-click split by a PdfCraft frame: presses ${Math.round(gap)} ms apart on its clock`);
+  }
+  throw new Error(
+    `PdfCraft got the presses of every double-click too far apart on its clock (${gaps.join(', ')} ms > ` +
+      `${PDFCRAFT_DOUBLE_CLICK_MS} ms): its frames are too slow on this machine for a double-click`,
+  );
 }

@@ -3,7 +3,8 @@
 // `menu-shown`, `menu`), the card form opens prefilled, Ctrl+Enter adds a Básico and a Cloze with the Fonte link,
 // the shortcuts (Alt+C anywhere, Ctrl+Shift+N only outside PdfCraft), and "Abrir no livro" / `leitor://` deep links
 // land on the page with the passage found (`pdfcraft:goto` → `pdfcraft:found`). No fixed coordinates: the text is
-// located in a screenshot of the iframe; no sleeps: PdfCraft frames are awaited with `pdfcraftFrames`.
+// located in a screenshot of the iframe; no sleeps: PdfCraft frames are awaited with `pdfcraftFrames`, and clicks and
+// drags go through `pdfcraftClick`/`selectByDrag` (helpers.ts).
 import type { Page } from '@playwright/test';
 import {
   absNow,
@@ -12,8 +13,10 @@ import {
   fromPdfcraft,
   importBytes,
   now,
+  pdfcraftClick,
   pdfcraftFrame,
   pdfcraftFrames,
+  selectByDrag,
   test,
   waitForMessage,
   type Logged,
@@ -178,63 +181,46 @@ async function selections(page: Page, after: number): Promise<Logged[]> {
   return (await fromPdfcraft(page)).filter((m) => m.type === 'pdfcraft:selection' && m.at >= after);
 }
 
-/** Drags across the phrase on page 1 and returns the selection PdfCraft reported. */
+/**
+ * Drags across the phrase on page 1 (selectByDrag: frame by frame, made again once if the gesture was lost) and
+ * returns the selection PdfCraft reported, with what the debounce test needs about the attempt that made it.
+ */
 async function selectPhrase(
   page: Page,
+  uid: string,
   at: Located,
 ): Promise<{ msg: Logged; during: number; lastMoveAbs: number; earlyDuring: number }> {
   // PdfCraft reports changes only: start from no selection.
   if (await page.evaluate(() => window.__leitor!.state().selection !== null)) await clickBlank(page, at);
   const y = (at.text.y0 + at.text.y1) / 2;
-  const start = at.text.x0 + 1;
-  const end = at.text.x1 - 1;
-  const after = await now(page);
-  await page.mouse.move(start, y);
-  await pdfcraftFrames(page, 2);
-  await page.mouse.down();
-  await pdfcraftFrames(page, 1);
-  const steps = 8;
-  for (let i = 1; i < steps; i++) {
-    await page.mouse.move(start + ((end - start) * i) / steps, y);
-    await pdfcraftFrames(page, 1);
-  }
-  const lastMoveAbs = await absNow(page);
-  await page.mouse.move(end, y);
-  // Let PdfCraft extend the selection to the last move before the release (one egui pass may hold both).
-  await pdfcraftFrames(page, 2);
-  const beforeUp = await now(page);
-  const duringMsgs = (await selections(page, after)).filter((m) => m.at <= beforeUp);
-  const during = duringMsgs.length;
-  // The debounce runs on PdfCraft's clock (when an egui pass sees the selection change), which the test can't
-  // observe: on a slow machine (CI: 4 vCPUs, software WebGL) one drag step can take longer than the 300 ms quiet
-  // period, so a message may legitimately arrive mid-drag. What holds at any speed: every message needs 300 ms
-  // without a change after a new change, so two consecutive messages are at least ~300 ms apart (250 ms of slack).
-  const earlyDuring = duringMsgs.slice(1).filter((m, i) => m.abs - duringMsgs[i]!.abs < 250).length;
-  await page.mouse.up();
-  let msg: Logged | undefined;
-  let texts: string[] = [];
-  await expect
-    .poll(
-      async () => {
-        const all = await selections(page, after);
-        texts = all.map((m) => JSON.stringify(m.text));
-        msg = all.filter((m) => collapse(m.text) === PHRASE).at(-1);
-        return !!msg;
-      },
-      { timeout: 30_000, message: 'pdfcraft:selection with the phrase' },
-    )
-    .toBe(true)
-    .catch((e: Error) => {
-      throw new Error(`${e.message}\nselections reported: ${texts.join(', ') || 'none'}`);
-    });
-  return { msg: msg!, during, lastMoveAbs, earlyDuring };
+  let during = 0;
+  let lastMoveAbs = 0;
+  let earlyDuring = 0;
+  const msg = await selectByDrag(page, uid, at.text.x0 + 1, at.text.x1 - 1, y, (t) => t === PHRASE, {
+    description: 'the phrase',
+    beforeLastMove: async () => {
+      lastMoveAbs = await absNow(page);
+    },
+    beforeRelease: async (attemptAt) => {
+      const beforeUp = await now(page);
+      const duringMsgs = (await selections(page, attemptAt)).filter((m) => m.at <= beforeUp);
+      during = duringMsgs.length;
+      // The debounce runs on PdfCraft's clock (when an egui pass sees the selection change), which the test can't
+      // observe: on a slow machine (CI: 4 vCPUs, software WebGL) one drag step can take longer than the 300 ms quiet
+      // period, so a message may legitimately arrive mid-drag. What holds at any speed: every message needs 300 ms
+      // without a change after a new change, so two consecutive messages are at least ~300 ms apart (250 ms of
+      // slack).
+      earlyDuring = duringMsgs.slice(1).filter((m, i) => m.abs - duringMsgs[i]!.abs < 250).length;
+    },
+  });
+  return { msg, during, lastMoveAbs, earlyDuring };
 }
 
 /** Clicks a blank part of page 2 (the selection bar covers the rest of page 1) and waits for the cleared selection. */
 async function clickBlank(page: Page, at: Located) {
   const after = await now(page);
   const height = at.page.y1 - at.page.y0;
-  await page.mouse.click(at.page.x0 + 12, at.page.y1 + height * 0.85);
+  await pdfcraftClick(page, at.page.x0 + 12, at.page.y1 + height * 0.85);
   await expect
     .poll(async () => (await selections(page, after)).some((m) => m.text === ''), {
       timeout: 30_000,
@@ -283,11 +269,7 @@ async function clickItem(page: Page, items: Shown, key: string, id: string) {
   const box = (await (await pdfcraftFrame(page).frameElement()).boundingBox())!;
   const [x, y, w, h] = items.find((i) => i.key === key)!.rect;
   const after = await now(page);
-  await page.mouse.move(box.x + x + w / 2, box.y + y + h / 2);
-  await pdfcraftFrames(page, 2);
-  await page.mouse.down();
-  await pdfcraftFrames(page, 1);
-  await page.mouse.up();
+  await pdfcraftClick(page, box.x + x + w / 2, box.y + y + h / 2);
   await waitForMessage(page, { type: 'pdfcraft:menu', key, id }, { after, timeout: 30_000 });
 }
 
@@ -343,7 +325,7 @@ test('selection: debounced pdfcraft:selection with the text and page rects; clea
     { key: 'define', label: 'Definir palavra' },
   ]);
 
-  const { msg, during, lastMoveAbs, earlyDuring } = await selectPhrase(page, at);
+  const { msg, during, lastMoveAbs, earlyDuring } = await selectPhrase(page, uid, at);
   // Debounced: never one message per frame of the drag (at most one per move), consecutive messages ~300 ms apart,
   // and the final one ~300 ms after the last move.
   expect(during).toBeLessThanOrEqual(8);
@@ -368,7 +350,7 @@ test('selection: debounced pdfcraft:selection with the text and page rects; clea
 test("the app's items in PdfCraft's selection bar and context menu open the prefilled card form", async ({ page }) => {
   const { uid, at } = await openWindmill(page);
   const selectedAt = await now(page);
-  await selectPhrase(page, at);
+  await selectPhrase(page, uid, at);
 
   // The selection bar beside the text.
   const bar = await menuShown(page, selectedAt);
@@ -381,7 +363,7 @@ test("the app's items in PdfCraft's selection bar and context menu open the pref
 
   // The right-click menu on the (still selected) text.
   const rightAt = await now(page);
-  await page.mouse.click((at.text.x0 + at.text.x1) / 2, (at.text.y0 + at.text.y1) / 2, { button: 'right' });
+  await pdfcraftClick(page, (at.text.x0 + at.text.x1) / 2, (at.text.y0 + at.text.y1) / 2, { button: 'right' });
   const menu = await menuShown(page, rightAt);
   await clickItem(page, menu, 'card', uid);
   await expect(form(page)).toBeVisible();
@@ -390,7 +372,7 @@ test("the app's items in PdfCraft's selection bar and context menu open the pref
 
   // "Criar cards com IA" (10.3): the AI-not-configured notice with the way to Configurações → IA.
   const aiAt = await now(page);
-  await page.mouse.click((at.text.x0 + at.text.x1) / 2, (at.text.y0 + at.text.y1) / 2, { button: 'right' });
+  await pdfcraftClick(page, (at.text.x0 + at.text.x1) / 2, (at.text.y0 + at.text.y1) / 2, { button: 'right' });
   await clickItem(page, await menuShown(page, aiAt), 'ai', uid);
   const ai = page.getByRole('dialog', { name: 'Criar cards com IA' });
   await expect(ai).toContainText('A IA ainda não está configurada.');
@@ -400,7 +382,7 @@ test("the app's items in PdfCraft's selection bar and context menu open the pref
 
   // "Definir palavra" (12.7) on a phrase: the popover asks for a single word.
   const defineAt = await now(page);
-  await page.mouse.click((at.text.x0 + at.text.x1) / 2, (at.text.y0 + at.text.y1) / 2, { button: 'right' });
+  await pdfcraftClick(page, (at.text.x0 + at.text.x1) / 2, (at.text.y0 + at.text.y1) / 2, { button: 'right' });
   await clickItem(page, await menuShown(page, defineAt), 'define', uid);
   await expect(page.getByRole('dialog', { name: 'Definir palavra' })).toContainText('Selecione uma só palavra.');
 });
@@ -410,7 +392,7 @@ test('Ctrl+Enter adds a Básico and a Cloze with the Fonte; Alt+C anywhere, Ctrl
 }) => {
   const { uid, at } = await openWindmill(page);
   const selectedAt = await now(page);
-  await selectPhrase(page, at);
+  await selectPhrase(page, uid, at);
   await clickItem(page, await menuShown(page, selectedAt), 'card', uid);
   await expect(form(page)).toBeVisible();
   const fonte = `leitor://livro/${uid}?pagina=1&amp;q=the%20windmill%20was%20finished%20in%20autumn`;
@@ -451,7 +433,7 @@ test('Ctrl+Enter adds a Básico and a Cloze with the Fonte; Alt+C anywhere, Ctrl
   await closeForm(page);
 
   // Alt+C with the focus inside PdfCraft (forwarded by the reader).
-  await selectPhrase(page, at);
+  await selectPhrase(page, uid, at);
   await page.keyboard.press('Alt+c');
   await expect(form(page)).toBeVisible();
   // Prefilled (the form keeps the book's last kind, Cloze now: its first field is Texto).
@@ -465,7 +447,7 @@ test('Ctrl+Enter adds a Básico and a Cloze with the Fonte; Alt+C anywhere, Ctrl
   await closeForm(page);
 
   // Ctrl+Shift+N inside PdfCraft is its "Go to page…": the app does nothing.
-  await selectPhrase(page, at);
+  await selectPhrase(page, uid, at);
   await page.keyboard.press('Control+Shift+N');
   await pdfcraftFrames(page, 6);
   await expect(form(page)).toHaveCount(0);
@@ -473,8 +455,8 @@ test('Ctrl+Enter adds a Básico and a Cloze with the Fonte; Alt+C anywhere, Ctrl
 });
 
 test('Alt+C right after selecting uses the new selection, not the one before the 300 ms debounce', async ({ page }) => {
-  const { at } = await openWindmill(page);
-  await selectPhrase(page, at);
+  const { uid, at } = await openWindmill(page);
+  await selectPhrase(page, uid, at);
   // Nothing selected as far as the app knows; then a new selection of the first words and Alt+C at once.
   await clickBlank(page, at);
   const y = (at.text.y0 + at.text.y1) / 2;
@@ -509,7 +491,7 @@ test('"Abrir no livro" and leitor:// links go to the page and find the passage (
 }) => {
   const { uid, at } = await openWindmill(page);
   const selectedAt = await now(page);
-  await selectPhrase(page, at);
+  await selectPhrase(page, uid, at);
   await clickItem(page, await menuShown(page, selectedAt), 'card', uid);
   await form(page).getByLabel('Verso').fill('O moinho');
   await form(page).getByLabel('Verso').press('Control+Enter');
