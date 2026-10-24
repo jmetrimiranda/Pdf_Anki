@@ -260,16 +260,36 @@ Checagem de integração (24/10/2026): `cargo fmt --all --check` e `clippy --wor
 
 ## Fase 8 — IA
 
-- ⬜ Anthropic e URL compatível com OpenAI.
-- ⬜ Chave no keychain; limite mensal.
-- ⬜ Enriquecimento, definição, juiz de código, cards da seleção.
-- ⬜ Com IA desligada, tudo funciona.
+Plano: `docs/planos/fase-8.md` (com as respostas do usuário de 24/10/2026). Ordem: (1) interface + Claude; (2) Fase 9a;
+(3) GPT, DeepSeek, Gemini nativo e URL personalizada, um commit cada. Técnico: `docs/tecnico/ia.md`.
 
-## Fase 9 — Biblioteca sincronizada e Painel
+- ✅ Passo 1 — interface única + Claude (24/10/2026):
+  - `core-ai`: trait `Provider`, adaptador da Anthropic (Messages API `2026-10-21`, saída estruturada, esforço,
+    raciocínio desligado no mínimo, só tier padrão), tabela de preços datada `model-prices.toml` (4 provedores, faixas
+    por tamanho de prompt, data e horário), pior caso reservado contra os tetos de dia/mês antes de cada chamada,
+    custo real pelos tokens devolvidos, confirmação acima de US$ 0,05, uma nova tentativa com o erro de validação e
+    uma no esforço mínimo quando a resposta é cortada. Testes: 28 (servidor local com respostas gravadas da
+    Anthropic; nenhuma chamada real, nenhuma chave real).
+  - App: configurações por função (enriquecimento/juiz), consentimento a cada ativação, chaves no chaveiro
+    (`ai:<provedor>`, só os 4 últimos caracteres saem), "Testar chave" sem tokens, preços editáveis, gasto do dia e
+    do mês (`ai_usage`, migração V5), juiz de código, cards de um trecho, "Definir com IA" (frase da página tirada da
+    tabela de vocabulário; cache primeiro), deck com IA (job em lotes de até 40 → cache → deck; o resto cai no
+    WordNet) e fila de segundo plano (só palavras novas; não sobrescreve campo editado; pausa e avisa acima de
+    US$ 0,05; espera sem rede ou com teto atingido). Testes: `tests/ai.rs` 7, `tests/vocab.rs` (deck com IA e fila),
+    contrato com as formas da IA.
+  - Interface: Configurações → IA (chaves, funções, limites, gasto, fila, preços, "O que é enviado"), "Pedir
+    avaliação da IA" na revisão de código, "Definir com IA" nos dois popovers, IA no "Gerar deck", "Criar cards com
+    IA". Mock com as mesmas regras e a tabela de preços do repositório. Vitest 964, Playwright `ai.spec.ts` e os
+    fluxos alterados (Chromium + WebKit). Capturas em `docs/capturas/fase-8/`.
+- ⬜ Passo 3 — GPT (Chat Completions), DeepSeek (mesmo adaptador), Gemini (Interactions API), URL compatível com
+  OpenAI (local = custo zero; remota só com preço informado).
+- 🔶 Verificação manual com as chaves reais (plano 7.3): fica com o usuário.
 
-- ⬜ `library-sync` local entre dois aparelhos.
-- ⬜ Painel simulado: envio, reenvio idempotente, offline, 401/429/5xx.
-- 🌐 O mesmo no VPS com o Painel de verdade.
+## Fase 9 — Sincronização entre PCs Linux (9a)
+
+- ⬜ Servidor no H110 (`infra/sync-server/`: Anki sync + servidor da biblioteca + Caddy + cloudflared, túnel "leitor").
+- ⬜ Livros, posição, destaques/anotações, vocabulário e coleção do Anki entre dois PCs; offline nos dois sem perda.
+- 9b (integração com o Painel) saiu do escopo (decisão de 24/10/2026).
 
 ## Fase 10 — Acabamento iPad/iPhone
 
