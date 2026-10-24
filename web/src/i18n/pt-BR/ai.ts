@@ -40,6 +40,20 @@ export const aiMessages = {
   'settings.ai.functions.maxTokens': 'Tokens de resposta por chamada (até {max})',
   'settings.ai.functions.saved': 'Configuração salva.',
   'settings.ai.functions.needsKey': 'Falta a chave de {provedor}: adicione-a em "Chaves".',
+  'settings.ai.functions.modelCustom': 'Modelo (o nome no servidor)',
+  'settings.ai.functions.modelMissing': 'Informe o modelo do servidor para usar esta função.',
+
+  'settings.ai.custom.hint':
+    'Qualquer servidor compatível com a API da OpenAI (Ollama, LM Studio, OpenRouter…). Neste computador (localhost): sem custo, fora dos limites de gasto e com chave opcional. Remoto: só https, com chave, e só depois de você informar o preço do modelo em "Preços".',
+  'settings.ai.custom.url': 'Endereço do servidor',
+  'settings.ai.custom.save': 'Salvar endereço',
+  'settings.ai.custom.saved': 'Endereço do servidor salvo.',
+  'settings.ai.custom.remove': 'Remover endereço',
+  'settings.ai.custom.removed': 'Endereço do servidor removido.',
+  'settings.ai.custom.noUrl': 'sem endereço',
+  'settings.ai.custom.keyOptional': 'chave opcional',
+  'settings.ai.custom.local': 'neste computador · sem custo',
+  'settings.ai.custom.remote': 'remoto · precisa do preço do modelo',
 
   'settings.ai.consent.title': 'Ativar {provedor}?',
   'settings.ai.consent.body':
@@ -52,6 +66,10 @@ export const aiMessages = {
     'No nível gratuito da API do Gemini, o Google usa o que é enviado e as respostas para melhorar os produtos dele; no nível pago, não. O app pede para não guardar as interações (store: false).',
   'settings.ai.consent.noteDeepseek':
     'Os servidores da DeepSeek ficam na China. O preço muda com o horário: mais caro de 01h a 04h e de 06h a 10h (UTC) em dias úteis; os limites de gasto usam sempre o preço mais alto.',
+  'settings.ai.consent.noteCustomLocal':
+    'O servidor está neste computador: o que é enviado não sai da máquina. Sem custo e fora dos limites de gasto.',
+  'settings.ai.consent.noteCustomRemote':
+    'O app envia para o servidor que você informou; o que ele faz com os dados depende desse serviço. O custo segue o preço que você cadastrou em "Preços" e conta nos limites de gasto.',
   'settings.ai.consent.activate': 'Ativar',
 
   'settings.ai.sent.title': 'O que é enviado',

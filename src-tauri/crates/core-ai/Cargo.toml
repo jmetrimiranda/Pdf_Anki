@@ -21,6 +21,8 @@ hex.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 # Already in the graph (0.8.2): the price table.
 toml = "0.8"
+# The custom provider's URL (already in the graph through reqwest).
+url.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }

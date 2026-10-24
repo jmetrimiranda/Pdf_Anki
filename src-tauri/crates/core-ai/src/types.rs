@@ -3,7 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// The fixed providers (plan 2.1); the user-defined OpenAI-compatible URL comes later as `Custom`.
+/// The four fixed providers (plan 2.1) and the OpenAI-compatible server at a URL of the user's (`Custom`, plan 0.3):
+/// Ollama/LM Studio on this computer, or a remote one (OpenRouter, Groq…).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
@@ -11,10 +12,19 @@ pub enum ProviderKind {
     Openai,
     Gemini,
     Deepseek,
+    Custom,
 }
 
 impl ProviderKind {
-    pub const ALL: [ProviderKind; 4] =
+    pub const ALL: [ProviderKind; 5] = [
+        Self::Anthropic,
+        Self::Openai,
+        Self::Gemini,
+        Self::Deepseek,
+        Self::Custom,
+    ];
+    /// The providers with a price table and default models of their own.
+    pub const FIXED: [ProviderKind; 4] =
         [Self::Anthropic, Self::Openai, Self::Gemini, Self::Deepseek];
 
     pub fn id(self) -> &'static str {
@@ -23,6 +33,7 @@ impl ProviderKind {
             Self::Openai => "openai",
             Self::Gemini => "gemini",
             Self::Deepseek => "deepseek",
+            Self::Custom => "custom",
         }
     }
 
@@ -37,6 +48,7 @@ impl ProviderKind {
             Self::Openai => "GPT (OpenAI)",
             Self::Gemini => "Gemini (Google)",
             Self::Deepseek => "DeepSeek",
+            Self::Custom => "Compatível com OpenAI (URL personalizada)",
         }
     }
 
@@ -120,6 +132,15 @@ impl ApiKey {
     /// The raw key, for the HTTP header only.
     pub(crate) fn expose(&self) -> &str {
         &self.0
+    }
+
+    /// No key: a local server that doesn't ask for one (only the custom URL on this computer).
+    pub fn none() -> Self {
+        Self(String::new())
+    }
+
+    pub fn is_none(&self) -> bool {
+        self.0.is_empty()
     }
 
     /// The last 4 characters shown in the UI ("•••• ABCD").

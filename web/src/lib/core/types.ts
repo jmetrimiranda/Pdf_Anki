@@ -1177,7 +1177,8 @@ export type Unlisten = () => void;
 /** One function per Tauri command (spec 15), plus the platform helpers the UI needs. */
 // ---------------------------------------------------------------- AI (spec 13, docs/planos/fase-8.md)
 
-export type AiProvider = 'anthropic' | 'openai' | 'gemini' | 'deepseek';
+/** `custom`: an OpenAI-compatible server at the user's URL (Ollama, LM Studio, OpenRouter…). */
+export type AiProvider = 'anthropic' | 'openai' | 'gemini' | 'deepseek' | 'custom';
 export type AiEffort = 'minimum' | 'low' | 'medium' | 'high';
 /** `define` and `cards` use the enrichment settings. */
 export type AiFeature = 'enrich' | 'define' | 'cards' | 'judge';
@@ -1214,6 +1215,10 @@ export interface AiSettings {
   backgroundPaused: boolean;
   providers: AiProviderInfo[];
   keychainAvailable: boolean;
+  /** The custom provider's server (`null`: not set up). */
+  customBaseUrl: string | null;
+  /** That server is on this computer: no cost, outside the caps, the key is optional. */
+  customLocal: boolean;
 }
 
 /** A missing field is left alone; `provider: null` turns the function off. */
@@ -1234,6 +1239,9 @@ export interface AiSettingsPatch {
   backgroundPaused?: boolean;
   /** Providers the user just agreed to send data to: required in the same patch that activates one. */
   consent?: AiProvider[];
+  /** The custom provider's URL; `null` removes it (functions using it turn off). A new URL while a function uses
+   * it needs `consent: ['custom']`. */
+  customBaseUrl?: string | null;
 }
 
 export interface AiKeyTest {

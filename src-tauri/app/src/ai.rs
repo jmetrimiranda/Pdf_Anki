@@ -25,6 +25,8 @@ pub struct AiHub {
     budget: Budget,
     /// The adapter of each provider; tests point them at a local fake server.
     providers: RwLock<HashMap<ProviderKind, Arc<dyn Provider>>>,
+    /// The custom provider's adapter, built from its URL (`ai_base_url`) and kept while the URL stays.
+    custom: RwLock<Option<(String, Arc<dyn Provider>)>>,
     /// The background enrichment worker.
     pub(crate) queue: crate::ai_queue::QueueHub,
 }
@@ -38,6 +40,7 @@ impl Default for AiHub {
         Self {
             budget: Budget::default(),
             providers: RwLock::new(providers),
+            custom: RwLock::new(None),
             queue: Default::default(),
         }
     }
@@ -61,8 +64,26 @@ impl AiHub {
             .cloned()
     }
 
-    fn available(&self, kind: ProviderKind) -> bool {
-        self.provider(kind).is_some()
+    /// The adapter of `kind`: a test's replacement first; the custom provider comes from its URL.
+    fn adapter(&self, kind: ProviderKind, base_url: Option<&str>) -> Option<Arc<dyn Provider>> {
+        if let Some(p) = self.provider(kind) {
+            return Some(p);
+        }
+        let base = base_url.filter(|_| kind == ProviderKind::Custom)?;
+        let mut custom = self.custom.write().unwrap_or_else(|p| p.into_inner());
+        match &*custom {
+            Some((url, p)) if url == base => Some(Arc::clone(p)),
+            _ => {
+                let p: Arc<dyn Provider> =
+                    Arc::new(core_ai::openai_chat::OpenAiChatProvider::compatible(base));
+                *custom = Some((base.to_owned(), Arc::clone(&p)));
+                Some(p)
+            }
+        }
+    }
+
+    fn available(&self, kind: ProviderKind, base_url: Option<&str>) -> bool {
+        self.provider(kind).is_some() || (kind == ProviderKind::Custom && base_url.is_some())
     }
 }
 
@@ -166,6 +187,10 @@ pub struct AiSettings {
     pub providers: Vec<AiProviderInfo>,
     /// `false` when the system keychain couldn't be read (keys can't be kept).
     pub keychain_available: bool,
+    /// The OpenAI-compatible server of the custom provider (`None` = not set up).
+    pub custom_base_url: Option<String>,
+    /// That server is on this computer: no cost, outside the caps, the key is optional.
+    pub custom_local: bool,
 }
 
 /// A change to one function. A missing field is left alone; `provider: null` turns the function off.
@@ -194,6 +219,10 @@ pub struct AiSettingsPatch {
     /// Providers the user just agreed to send data to (the activation dialog, plan 5.2). Choosing a provider for a
     /// function requires it in the same patch: every activation and every switch asks again.
     pub consent: Vec<ProviderKind>,
+    /// The custom provider's URL; `null` removes it (and turns off the functions using it). A new URL while a
+    /// function uses the custom provider is a new destination: it needs `consent` for it in the same patch.
+    #[serde(deserialize_with = "double_option")]
+    pub custom_base_url: Option<Option<String>>,
 }
 
 /// `ai_key_test`.
@@ -345,19 +374,7 @@ fn price_table(store: &Store) -> core_store::Result<PriceTable> {
         };
         let mut price = match built_in.get(kind, model) {
             Ok(p) => p.clone(),
-            Err(_) => ModelPrice {
-                provider: kind.id().to_owned(),
-                id: model.to_owned(),
-                role_default: None,
-                checked_at: edit.edited_at,
-                source: None,
-                rates: edit.rates,
-                effort_param: "none".into(),
-                effort_levels: Vec::new(),
-                thinking_off: String::new(),
-                max_tokens_includes_thinking: "unverified".into(),
-                tiers: Vec::new(),
-            },
+            Err(_) => bare_price(kind, model, edit.rates, edit.edited_at),
         };
         price.rates = edit.rates;
         price.tiers.clear();
@@ -366,6 +383,55 @@ fn price_table(store: &Store) -> core_store::Result<PriceTable> {
         overrides.push(price);
     }
     Ok(built_in.with_overrides(&overrides))
+}
+
+/// A model outside the built-in table: flat rates, no effort parameter.
+fn bare_price(kind: ProviderKind, model: &str, rates: Rates, checked_at: NaiveDate) -> ModelPrice {
+    ModelPrice {
+        provider: kind.id().to_owned(),
+        id: model.to_owned(),
+        role_default: None,
+        checked_at,
+        source: None,
+        rates,
+        effort_param: "none".into(),
+        effort_levels: Vec::new(),
+        thinking_off: String::new(),
+        max_tokens_includes_thinking: "unverified".into(),
+        tiers: Vec::new(),
+    }
+}
+
+/// A server on this computer (plan 0.3): free, so the caps and the confirmation never stop it.
+fn local_price(model: &str) -> ModelPrice {
+    let free = Rates {
+        input: 0.0,
+        cached_input: None,
+        cache_write: None,
+        output: 0.0,
+    };
+    bare_price(ProviderKind::Custom, model, free, Local::now().date_naive())
+}
+
+const NO_CAPS: Caps = Caps {
+    day_usd: f64::INFINITY,
+    month_usd: f64::INFINITY,
+    confirm_above_usd: f64::INFINITY,
+};
+
+fn base_url(store: &Store) -> core_store::Result<Option<String>> {
+    store.setting_as(keys::AI_BASE_URL)
+}
+
+fn is_local(kind: ProviderKind, base_url: Option<&str>) -> bool {
+    kind == ProviderKind::Custom && base_url.is_some_and(core_ai::is_local_url)
+}
+
+fn model_missing() -> AppError {
+    AppError::new(
+        "ai_model_missing",
+        "Informe o modelo do servidor (URL personalizada) em Configurações → IA.",
+    )
 }
 
 fn check_rates(r: &Rates) -> Result<(), AppError> {
@@ -379,6 +445,17 @@ fn check_rates(r: &Rates) -> Result<(), AppError> {
             "Preço inválido: use valores em US$ por milhão de tokens, de 0 a 10 000.",
         ))
     }
+}
+
+/// A model name (`/` is fine: `meta-llama/llama-3.3-70b` on OpenRouter; the price key splits at the first one).
+fn check_model(model: &str) -> Result<(), AppError> {
+    if model.is_empty()
+        || model.len() > 100
+        || model.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(AppError::new("invalid_input", "Nome de modelo inválido."));
+    }
+    Ok(())
 }
 
 fn check_key_text(key: &str) -> Result<&str, AppError> {
@@ -407,9 +484,25 @@ fn keychain_error(e: AppError) -> AppError {
 }
 
 fn unavailable(kind: ProviderKind) -> AppError {
+    if kind == ProviderKind::Custom {
+        return AppError::new(
+            "ai_provider_unavailable",
+            "Informe o endereço do servidor (URL personalizada) em Configurações → IA.",
+        );
+    }
     AppError::new(
         "ai_provider_unavailable",
         format!("{} chega numa próxima versão do app.", kind.label()),
+    )
+}
+
+fn consent_required(kind: ProviderKind) -> AppError {
+    AppError::new(
+        "ai_consent_required",
+        format!(
+            "Confirme o que será enviado para {} antes de ativá-lo.",
+            kind.label()
+        ),
     )
 }
 
@@ -435,17 +528,38 @@ impl AppState {
     }
 
     /// Everything a call of `f` needs; errors when the function is off, the adapter or the key is missing, or the
-    /// model has no price. Never opens a connection.
+    /// model has no price. Never opens a connection. A custom server on this computer is free, outside the caps,
+    /// and works without a key.
     pub(crate) fn ai_target(&self, f: Function) -> Result<AiTarget, AppError> {
-        let (settings, prices, caps) = self.with_store(|s| {
+        let (settings, prices, caps, base_url) = self.with_store(|s| {
             let prices = price_table(s)?;
-            Ok((read_function(s, &prices, f)?, prices, caps(s)?))
+            Ok((
+                read_function(s, &prices, f)?,
+                prices,
+                caps(s)?,
+                base_url(s)?,
+            ))
         })?;
         let kind = settings.provider.ok_or(AiError::Disabled)?;
-        let provider = self.ai.provider(kind).ok_or_else(|| unavailable(kind))?;
-        let model = settings.effective_model.ok_or(AiError::Disabled)?;
-        let price = prices.get(kind, &model)?.clone();
-        let key = self.ai_key(kind)?.ok_or(AiError::NoKey(kind.label()))?;
+        let provider = self
+            .ai
+            .adapter(kind, base_url.as_deref())
+            .ok_or_else(|| unavailable(kind))?;
+        let model = settings.effective_model.ok_or_else(|| match kind {
+            ProviderKind::Custom => model_missing(),
+            _ => AiError::Disabled.into(),
+        })?;
+        let local = is_local(kind, base_url.as_deref());
+        let (price, caps) = if local {
+            (local_price(&model), NO_CAPS)
+        } else {
+            (prices.get(kind, &model)?.clone(), caps)
+        };
+        let key = match self.ai_key(kind)? {
+            Some(k) => k,
+            None if local => ApiKey::none(),
+            None => return Err(AiError::NoKey(kind.label()).into()),
+        };
         Ok(AiTarget {
             provider,
             key,
@@ -459,6 +573,7 @@ impl AppState {
 
     pub fn ai_settings_get(&self) -> Result<AiSettings, AppError> {
         let mut keychain_available = true;
+        let custom_base_url = self.with_store(|s| base_url(s))?;
         let providers = ProviderKind::ALL
             .into_iter()
             .map(|kind| {
@@ -469,7 +584,7 @@ impl AppState {
                 AiProviderInfo {
                     id: kind,
                     label: kind.label(),
-                    available: self.ai.available(kind),
+                    available: self.ai.available(kind, custom_base_url.as_deref()),
                     has_key: key.is_some(),
                     key_suffix: key.map(|k| k.suffix()),
                 }
@@ -488,6 +603,8 @@ impl AppState {
                 background_paused: s.setting_as(keys::AI_BACKGROUND_PAUSED)?,
                 providers,
                 keychain_available,
+                custom_local: is_local(ProviderKind::Custom, custom_base_url.as_deref()),
+                custom_base_url,
             })
         })
     }
@@ -495,38 +612,61 @@ impl AppState {
     pub fn ai_settings_set(&self, patch: AiSettingsPatch) -> Result<AiSettings, AppError> {
         let mut writes: Vec<(&'static str, Value)> = Vec::new();
         let now = core_store::now_ms();
+        let new_url = match &patch.custom_base_url {
+            Some(Some(u)) => Some(Some(
+                core_ai::check_base_url(u).map_err(|m| AppError::new("invalid_input", m))?,
+            )),
+            Some(None) => Some(None),
+            None => None,
+        };
         self.with_store(|s| {
             let prices = price_table(s)?;
             Ok((
                 prices.clone(),
                 read_function(s, &prices, Function::Enrich)?,
                 read_function(s, &prices, Function::Judge)?,
+                base_url(s)?,
             ))
         })
-        .and_then(|(prices, enrich, judge)| {
+        .and_then(|(prices, enrich, judge, current_url)| {
+            let url_changed = new_url.as_ref().is_some_and(|u| *u != current_url);
+            let base_url = new_url.clone().unwrap_or(current_url);
             for (f, current, p) in [
                 (Function::Enrich, enrich, patch.enrich.as_ref()),
                 (Function::Judge, judge, patch.judge.as_ref()),
             ] {
-                let Some(p) = p else { continue };
                 let [pk, mk, ek, tk] = function_keys(f);
-                let provider = p.provider.unwrap_or(current.provider);
+                let custom_now = current.provider == Some(ProviderKind::Custom);
+                let p = match p {
+                    Some(p) => p,
+                    // Without its URL the custom provider can't stay on.
+                    None if custom_now && base_url.is_none() => &AiFunctionPatch {
+                        provider: Some(None),
+                        ..Default::default()
+                    },
+                    // Its new URL is checked like a new provider.
+                    None if custom_now && url_changed => &AiFunctionPatch::default(),
+                    None => continue,
+                };
+                let mut provider = p.provider.unwrap_or(current.provider);
+                if provider == Some(ProviderKind::Custom) && base_url.is_none() && custom_now {
+                    provider = None;
+                }
                 let changed = provider != current.provider;
+                // Same provider, new server: as much a new destination as a new provider.
+                let moved = !changed && url_changed && provider == Some(ProviderKind::Custom);
+                if moved && !patch.consent.contains(&ProviderKind::Custom) {
+                    return Err(consent_required(ProviderKind::Custom));
+                }
                 if let Some(kind) = provider.filter(|_| changed) {
-                    if !self.ai.available(kind) {
+                    if !self.ai.available(kind, base_url.as_deref()) {
                         return Err(unavailable(kind));
                     }
                     if !patch.consent.contains(&kind) {
-                        return Err(AppError::new(
-                            "ai_consent_required",
-                            format!(
-                                "Confirme o que será enviado para {} antes de ativá-lo.",
-                                kind.label()
-                            ),
-                        ));
+                        return Err(consent_required(kind));
                     }
                 }
-                if p.provider.is_some() {
+                if p.provider.is_some() || changed {
                     writes.push((pk, serde_json::to_value(provider).unwrap_or(Value::Null)));
                 }
                 // A new provider starts on its default model unless the patch names one.
@@ -538,7 +678,13 @@ impl AppState {
                     None if changed => None,
                     None => current.model.clone(),
                 };
-                if let (Some(kind), Some(m)) = (provider, &model) {
+                if let Some(m) = &model {
+                    check_model(m)?;
+                }
+                // A remote custom server works only once its model has a price (plan 0.3); a local one is free.
+                if let (Some(kind), Some(m)) = (provider, &model)
+                    && !is_local(kind, base_url.as_deref())
+                {
                     prices.get(kind, m)?;
                 }
                 if p.model.is_some() || changed {
@@ -550,6 +696,12 @@ impl AppState {
                 if let Some(t) = p.max_output_tokens {
                     writes.push((tk, t.into()));
                 }
+            }
+            if let Some(u) = new_url.filter(|_| url_changed) {
+                writes.push((
+                    keys::AI_BASE_URL,
+                    serde_json::to_value(u).unwrap_or(Value::Null),
+                ));
             }
             Ok(())
         })?;
@@ -609,13 +761,16 @@ impl AppState {
     /// "Testar chave" (plan 4): a call with no tokens, only on the user's click. The model is the one a function uses
     /// with this provider, else the provider's default for enrichment.
     pub async fn ai_key_test(&self, provider: ProviderKind) -> Result<AiKeyTest, AppError> {
+        let base_url = self.with_store(|s| base_url(s))?;
         let adapter = self
             .ai
-            .provider(provider)
+            .adapter(provider, base_url.as_deref())
             .ok_or_else(|| unavailable(provider))?;
-        let key = self
-            .ai_key(provider)?
-            .ok_or(AiError::NoKey(provider.label()))?;
+        let key = match self.ai_key(provider)? {
+            Some(k) => k,
+            None if is_local(provider, base_url.as_deref()) => ApiKey::none(),
+            None => return Err(AiError::NoKey(provider.label()).into()),
+        };
         let model = self.with_store(|s| {
             let prices = price_table(s)?;
             let mut model = None;
@@ -627,7 +782,10 @@ impl AppState {
             }
             Ok(model.or_else(|| prices.default_model(provider, "enrich").map(str::to_owned)))
         })?;
-        let model = model.ok_or_else(|| AppError::internal("no default model"))?;
+        let model = model.ok_or_else(|| match provider {
+            ProviderKind::Custom => model_missing(),
+            _ => AppError::internal("no default model"),
+        })?;
         Ok(match adapter.test_key(&key, &model).await {
             Ok(()) => AiKeyTest {
                 ok: true,
@@ -678,9 +836,7 @@ impl AppState {
         rates: Option<Rates>,
     ) -> Result<Vec<AiModelPrice>, AppError> {
         let model = model.trim();
-        if model.is_empty() || model.len() > 100 || model.contains('/') {
-            return Err(AppError::new("invalid_input", "Nome de modelo inválido."));
-        }
+        check_model(model)?;
         if let Some(r) = &rates {
             check_rates(r)?;
         }

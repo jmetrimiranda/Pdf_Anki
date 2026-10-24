@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn built_in_table_has_every_default_model_with_source_and_date() {
         let t = PriceTable::built_in();
-        for p in ProviderKind::ALL {
+        for p in ProviderKind::FIXED {
             for role in ["enrich", "judge"] {
                 let id = t
                     .default_model(p, role)

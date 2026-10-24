@@ -22,6 +22,7 @@ import {
 } from '../../components/ui';
 import { t, type MessageKey } from '../../i18n';
 import { core } from '../../lib/core/client';
+import { isLocalUrl } from '../../lib/core/localUrl';
 import type {
   AiEffort,
   AiFunctionSettings,
@@ -36,8 +37,14 @@ import { errorMessage } from '../anki/decks/DeckDialogs';
 
 export { aiQ };
 
+interface Destination {
+  domain: string;
+  policy: string | null;
+  note?: MessageKey;
+}
+
 /** Where each provider's calls go and its data policy (shown in the consent dialog). */
-const PROVIDER_INFO: Record<AiProvider, { domain: string; policy: string | null; note?: MessageKey }> = {
+const PROVIDER_INFO: Record<Exclude<AiProvider, 'custom'>, Destination> = {
   anthropic: { domain: 'api.anthropic.com', policy: 'https://www.anthropic.com/legal/privacy' },
   openai: {
     domain: 'api.openai.com',
@@ -55,6 +62,22 @@ const PROVIDER_INFO: Record<AiProvider, { domain: string; policy: string | null;
     note: 'settings.ai.consent.noteDeepseek',
   },
 };
+
+/** The custom provider goes to the user's server: its host, and whether it is this computer. */
+function destination(id: AiProvider, customUrl: string | null): Destination {
+  if (id !== 'custom') return PROVIDER_INFO[id];
+  let domain = customUrl ?? '';
+  try {
+    domain = new URL(domain).host;
+  } catch {
+    // Shown as typed.
+  }
+  return {
+    domain,
+    policy: null,
+    note: isLocalUrl(customUrl) ? 'settings.ai.consent.noteCustomLocal' : 'settings.ai.consent.noteCustomRemote',
+  };
+}
 
 const FEATURE_LABEL: Record<string, MessageKey> = {
   enrich: 'settings.ai.functions.enrich',
@@ -85,10 +108,13 @@ function useSetSettings() {
 
 // ---------------------------------------------------------------- keys
 
-function KeyRow({ provider }: { provider: AiProviderInfo }) {
+function KeyRow({ provider, settings }: { provider: AiProviderInfo; settings: AiSettingsData }) {
   const setSettings = useSetSettings();
   const toast = useToast();
   const [key, setKey] = useState('');
+  const custom = provider.id === 'custom';
+  // A local custom server works without a key: "Testar" checks the connection and the model.
+  const keyless = custom && settings.customLocal;
   const [busy, setBusy] = useState<'save' | 'test' | 'remove' | null>(null);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
 
@@ -121,15 +147,29 @@ function KeyRow({ provider }: { provider: AiProviderInfo }) {
         <KeyRound size={15} aria-hidden className="text-muted" />
         <span className="text-base font-semibold">{provider.label}</span>
         {!provider.available ? (
-          <Badge>{t('settings.ai.keys.soon')}</Badge>
+          custom ? (
+            <span className="text-xs text-muted">{t('settings.ai.custom.noUrl')}</span>
+          ) : (
+            <Badge>{t('settings.ai.keys.soon')}</Badge>
+          )
         ) : (
           <span className="text-xs text-muted" data-testid="ai-key-status">
             {provider.keySuffix
               ? t('settings.ai.keys.suffix', { final: provider.keySuffix })
-              : t('settings.ai.keys.none')}
+              : keyless
+                ? t('settings.ai.custom.keyOptional')
+                : t('settings.ai.keys.none')}
+          </span>
+        )}
+        {custom && settings.customBaseUrl && (
+          <span data-testid="ai-custom-where">
+            <Badge tone={settings.customLocal ? 'neutral' : 'warning'}>
+              {settings.customLocal ? t('settings.ai.custom.local') : t('settings.ai.custom.remote')}
+            </Badge>
           </span>
         )}
       </div>
+      {custom && <CustomUrlForm settings={settings} />}
       {provider.available && (
         <form className="flex flex-wrap items-center gap-2" onSubmit={save}>
           <Input
@@ -145,7 +185,7 @@ function KeyRow({ provider }: { provider: AiProviderInfo }) {
           <Button type="submit" size="sm" variant="primary" disabled={!key.trim()} loading={busy === 'save'}>
             {t('settings.ai.keys.save')}
           </Button>
-          {provider.hasKey && (
+          {(provider.hasKey || keyless) && (
             <>
               <Button
                 type="button"
@@ -163,6 +203,10 @@ function KeyRow({ provider }: { provider: AiProviderInfo }) {
               >
                 {t('settings.ai.keys.test')}
               </Button>
+            </>
+          )}
+          {provider.hasKey && (
+            <>
               <Button
                 type="button"
                 size="sm"
@@ -191,6 +235,87 @@ function KeyRow({ provider }: { provider: AiProviderInfo }) {
   );
 }
 
+/** The custom provider's server. A new URL while a function uses it is a new destination: consent again. */
+function CustomUrlForm({ settings }: { settings: AiSettingsData }) {
+  const setSettings = useSetSettings();
+  const toast = useToast();
+  const [url, setUrl] = useState(settings.customBaseUrl ?? '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  useEffect(() => setUrl(settings.customBaseUrl ?? ''), [settings.customBaseUrl]);
+  const inUse = settings.enrich.provider === 'custom' || settings.judge.provider === 'custom';
+  const custom = settings.providers.find((p) => p.id === 'custom');
+
+  async function apply(next: string | null, consent: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      setSettings(await core.aiSettingsSet({ customBaseUrl: next, ...(consent ? { consent: ['custom'] } : {}) }));
+      toast.show(t(next ? 'settings.ai.custom.saved' : 'settings.ai.custom.removed'), { tone: 'success' });
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+      setConfirming(null);
+    }
+  }
+
+  function save(e: FormEvent) {
+    e.preventDefault();
+    const next = url.trim();
+    if (inUse) setConfirming(next);
+    else void apply(next, false);
+  }
+
+  return (
+    <>
+      <p className="text-xs text-muted">{t('settings.ai.custom.hint')}</p>
+      <form className="flex flex-wrap items-center gap-2" onSubmit={save}>
+        <Input
+          type="url"
+          spellCheck={false}
+          className="w-72 max-w-full"
+          aria-label={t('settings.ai.custom.url')}
+          placeholder="http://localhost:11434/v1"
+          data-testid="ai-custom-url"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+        <Button
+          type="submit"
+          size="sm"
+          variant="primary"
+          disabled={!url.trim() || url.trim().replace(/\/+$/, '') === settings.customBaseUrl}
+          loading={busy}
+        >
+          {t('settings.ai.custom.save')}
+        </Button>
+        {settings.customBaseUrl && (
+          <Button type="button" size="sm" variant="ghost" icon={Trash2} onClick={() => void apply(null, false)}>
+            {t('settings.ai.custom.remove')}
+          </Button>
+        )}
+      </form>
+      {error && (
+        <p role="alert" className="text-xs text-error">
+          {error}
+        </p>
+      )}
+      {confirming !== null && custom && (
+        <ConsentDialog
+          provider={custom}
+          settings={settings}
+          customUrl={confirming}
+          busy={busy}
+          onCancel={() => setConfirming(null)}
+          onActivate={() => void apply(confirming, true)}
+        />
+      )}
+    </>
+  );
+}
+
 function KeysCard({ settings }: { settings: AiSettingsData }) {
   return (
     <Card>
@@ -203,7 +328,7 @@ function KeysCard({ settings }: { settings: AiSettingsData }) {
       )}
       <ul className="divide-y divide-line">
         {settings.providers.map((p) => (
-          <KeyRow key={p.id} provider={p} />
+          <KeyRow key={p.id} provider={p} settings={settings} />
         ))}
       </ul>
     </Card>
@@ -245,17 +370,20 @@ export function SentTable() {
 function ConsentDialog({
   provider,
   settings,
+  customUrl,
   onCancel,
   onActivate,
   busy,
 }: {
   provider: AiProviderInfo;
   settings: AiSettingsData;
+  /** The custom server about to be used (default: the saved one). */
+  customUrl?: string;
   onCancel: () => void;
   onActivate: () => void;
   busy: boolean;
 }) {
-  const info = PROVIDER_INFO[provider.id];
+  const info = destination(provider.id, customUrl ?? settings.customBaseUrl);
   return (
     <Dialog
       open
@@ -316,6 +444,9 @@ function FunctionCard({
   const cap = fn === 'enrich' ? 4000 : 2000;
   const [tokens, setTokens] = useState(String(current.maxOutputTokens));
   useEffect(() => setTokens(String(current.maxOutputTokens)), [current.maxOutputTokens]);
+  const [customModel, setCustomModel] = useState(current.model ?? '');
+  useEffect(() => setCustomModel(current.model ?? ''), [current.model]);
+  const custom = current.provider === 'custom';
 
   async function patch(p: Parameters<typeof core.aiSettingsSet>[0], quiet = false) {
     setBusy(true);
@@ -372,7 +503,33 @@ function FunctionCard({
             </Select>
           )}
         </Field>
-        {current.provider && (
+        {custom && (
+          <form
+            className="flex items-end gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void patch({ [fn]: { model: customModel.trim() || null } });
+            }}
+          >
+            <Field label={t('settings.ai.functions.modelCustom')}>
+              {({ id }) => (
+                <Input
+                  id={id}
+                  data-testid={`ai-custom-model-${fn}`}
+                  spellCheck={false}
+                  className="w-56"
+                  placeholder="llama3.3"
+                  value={customModel}
+                  onChange={(e) => setCustomModel(e.target.value)}
+                />
+              )}
+            </Field>
+            <Button type="submit" size="sm" variant="neutral" disabled={customModel.trim() === (current.model ?? '')}>
+              {t('common.save')}
+            </Button>
+          </form>
+        )}
+        {current.provider && !custom && (
           <Field label={t('settings.ai.functions.model')}>
             {({ id }) => (
               <Select
@@ -399,16 +556,19 @@ function FunctionCard({
       </div>
       {current.provider && (
         <div className="mt-3 flex flex-wrap items-end gap-3">
-          <div className="flex flex-col gap-1">
-            <span className="text-xs text-muted">{t('settings.ai.functions.effort')}</span>
-            <SegmentedControl<AiEffort>
-              label={t('settings.ai.functions.effort')}
-              size="sm"
-              value={current.effort}
-              onChange={(effort) => void patch({ [fn]: { effort } }, true)}
-              options={EFFORTS.map((e) => ({ value: e, label: t(`settings.ai.functions.effort.${e}`) }))}
-            />
-          </div>
+          {/* The custom server gets no reasoning parameter (the common subset only). */}
+          {!custom && (
+            <div className="flex flex-col gap-1">
+              <span className="text-xs text-muted">{t('settings.ai.functions.effort')}</span>
+              <SegmentedControl<AiEffort>
+                label={t('settings.ai.functions.effort')}
+                size="sm"
+                value={current.effort}
+                onChange={(effort) => void patch({ [fn]: { effort } }, true)}
+                options={EFFORTS.map((e) => ({ value: e, label: t(`settings.ai.functions.effort.${e}`) }))}
+              />
+            </div>
+          )}
           <form
             className="flex items-end gap-2"
             onSubmit={(e) => {
@@ -434,9 +594,14 @@ function FunctionCard({
           </form>
         </div>
       )}
-      {providerInfo && !providerInfo.hasKey && (
+      {providerInfo && !providerInfo.hasKey && !(custom && settings.customLocal) && (
         <p className="mt-2 text-xs text-error" role="status">
           {t('settings.ai.functions.needsKey', { provedor: providerInfo.label })}
+        </p>
+      )}
+      {custom && !current.model && (
+        <p className="mt-2 text-xs text-error" role="status">
+          {t('settings.ai.functions.modelMissing')}
         </p>
       )}
       {error && (

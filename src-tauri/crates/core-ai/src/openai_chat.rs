@@ -26,6 +26,9 @@ pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 pub enum Dialect {
     OpenAi,
     DeepSeek,
+    /// Any OpenAI-compatible server at the user's URL: the most widely supported subset only (`json_object`, the
+    /// schema in the prompt, `max_tokens`, no reasoning parameters); no `Authorization` without a key.
+    Compatible,
 }
 
 impl Dialect {
@@ -33,6 +36,7 @@ impl Dialect {
         match self {
             Self::OpenAi => ProviderKind::Openai,
             Self::DeepSeek => ProviderKind::Deepseek,
+            Self::Compatible => ProviderKind::Custom,
         }
     }
 
@@ -40,6 +44,7 @@ impl Dialect {
         match self {
             Self::OpenAi => "GPT",
             Self::DeepSeek => "DeepSeek",
+            Self::Compatible => "URL personalizada",
         }
     }
 }
@@ -57,6 +62,11 @@ impl OpenAiChatProvider {
 
     pub fn deepseek() -> Self {
         Self::with_base_url(Dialect::DeepSeek, DEEPSEEK_BASE_URL)
+    }
+
+    /// The OpenAI-compatible server at `base` (the user's URL).
+    pub fn compatible(base: &str) -> Self {
+        Self::with_base_url(Dialect::Compatible, base)
     }
 
     /// `base` ends where `/chat/completions` and `/models` start (tests: a local server).
@@ -111,7 +121,7 @@ pub fn request_body(dialect: Dialect, req: &CompletionRequest, price: &ModelPric
             }
             body
         }
-        Dialect::DeepSeek => {
+        Dialect::DeepSeek | Dialect::Compatible => {
             // json_object mode: the prompt must ask for JSON and show its shape.
             let system = format!(
                 "{}\n\nResponda só com um objeto JSON que siga este JSON Schema:\n{}",
@@ -126,7 +136,7 @@ pub fn request_body(dialect: Dialect, req: &CompletionRequest, price: &ModelPric
                 "max_tokens": req.max_output_tokens,
                 "response_format": { "type": "json_object" },
             });
-            if price.effort_param == "deepseek" {
+            if dialect == Dialect::DeepSeek && price.effort_param == "deepseek" {
                 if req.effort == Effort::Minimum && price.thinking_off == "disabled" {
                     body["thinking"] = json!({ "type": "disabled" });
                 } else if let Some(l) = level(req.effort, &price.effort_levels, false) {
@@ -289,6 +299,17 @@ struct ModelEntry {
     id: String,
 }
 
+/// `Authorization: Bearer <key>`, or nothing for a keyless local server.
+fn auth(key: &ApiKey) -> reqwest::header::HeaderMap {
+    let mut h = reqwest::header::HeaderMap::new();
+    if !key.is_none()
+        && let Ok(v) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", key.expose()))
+    {
+        h.insert(reqwest::header::AUTHORIZATION, v);
+    }
+    h
+}
+
 impl Provider for OpenAiChatProvider {
     fn kind(&self) -> ProviderKind {
         self.dialect.kind()
@@ -304,7 +325,7 @@ impl Provider for OpenAiChatProvider {
             let resp = self
                 .client
                 .post(format!("{}/chat/completions", self.base))
-                .bearer_auth(key.expose())
+                .headers(auth(key))
                 .json(&request_body(self.dialect, req, price))
                 .send()
                 .await
@@ -322,19 +343,19 @@ impl Provider for OpenAiChatProvider {
         Box::pin(async move {
             let url = match self.dialect {
                 Dialect::OpenAi => format!("{}/models/{model}", self.base),
-                Dialect::DeepSeek => format!("{}/models", self.base),
+                Dialect::DeepSeek | Dialect::Compatible => format!("{}/models", self.base),
             };
             let resp = self
                 .client
                 .get(url)
-                .bearer_auth(key.expose())
+                .headers(auth(key))
                 .send()
                 .await
                 .map_err(|e| http::transport_error(&e))?;
             if !resp.status().is_success() {
                 return Err(error_from(self.dialect, resp, model).await);
             }
-            if self.dialect == Dialect::DeepSeek {
+            if self.dialect != Dialect::OpenAi {
                 let list: ModelList = resp.json().await.map_err(|_| AiError::InvalidOutput)?;
                 if !list.data.iter().any(|m| m.id == model) {
                     return Err(AiError::ModelNotFound(model.to_owned()));
@@ -402,6 +423,18 @@ mod tests {
             flash,
         );
         assert_eq!(b["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn compatible_servers_get_the_common_subset() {
+        let t = PriceTable::built_in();
+        let any = t.get(ProviderKind::Deepseek, "deepseek-flash").unwrap();
+        let b = request_body(Dialect::Compatible, &req("llama3.3", Effort::Minimum), any);
+        assert_eq!(b["response_format"]["type"], "json_object");
+        assert!(b.get("thinking").is_none() && b.get("reasoning_effort").is_none());
+        assert_eq!(b["max_tokens"], 2000);
+        assert!(auth(&ApiKey::none()).is_empty());
+        assert!(auth(&ApiKey::new("test-key-x").unwrap()).contains_key("authorization"));
     }
 
     #[test]

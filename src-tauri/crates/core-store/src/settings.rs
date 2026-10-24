@@ -63,6 +63,8 @@ pub mod keys {
     pub const AI_BACKGROUND_PAUSED: &str = "ai_background_paused";
     /// Providers the user agreed to send data to: `{"<provider>": <epoch ms>}`.
     pub const AI_CONSENT: &str = "ai_consent";
+    /// The OpenAI-compatible server of the "custom" provider (e.g. `http://localhost:11434/v1`).
+    pub const AI_BASE_URL: &str = "ai_base_url";
     /// Library sync (spec 16): the server, the library user and this device's name. The token is in the keychain.
     pub const LIBRARY_SYNC_URL: &str = "library_sync_url";
     pub const LIBRARY_SYNC_USER: &str = "library_sync_user";
@@ -116,7 +118,7 @@ fn empty_object() -> Value {
 }
 
 /// AI providers with an adapter (`core-ai`).
-const AI_PROVIDERS: &[&str] = &["anthropic", "openai", "gemini", "deepseek"];
+const AI_PROVIDERS: &[&str] = &["anthropic", "openai", "gemini", "deepseek", "custom"];
 /// `core_ai::Effort`.
 const AI_EFFORTS: &[&str] = &["minimum", "low", "medium", "high"];
 
@@ -232,6 +234,7 @@ const SPECS: &[Spec] = &[
     spec(AI_BACKGROUND_ENRICH, Kind::Bool, false, || false.into()),
     spec(AI_BACKGROUND_PAUSED, Kind::Bool, false, || false.into()),
     spec(AI_CONSENT, Kind::Object, false, empty_object),
+    spec(AI_BASE_URL, Kind::Text, true, null),
     spec(LIBRARY_SYNC_URL, Kind::Text, true, null),
     spec(LIBRARY_SYNC_USER, Kind::Text, true, null),
     spec(LIBRARY_SYNC_DEVICE, Kind::Text, true, null),

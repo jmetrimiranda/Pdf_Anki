@@ -89,7 +89,12 @@ fn ai_is_off_by_default_and_needs_consent_per_activation() {
         (claude.id, claude.available, claude.has_key),
         (ProviderKind::Anthropic, true, false)
     );
-    assert!(s.providers.iter().all(|p| p.available), "the four adapters");
+    assert!(
+        s.providers
+            .iter()
+            .all(|p| p.available == (p.id != ProviderKind::Custom)),
+        "the four adapters; the custom URL only once it is set"
+    );
 
     // Activating without the dialog's consent is refused; with it, the default model applies.
     let e = state
@@ -300,7 +305,7 @@ fn prices_can_be_edited_restored_and_added() {
     );
     assert!(
         state
-            .ai_prices_set(ProviderKind::Anthropic, "a/b", Some(rates))
+            .ai_prices_set(ProviderKind::Anthropic, "a b", Some(rates))
             .is_err()
     );
 }
@@ -554,4 +559,245 @@ fn caps_confirmation_and_missing_key_stop_the_call_before_it_leaves() {
         .block_on(state.ai_judge_code(judge_request(), true))
         .unwrap_err();
     assert_eq!(e.code, "ai_disabled");
+}
+
+type Calls = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
+/// An OpenAI-compatible server on this computer (Ollama, LM Studio): `/v1/models` and `/v1/chat/completions`;
+/// records path and `Authorization`.
+fn compatible_server(rt: &tokio::runtime::Runtime, content: &'static str) -> (String, Calls) {
+    let calls: Calls = Arc::default();
+    let c = calls.clone();
+    let app = Router::new().fallback(move |uri: Uri, headers: HeaderMap| {
+        let c = c.clone();
+        async move {
+            let auth = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            c.lock().unwrap().push((uri.path().to_owned(), auth));
+            let body = if uri.path().ends_with("/models") {
+                r#"{"object":"list","data":[{"id":"llama3.3","object":"model"}]}"#.to_owned()
+            } else {
+                serde_json::json!({
+                    "id": "chatcmpl-1",
+                    "object": "chat.completion",
+                    "choices": [{
+                        "index": 0,
+                        "message": { "role": "assistant", "content": content },
+                        "finish_reason": "stop",
+                    }],
+                    "usage": { "prompt_tokens": 400, "completion_tokens": 90, "total_tokens": 490 },
+                })
+                .to_string()
+            };
+            (StatusCode::OK, body).into_response()
+        }
+    });
+    let listener = rt
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    rt.spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}/v1"), calls)
+}
+
+fn custom_url(url: Option<&str>) -> AiSettingsPatch {
+    AiSettingsPatch {
+        custom_base_url: Some(url.map(str::to_owned)),
+        ..AiSettingsPatch::default()
+    }
+}
+
+fn judge_custom(model: Option<&str>, consent: bool) -> AiSettingsPatch {
+    AiSettingsPatch {
+        judge: Some(AiFunctionPatch {
+            provider: Some(Some(ProviderKind::Custom)),
+            model: model.map(|m| Some(m.to_owned())),
+            ..AiFunctionPatch::default()
+        }),
+        consent: if consent {
+            vec![ProviderKind::Custom]
+        } else {
+            Vec::new()
+        },
+        ..AiSettingsPatch::default()
+    }
+}
+
+#[test]
+fn custom_url_on_this_computer_is_free_keyless_and_outside_the_caps() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = Arc::new(state(dir.path()).0);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (base, calls) = compatible_server(
+        &rt,
+        r#"{"veredito":"quase","explicacao":"Faltou o sudo.","nota_sugerida":2}"#,
+    );
+
+    // No URL yet: the provider can't be chosen.
+    let e = state.ai_settings_set(judge_custom(None, true)).unwrap_err();
+    assert_eq!(e.code, "ai_provider_unavailable");
+    // Plain http only on this computer; no credentials in the URL.
+    for bad in [
+        "http://example.com/v1",
+        "https://u:p@example.com/v1",
+        "localhost:11434",
+    ] {
+        let e = state.ai_settings_set(custom_url(Some(bad))).unwrap_err();
+        assert_eq!(e.code, "invalid_input", "{bad}");
+    }
+
+    let s = state
+        .ai_settings_set(custom_url(Some(&format!("{base}/"))))
+        .unwrap();
+    assert_eq!(s.custom_base_url.as_deref(), Some(base.as_str()));
+    assert!(s.custom_local);
+    let custom = s
+        .providers
+        .iter()
+        .find(|p| p.id == ProviderKind::Custom)
+        .unwrap();
+    assert!(custom.available && !custom.has_key);
+
+    // Consent, then a model of the user's (no default model, no price needed here).
+    assert_eq!(
+        state
+            .ai_settings_set(judge_custom(None, false))
+            .unwrap_err()
+            .code,
+        "ai_consent_required"
+    );
+    let s = state.ai_settings_set(judge_custom(None, true)).unwrap();
+    assert_eq!(s.judge.effective_model, None);
+    let e = rt
+        .block_on(state.ai_judge_code(judge_request(), false))
+        .unwrap_err();
+    assert_eq!(e.code, "ai_model_missing");
+    let s = state
+        .ai_settings_set(AiSettingsPatch {
+            judge: Some(AiFunctionPatch {
+                model: Some(Some("llama3.3".into())),
+                ..AiFunctionPatch::default()
+            }),
+            // Caps that would stop any paid call.
+            limit_day_usd: Some(0.0),
+            confirm_above_usd: Some(0.0),
+            ..AiSettingsPatch::default()
+        })
+        .unwrap();
+    assert_eq!(s.judge.effective_model.as_deref(), Some("llama3.3"));
+
+    // "Testar" without a key: the model list, no Authorization.
+    let t = rt
+        .block_on(state.ai_key_test(ProviderKind::Custom))
+        .unwrap();
+    assert!(t.ok, "{t:?}");
+
+    let r = rt
+        .block_on(state.ai_judge_code(judge_request(), false))
+        .unwrap();
+    assert_eq!(r.nota_sugerida, 2);
+    let calls_now = calls.lock().unwrap().clone();
+    assert_eq!(
+        calls_now,
+        vec![
+            ("/v1/models".to_owned(), None),
+            ("/v1/chat/completions".to_owned(), None)
+        ]
+    );
+    let usage = state.ai_usage().unwrap();
+    assert_eq!(usage.day_usd, 0.0);
+    assert_eq!(usage.day[0].provider, "custom");
+
+    // With a key, it goes as a Bearer token.
+    state
+        .ai_key_set(ProviderKind::Custom, "test-key-local-LOCL")
+        .unwrap();
+    rt.block_on(state.ai_judge_code(judge_request(), false))
+        .unwrap();
+    assert_eq!(
+        calls.lock().unwrap().last().unwrap().1.as_deref(),
+        Some("Bearer test-key-local-LOCL")
+    );
+
+    // A new URL is a new destination: consent again. No URL: the function turns off.
+    let mut moved = custom_url(Some("http://127.0.0.1:9/v1"));
+    assert_eq!(
+        state.ai_settings_set(moved.clone()).unwrap_err().code,
+        "ai_consent_required"
+    );
+    moved.consent = vec![ProviderKind::Custom];
+    let s = state.ai_settings_set(moved).unwrap();
+    assert_eq!(s.judge.provider, Some(ProviderKind::Custom));
+    let s = state.ai_settings_set(custom_url(None)).unwrap();
+    assert_eq!((s.judge.provider, s.custom_base_url), (None, None));
+}
+
+#[test]
+fn a_remote_custom_url_needs_a_price_and_a_key_and_counts_against_the_caps() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = Arc::new(state(dir.path()).0);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let sim = Arc::new(core_ai::simulated::SimulatedProvider::new(
+        ProviderKind::Custom,
+        vec![answer(
+            r#"{"veredito":"quase","explicacao":"Faltou o sudo.","nota_sugerida":2}"#,
+        )],
+    ));
+    state.ai_hub().set_provider(sim.clone());
+    let s = state
+        .ai_settings_set(custom_url(Some("https://llm.example.com/v1")))
+        .unwrap();
+    assert!(!s.custom_local);
+
+    // Without its price the model is refused (OpenRouter-style names have a '/').
+    let e = state
+        .ai_settings_set(judge_custom(Some("org/model-x"), true))
+        .unwrap_err();
+    assert_eq!(e.code, "ai_model_unpriced");
+    let prices = state
+        .ai_prices_set(
+            ProviderKind::Custom,
+            "org/model-x",
+            Some(Rates {
+                input: 1.0,
+                cached_input: None,
+                cache_write: None,
+                output: 2.0,
+            }),
+        )
+        .unwrap();
+    assert!(
+        prices
+            .iter()
+            .any(|p| p.provider == "custom" && p.model == "org/model-x" && p.input == 1.0)
+    );
+    state
+        .ai_settings_set(judge_custom(Some("org/model-x"), true))
+        .unwrap();
+
+    let e = rt
+        .block_on(state.ai_judge_code(judge_request(), false))
+        .unwrap_err();
+    assert_eq!(e.code, "ai_no_key");
+    state
+        .ai_key_set(ProviderKind::Custom, "test-key-remote-RMTE")
+        .unwrap();
+    rt.block_on(state.ai_judge_code(judge_request(), false))
+        .unwrap();
+    assert_eq!(sim.calls(), 1);
+    assert!(state.ai_usage().unwrap().day_usd > 0.0);
+
+    state
+        .ai_settings_set(AiSettingsPatch {
+            limit_day_usd: Some(0.000_001),
+            ..AiSettingsPatch::default()
+        })
+        .unwrap();
+    let e = rt
+        .block_on(state.ai_judge_code(judge_request(), true))
+        .unwrap_err();
+    assert_eq!(e.code, "ai_limit_reached");
+    assert_eq!(sim.calls(), 1);
 }

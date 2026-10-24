@@ -10,6 +10,7 @@ import {
   type AiCardProposal,
   type AiEffort,
   type AiEstimate,
+  type AiFunctionPatch,
   type AiFunctionSettings,
   type AiJudgeRequest,
   type AiJudgeResult,
@@ -27,6 +28,7 @@ import {
   type Unlisten,
   type VocabPos,
 } from '../types';
+import { isLocalUrl } from '../localUrl';
 import { ankiState, later, listenTo, logAnki, persistAnki } from './ankiData';
 import { addJob, emitJob, type MockJob } from './jobs';
 
@@ -37,9 +39,32 @@ const PROVIDERS: { id: AiProvider; label: string }[] = [
   { id: 'openai', label: 'GPT (OpenAI)' },
   { id: 'gemini', label: 'Gemini (Google)' },
   { id: 'deepseek', label: 'DeepSeek' },
+  { id: 'custom', label: 'Compatível com OpenAI (URL personalizada)' },
 ];
-/** Providers with an adapter in this version (like `core_ai::provider_for`). */
+/** Providers with an adapter in this version (like `core_ai::provider_for`); `custom` once its URL is set. */
 const AVAILABLE: AiProvider[] = ['anthropic', 'openai', 'gemini', 'deepseek'];
+
+const available = (p: AiProvider) => AVAILABLE.includes(p) || (p === 'custom' && st().customBaseUrl !== null);
+
+/** Like `core_ai::check_base_url`. */
+function checkBaseUrl(raw: string): string {
+  const invalid = 'Endereço inválido: use algo como http://localhost:11434/v1 ou https://servidor/v1.';
+  const text = raw.trim().replace(/\/+$/, '');
+  if (!text || text.length > 300 || /\s/.test(text)) throw err.invalid(invalid);
+  let u: URL;
+  try {
+    u = new URL(text);
+  } catch {
+    throw err.invalid(invalid);
+  }
+  if ((u.protocol !== 'http:' && u.protocol !== 'https:') || !u.hostname || u.username || u.password || u.search || u.hash)
+    throw err.invalid(invalid);
+  if (u.protocol === 'http:' && !isLocalUrl(text))
+    throw err.invalid('Um servidor remoto precisa de https (a chave vai junto em cada chamada).');
+  return text;
+}
+
+const customLocal = () => isLocalUrl(st().customBaseUrl);
 
 // ---------------------------------------------------------------- price table (model-prices.toml)
 
@@ -107,6 +132,8 @@ interface MockAiState {
   backgroundEnrich: boolean;
   backgroundPaused: boolean;
   consent: Record<string, number>;
+  /** The custom provider's OpenAI-compatible server. */
+  customBaseUrl: string | null;
   /** Provider → the key's last 4 characters (the mock keeps no key). */
   keys: Record<string, string>;
   priceEdits: Record<string, AiRates & { editedAt: string }>;
@@ -128,6 +155,7 @@ function fresh(): MockAiState {
     backgroundEnrich: false,
     backgroundPaused: false,
     consent: {},
+    customBaseUrl: null,
     keys: {},
     priceEdits: {},
     usage: [],
@@ -141,6 +169,7 @@ function fresh(): MockAiState {
 function st(): MockAiState {
   const s = ankiState() as ReturnType<typeof ankiState> & { ai?: MockAiState };
   s.ai ??= fresh();
+  s.ai.customBaseUrl ??= null;
   return s.ai;
 }
 
@@ -159,7 +188,14 @@ const err = {
   noKey: (p: AiProvider) =>
     new CoreError('ai_no_key', `Falta a chave do provedor ${label(p)}. Adicione-a em Configurações → IA.`),
   unavailable: (p: AiProvider) =>
-    new CoreError('ai_provider_unavailable', `${label(p)} chega numa próxima versão do app.`),
+    p === 'custom'
+      ? new CoreError(
+          'ai_provider_unavailable',
+          'Informe o endereço do servidor (URL personalizada) em Configurações → IA.',
+        )
+      : new CoreError('ai_provider_unavailable', `${label(p)} chega numa próxima versão do app.`),
+  modelMissing: () =>
+    new CoreError('ai_model_missing', 'Informe o modelo do servidor (URL personalizada) em Configurações → IA.'),
   consent: (p: AiProvider) =>
     new CoreError('ai_consent_required', `Confirme o que será enviado para ${label(p)} antes de ativá-lo.`),
   unpriced: (m: string) =>
@@ -199,7 +235,8 @@ function table(): AiModelPrice[] {
     };
   });
   for (const [key, edit] of Object.entries(s.priceEdits)) {
-    const [provider, model] = key.split('/') as [string, string];
+    const at = key.indexOf('/');
+    const [provider, model] = [key.slice(0, at), key.slice(at + 1)];
     if (rows.some((r) => r.provider === provider && r.model === model)) continue;
     rows.push({
       provider,
@@ -287,21 +324,42 @@ interface Target {
   price: AiModelPrice;
   maxOutputTokens: number;
   effort: AiEffort;
+  /** A custom server on this computer: free, outside the caps, the key optional. */
+  local: boolean;
+}
+
+function freePrice(model: string): AiModelPrice {
+  return {
+    provider: 'custom',
+    model,
+    roleDefault: null,
+    checkedAt: new Date().toISOString().slice(0, 10),
+    source: null,
+    input: 0,
+    cachedInput: null,
+    output: 0,
+    hasTiers: false,
+    edited: false,
+    stale: false,
+  };
 }
 
 /** Like `AppState::ai_target`: off, missing adapter, missing key or price stop here (no "connection"). */
 function target(f: 'enrich' | 'judge'): Target {
   const fs = fnSettings(f);
-  if (!fs.provider || !fs.effectiveModel) throw err.disabled();
-  if (!AVAILABLE.includes(fs.provider)) throw err.unavailable(fs.provider);
-  const p = price(fs.provider, fs.effectiveModel);
-  if (!st().keys[fs.provider]) throw err.noKey(fs.provider);
+  if (!fs.provider) throw err.disabled();
+  if (!available(fs.provider)) throw err.unavailable(fs.provider);
+  if (!fs.effectiveModel) throw fs.provider === 'custom' ? err.modelMissing() : err.disabled();
+  const local = fs.provider === 'custom' && customLocal();
+  const p = local ? freePrice(fs.effectiveModel) : price(fs.provider, fs.effectiveModel);
+  if (!st().keys[fs.provider] && !local) throw err.noKey(fs.provider);
   return {
     provider: fs.provider,
     model: fs.effectiveModel,
     price: p,
     maxOutputTokens: fs.maxOutputTokens,
     effort: fs.effort,
+    local,
   };
 }
 
@@ -338,7 +396,7 @@ function bill(t: Target, feature: string, worst: number): void {
 
 function call(t: Target, feature: string, dataChars: number, confirmed: boolean | 'background'): void {
   const worst = worstCase(t, dataChars);
-  reserve(worst, confirmed);
+  if (!t.local) reserve(worst, confirmed);
   bill(t, feature, worst);
 }
 
@@ -609,7 +667,7 @@ function queueStep(): 'idle' | 'worked' | 'wait' {
     return 'idle';
   }
   try {
-    reserve(worst, 'background');
+    if (!t.local) reserve(worst, 'background');
     bill(t, 'enrich', worst);
   } catch (e) {
     s.status = (e as CoreError).message;
@@ -659,6 +717,11 @@ export function mockAiEnqueue(noteId: number, lemma: string | null, pos: string,
 
 // ---------------------------------------------------------------- client
 
+/** A model name (`/` is fine: OpenRouter's `meta-llama/llama-3.3-70b`). */
+function checkModel(model: string): void {
+  if (!model || model.length > 100 || /\s/.test(model)) throw err.invalid('Nome de modelo inválido.');
+}
+
 function checkKey(raw: string): string {
   const key = raw.trim();
   if (!key) throw err.invalid('Cole a chave do provedor.');
@@ -679,11 +742,13 @@ function settings(): AiSettings {
     providers: PROVIDERS.map((p) => ({
       id: p.id,
       label: p.label,
-      available: AVAILABLE.includes(p.id),
+      available: available(p.id),
       hasKey: !!s.keys[p.id],
       keySuffix: s.keys[p.id] ?? null,
     })),
     keychainAvailable: true,
+    customBaseUrl: s.customBaseUrl,
+    customLocal: customLocal(),
   });
 }
 
@@ -696,19 +761,31 @@ export function createAiMock(): Pick<CoreClient, AiMockKeys> {
       later(() => {
         const s = st();
         const next = structuredClone(s);
+        const newUrl =
+          patch.customBaseUrl === undefined ? undefined : patch.customBaseUrl && checkBaseUrl(patch.customBaseUrl);
+        const urlChanged = newUrl !== undefined && newUrl !== s.customBaseUrl;
+        const baseUrl = newUrl === undefined ? s.customBaseUrl : newUrl;
         for (const f of ['enrich', 'judge'] as const) {
-          const p = patch[f];
-          if (!p) continue;
           const cur = s[f];
-          const provider = p.provider !== undefined ? p.provider : cur.provider;
+          const customNow = cur.provider === 'custom';
+          // Without its URL the custom provider turns off; a new URL is checked like a new provider.
+          const p: AiFunctionPatch | undefined =
+            patch[f] ?? (customNow && !baseUrl ? { provider: null } : customNow && urlChanged ? {} : undefined);
+          if (!p) continue;
+          let provider = p.provider !== undefined ? p.provider : cur.provider;
+          if (provider === 'custom' && !baseUrl && customNow) provider = null;
           const changed = provider !== cur.provider;
+          const moved = !changed && urlChanged && provider === 'custom';
+          if (moved && !patch.consent?.includes('custom')) throw err.consent('custom');
           if (provider && changed) {
-            if (!AVAILABLE.includes(provider)) throw err.unavailable(provider);
+            const ok = AVAILABLE.includes(provider) || (provider === 'custom' && !!baseUrl);
+            if (!ok) throw err.unavailable(provider);
             if (!patch.consent?.includes(provider)) throw err.consent(provider);
           }
           const model =
             p.model !== undefined ? (p.model?.trim() || null) : changed ? null : cur.model;
-          if (provider && model) price(provider, model);
+          if (model) checkModel(model);
+          if (provider && model && !(provider === 'custom' && isLocalUrl(baseUrl))) price(provider, model);
           const max = p.maxOutputTokens ?? cur.maxOutputTokens;
           const cap = f === 'enrich' ? 4000 : 2000;
           if (max < 500 || max > cap) throw err.setting(`Valor inválido: o máximo é ${cap}.`);
@@ -722,6 +799,7 @@ export function createAiMock(): Pick<CoreClient, AiMockKeys> {
         }
         if (patch.backgroundEnrich !== undefined) next.backgroundEnrich = patch.backgroundEnrich;
         if (patch.backgroundPaused !== undefined) next.backgroundPaused = patch.backgroundPaused;
+        if (newUrl !== undefined) next.customBaseUrl = newUrl;
         for (const p of patch.consent ?? []) next.consent[p] = Date.now();
         Object.assign(s, next);
         save();
@@ -743,11 +821,12 @@ export function createAiMock(): Pick<CoreClient, AiMockKeys> {
       }),
     aiKeyTest: (provider) =>
       later(() => {
-        if (!AVAILABLE.includes(provider)) throw err.unavailable(provider);
+        if (!available(provider)) throw err.unavailable(provider);
         const suffix = st().keys[provider];
-        if (!suffix) throw err.noKey(provider);
+        if (!suffix && !(provider === 'custom' && customLocal())) throw err.noKey(provider);
         const fs = (['enrich', 'judge'] as const).map(fnSettings).find((f) => f.provider === provider);
-        const model = fs?.effectiveModel ?? defaultModel(provider, 'enrich') ?? '';
+        const model = fs?.effectiveModel ?? defaultModel(provider, 'enrich');
+        if (!model) throw err.modelMissing();
         // e2e: a key ending in "0000" is refused.
         if (suffix === '0000')
           return {
@@ -762,7 +841,7 @@ export function createAiMock(): Pick<CoreClient, AiMockKeys> {
     aiPricesSet: (provider, model, rates) =>
       later(() => {
         const m = model.trim();
-        if (!m || m.length > 100 || m.includes('/')) throw err.invalid('Nome de modelo inválido.');
+        checkModel(m);
         const key = `${provider}/${m}`;
         if (rates) {
           const ok = (x: number | null | undefined) => x == null || (Number.isFinite(x) && x >= 0 && x <= 10_000);
@@ -813,7 +892,7 @@ export function createAiMock(): Pick<CoreClient, AiMockKeys> {
           cached,
           toSend,
           needsConfirmation: worst > st().confirmAboveUsd,
-          state: budgetState(worst),
+          state: t.local ? 'ok' : budgetState(worst),
           provider: t.provider,
           model: t.model,
         };

@@ -8,6 +8,9 @@ Como a IA do Leitor funciona por dentro. Plano e decisões: `docs/planos/fase-8.
 |---|---|
 | Interface única de provedor | `src-tauri/crates/core-ai/src/provider.rs` |
 | Adaptador do Claude | `core-ai/src/anthropic.rs` (`API_VERSION = "2026-10-21"`) |
+| GPT, DeepSeek e URL personalizada | `core-ai/src/openai_chat.rs` (Chat Completions; dialetos `OpenAi`, `DeepSeek`, `Compatible`) |
+| Gemini | `core-ai/src/gemini.rs` (Interactions API) |
+| URL personalizada: validação e "local" | `core-ai/src/lib.rs` (`check_base_url`, `is_local_url`); adaptador criado a partir de `ai_base_url` em `app/src/ai.rs` (`AiHub::adapter`) |
 | Preços | `core-ai/model-prices.toml` (embutido com `include_str!`; edições do usuário na configuração `ai_price_overrides`) |
 | Tetos e reservas | `core-ai/src/limits.rs` (`Budget`: decisão e reserva sob um só lock) |
 | Uma chamada de ponta a ponta | `core-ai/src/engine.rs` (`Engine::call`, `Engine::structured`) |
@@ -34,6 +37,17 @@ Como a IA do Leitor funciona por dentro. Plano e decisões: `docs/planos/fase-8.
    (`estimated = 1`). Erros de rede/autenticação não são cobrados.
 5. `Engine::structured`: JSON validado (`prompts::validate_*`); inválido → uma nova tentativa com o erro; cortado
    no teto → uma nova tentativa no esforço mínimo; depois disso, `ai_invalid_output`/`ai_truncated`.
+
+## URL personalizada
+
+- Qualquer servidor compatível com a API da OpenAI (Ollama, LM Studio, OpenRouter, Groq). A URL termina onde
+  começam `/chat/completions` e `/models` (ex.: `http://localhost:11434/v1`).
+- Neste computador (`localhost`, loopback): `ai_target` usa preço zero e tetos infinitos (nem confirmação), chave
+  opcional (`ApiKey::none()` → sem `Authorization`). Remota: só `https`, preço do modelo obrigatório (adicionado em
+  "Preços" com o provedor "Compatível com OpenAI") e chave obrigatória; conta nos tetos como os outros.
+- Sem modelo padrão: a função guarda o nome digitado; sem ele, `ai_model_missing`.
+- Trocar a URL com o provedor em uso pede `consent: ["custom"]` no mesmo patch; `customBaseUrl: null` desliga as
+  funções que o usavam.
 
 ## Chaves
 

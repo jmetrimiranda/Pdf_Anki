@@ -281,8 +281,14 @@ Plano: `docs/planos/fase-8.md` (com as respostas do usuário de 24/10/2026). Ord
     avaliação da IA" na revisão de código, "Definir com IA" nos dois popovers, IA no "Gerar deck", "Criar cards com
     IA". Mock com as mesmas regras e a tabela de preços do repositório. Vitest 964, Playwright `ai.spec.ts` e os
     fluxos alterados (Chromium + WebKit). Capturas em `docs/capturas/fase-8/`.
-- ⬜ Passo 3 — GPT (Chat Completions), DeepSeek (mesmo adaptador), Gemini (Interactions API), URL compatível com
-  OpenAI (local = custo zero; remota só com preço informado).
+- ✅ Passo 3 — os outros provedores, um commit cada (24/10/2026):
+  - GPT (Chat Completions, `json_schema` estrito, `store: false`, tier padrão) e DeepSeek (mesmo adaptador,
+    `json_object` com o schema no prompt, raciocínio desligado no mínimo); Gemini pela Interactions API nativa.
+    Respostas gravadas em `core-ai/tests/recorded/{openai,deepseek,gemini}/`.
+  - URL compatível com OpenAI: local (localhost/loopback) = custo zero, fora dos tetos, chave opcional; remota só
+    `https`, com chave e depois de informado o preço do modelo; trocar a URL em uso pede consentimento de novo;
+    remover a URL desliga as funções. Testes: `tests/ai.rs` (servidor compatível local sem chave e remoto
+    simulado), `mock/ai.test.ts`, `AiSettings.test.tsx`.
 - 🔶 Verificação manual com as chaves reais (plano 7.3): fica com o usuário.
 
 ## Fase 9 — Sincronização entre PCs Linux (9a)

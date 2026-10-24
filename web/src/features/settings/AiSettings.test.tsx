@@ -122,4 +122,51 @@ describe('Configurações → IA', () => {
     await waitFor(() => expect(within(haiku).queryByText('editado')).toBeNull());
     fireEvent.click(screen.getByText('O que é enviado'));
   });
+
+  it('the custom URL: local is free and keyless, a new URL asks again, removing it turns the function off', async () => {
+    const user = userEvent.setup();
+    const set = vi.spyOn(mockClient, 'aiSettingsSet');
+    await open();
+    const row = screen.getByTestId('ai-key-custom');
+    expect(within(row).getByText('sem endereço')).toBeTruthy();
+    const url = within(row).getByTestId('ai-custom-url') as HTMLInputElement;
+    await user.type(url, 'http://example.com/v1');
+    await user.click(within(row).getByRole('button', { name: 'Salvar endereço' }));
+    expect(await within(row).findByText(/precisa de https/)).toBeTruthy();
+    await user.clear(url);
+    await user.type(url, 'http://localhost:11434/v1/');
+    await user.click(within(row).getByRole('button', { name: 'Salvar endereço' }));
+    expect(await within(row).findByTestId('ai-custom-where')).toBeTruthy();
+    expect(within(row).getByTestId('ai-custom-where').textContent).toBe('neste computador · sem custo');
+    expect(within(row).getByTestId('ai-key-status').textContent).toBe('chave opcional');
+
+    const card = screen.getByTestId('ai-function-judge');
+    await user.selectOptions(within(card).getByTestId('ai-provider-judge'), 'custom');
+    const dialog = await screen.findByRole('dialog', { name: 'Ativar Compatível com OpenAI (URL personalizada)?' });
+    expect(within(dialog).getByText(/localhost:11434/)).toBeTruthy();
+    expect(within(dialog).getByTestId('ai-consent-note').textContent).toContain('não sai da máquina');
+    await user.click(within(dialog).getByTestId('ai-consent-activate'));
+    expect(await within(card).findByText('Informe o modelo do servidor para usar esta função.')).toBeTruthy();
+    expect(within(card).queryByText(/Falta a chave/)).toBeNull();
+    expect(within(card).queryByText('Esforço de raciocínio')).toBeNull();
+    const model = within(card).getByTestId('ai-custom-model-judge');
+    await user.type(model, 'llama3.3');
+    await user.click(within(model.closest('form')!).getByRole('button', { name: 'Salvar' }));
+    await waitFor(async () => expect((await mockClient.aiSettingsGet()).judge.model).toBe('llama3.3'));
+    await user.click(within(row).getByRole('button', { name: 'Testar chave' }));
+    expect(await within(row).findByText('Chave válida (modelo llama3.3).')).toBeTruthy();
+
+    // A new URL while in use: the dialog again, for the new host.
+    await user.clear(url);
+    await user.type(url, 'http://127.0.0.1:1234/v1');
+    await user.click(within(row).getByRole('button', { name: 'Salvar endereço' }));
+    const again = await screen.findByRole('dialog');
+    expect(within(again).getByText(/127\.0\.0\.1:1234/)).toBeTruthy();
+    await user.click(within(again).getByTestId('ai-consent-activate'));
+    await waitFor(() =>
+      expect(set).toHaveBeenLastCalledWith({ customBaseUrl: 'http://127.0.0.1:1234/v1', consent: ['custom'] }),
+    );
+    await user.click(within(row).getByRole('button', { name: 'Remover endereço' }));
+    await waitFor(async () => expect((await mockClient.aiSettingsGet()).judge.provider).toBeNull());
+  });
 });

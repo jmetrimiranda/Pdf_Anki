@@ -140,4 +140,37 @@ describe('mock AI', () => {
     expect([q.paused, q.pending]).toEqual([true, 1]);
     expect(q.status).toContain('pausada');
   });
+
+  it('a custom URL: local is free, keyless and outside the caps; remote needs https, a price and a key', async () => {
+    expect(await code(mockClient.aiSettingsSet({ judge: { provider: 'custom' }, consent: ['custom'] }))).toBe(
+      'ai_provider_unavailable',
+    );
+    expect(await code(mockClient.aiSettingsSet({ customBaseUrl: 'http://example.com/v1' }))).toBe('invalid_input');
+    const s = await mockClient.aiSettingsSet({ customBaseUrl: 'http://localhost:11434/v1/' });
+    expect([s.customBaseUrl, s.customLocal]).toEqual(['http://localhost:11434/v1', true]);
+    await mockClient.aiSettingsSet({ judge: { provider: 'custom' }, consent: ['custom'] });
+    expect(await code(mockClient.aiJudgeCode(judge, false))).toBe('ai_model_missing');
+    await mockClient.aiSettingsSet({ judge: { model: 'llama3.3' }, limitDayUsd: 0, confirmAboveUsd: 0 });
+    expect((await mockClient.aiJudgeCode(judge, false)).veredito).toBe('quase');
+    expect((await mockClient.aiUsage()).dayUsd).toBe(0);
+
+    // A new URL while in use asks again; a remote one needs a price, then a key, and counts against the caps.
+    expect(await code(mockClient.aiSettingsSet({ customBaseUrl: 'https://llm.example.com/v1' }))).toBe(
+      'ai_consent_required',
+    );
+    expect(
+      await code(mockClient.aiSettingsSet({ customBaseUrl: 'https://llm.example.com/v1', consent: ['custom'] })),
+    ).toBe('ai_model_unpriced');
+    await mockClient.aiPricesSet('custom', 'llama3.3', { input: 1, output: 2 });
+    await mockClient.aiSettingsSet({ customBaseUrl: 'https://llm.example.com/v1', consent: ['custom'], limitDayUsd: 1 });
+    expect(await code(mockClient.aiJudgeCode(judge, true))).toBe('ai_no_key');
+    await mockClient.aiKeySet('custom', 'test-key-custom-RMTE');
+    await mockClient.aiJudgeCode(judge, true);
+    expect((await mockClient.aiUsage()).dayUsd).toBeGreaterThan(0);
+    await mockClient.aiPricesSet('custom', 'org/model-x', { input: 1, output: 2 });
+    expect((await mockClient.aiPricesGet()).some((p) => p.model === 'org/model-x')).toBe(true);
+
+    const off = await mockClient.aiSettingsSet({ customBaseUrl: null });
+    expect([off.judge.provider, off.customBaseUrl]).toEqual([null, null]);
+  });
 });

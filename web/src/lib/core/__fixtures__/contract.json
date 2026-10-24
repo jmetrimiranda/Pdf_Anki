@@ -75,6 +75,8 @@
     "backgroundEnrich",
     "backgroundPaused",
     "confirmAboveUsd",
+    "customBaseUrl",
+    "customLocal",
     "enrich",
     "judge",
     "keychainAvailable",
