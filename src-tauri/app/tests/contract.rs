@@ -356,6 +356,7 @@ fn serde_shapes_match_the_ts_contract() {
     code_samples(&state, &info, &mut out);
     state.shutdown();
     vocab_samples(&mut out);
+    ai_samples(&mut out);
 
     for required in [
         "StudyNext.card",
@@ -435,6 +436,19 @@ fn serde_shapes_match_the_ts_contract() {
         "OcrInfo",
         "OcrStarted",
         "OcrJobInfo",
+        "AiSettings",
+        "AiFunctionSettings",
+        "AiProviderInfo",
+        "AiKeyTest",
+        "AiModelPrice",
+        "AiUsage",
+        "AiUsageTotal",
+        "AiEstimate",
+        "AiJudgeResult",
+        "AiCardProposal",
+        "AiWordSense",
+        "AiQueueInfo",
+        "AiQueueItem",
     ] {
         assert!(
             out.contains_key(required),
@@ -902,4 +916,118 @@ fn epub_ocr_samples(
 
 fn val<T: serde::Serialize>(x: &T) -> Value {
     serde_json::to_value(x).unwrap()
+}
+
+/// The AI shapes (Phase 8), with a simulated Claude: no network, no real key.
+fn ai_samples(out: &mut BTreeMap<String, Vec<String>>) {
+    use core_ai::simulated::SimulatedProvider;
+    use core_ai::{Completion, ProviderKind, Stop, Usage};
+    use leitor_app::ai::{AiFunctionPatch, AiSettingsPatch};
+    use leitor_app::ai_features::{AiEstimateRequest, AiJudgeRequest};
+
+    let dir = tempfile::tempdir().unwrap();
+    let state = Arc::new(AppState::with_secret_store(
+        dir.path().join("data"),
+        Arc::new(core_store::SystemClock),
+        Arc::new(MemoryStore::default()),
+    ));
+    let done = |text: &str| -> core_ai::Result<Completion> {
+        Ok(Completion {
+            text: text.into(),
+            usage: Some(Usage {
+                input: 100,
+                output: 50,
+                ..Usage::default()
+            }),
+            stop: Stop::Done,
+        })
+    };
+    state
+        .ai_hub()
+        .set_provider(Arc::new(SimulatedProvider::new(
+            ProviderKind::Anthropic,
+            vec![
+                done(r#"{"veredito":"quase","explicacao":"Faltou o sudo.","nota_sugerida":2}"#),
+                done(r#"{"cards":[{"tipo":"basico","campos":[{"nome":"frente","valor":"F"},{"nome":"verso","valor":"V"}],"tags":["t"]}]}"#),
+                done(r#"{"itens":[{"lema":"mill","classe":"noun","definicao":"a building for grinding grain","traducao":"moinho"}]}"#),
+            ],
+        )));
+    let on = AiFunctionPatch {
+        provider: Some(Some(ProviderKind::Anthropic)),
+        ..AiFunctionPatch::default()
+    };
+    state
+        .ai_settings_set(AiSettingsPatch {
+            enrich: Some(on.clone()),
+            judge: Some(on),
+            consent: vec![ProviderKind::Anthropic],
+            ..AiSettingsPatch::default()
+        })
+        .unwrap();
+    let settings = val(&state
+        .ai_key_set(ProviderKind::Anthropic, "test-key-TEST")
+        .unwrap());
+    record(out, "AiSettings", &settings);
+    record(out, "AiFunctionSettings", &settings["enrich"]);
+    record(out, "AiFunctionSettings", &settings["judge"]);
+    for p in settings["providers"].as_array().unwrap() {
+        record(out, "AiProviderInfo", p);
+    }
+    record(
+        out,
+        "AiKeyTest",
+        &val(&block_on(state.ai_key_test(ProviderKind::Anthropic)).unwrap()),
+    );
+    for p in state.ai_prices_get().unwrap() {
+        record(out, "AiModelPrice", &val(&p));
+    }
+    let estimate = state
+        .ai_estimate(AiEstimateRequest::Cards {
+            text: "ROS 2 é um framework.".into(),
+            kind: core_ai::prompts::CardKind::Basico,
+            n: 2,
+        })
+        .unwrap();
+    record(out, "AiEstimate", &val(&estimate));
+    let judge = AiJudgeRequest {
+        language: "bash".into(),
+        question: "q".into(),
+        answer: "a".into(),
+        user_answer: "b".into(),
+        auto_verdict: "almost".into(),
+        ..AiJudgeRequest::default()
+    };
+    record(
+        out,
+        "AiJudgeResult",
+        &val(&block_on(state.ai_judge_code(judge, false)).unwrap()),
+    );
+    let cards = block_on(state.ai_cards_from_text(
+        "ROS 2 é um framework.".into(),
+        core_ai::prompts::CardKind::Basico,
+        2,
+        false,
+    ))
+    .unwrap();
+    record(out, "AiCardProposal", &val(&cards[0]));
+    let sense =
+        block_on(state.ai_define_word("mill".into(), None, "The mill.".into(), false)).unwrap();
+    record(out, "AiWordSense", &val(&sense));
+    let usage = val(&state.ai_usage().unwrap());
+    record(out, "AiUsage", &usage);
+    record(out, "AiUsageTotal", &usage["day"][0]);
+    state
+        .with_store(|s| {
+            s.ai_queue_add(
+                7,
+                "mill",
+                "n",
+                "The mill.",
+                r#"{"definicao":"","traducao":""}"#,
+            )
+        })
+        .unwrap();
+    let queue = val(&state.ai_queue_get().unwrap());
+    record(out, "AiQueueInfo", &queue);
+    record(out, "AiQueueItem", &queue["items"][0]);
 }

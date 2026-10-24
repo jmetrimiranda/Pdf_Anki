@@ -469,14 +469,51 @@ describe('vocabulary commands', () => {
     const fam = Object.values(res.noteIds).map((id) => mockHandle.anki.noteFields(id));
     expect(fam.find((f) => f.Lema === 'quickly')!.Família).toBe('quick');
     expect(fam.find((f) => f.Lema === 'windmill')!['Card 2']).toBe('1');
-    await expect(
-      mockClient.vocabGenerateDeck(book.bookUid, r.scanUid, ['knoll'], {
-        order: 'reading',
-        perChapter: false,
-        card2: false,
-        enrich: 'ai',
-      }),
-    ).rejects.toMatchObject({ code: 'vocab_ai_unavailable' });
+  });
+
+  it('generates with AI definitions from what aiEnrichStart cached (Phase 8)', async () => {
+    const book = await farm();
+    const r = await scan({ kind: 'all' });
+    const words = r.rows
+      .filter((x) => x.status === 'unknown' && x.group === 'main' && x.existingNoteId === null)
+      .slice(0, 2)
+      .map((x) => x.lemma);
+    expect(words).toHaveLength(2);
+    await expect(mockClient.aiEnrichStart(book.bookUid, r.scanUid, words, false)).rejects.toMatchObject({
+      code: 'ai_disabled',
+    });
+    await mockClient.aiSettingsSet({ enrich: { provider: 'anthropic' }, consent: ['anthropic'] });
+    await mockClient.aiKeySet('anthropic', 'test-key-TEST');
+    const est = await mockClient.aiEstimate({ feature: 'deck', bookUid: book.bookUid, scanUid: r.scanUid, lemmas: words });
+    expect([est.toSend, est.cached, est.calls, est.needsConfirmation]).toEqual([2, 0, 1, false]);
+    const started = await mockClient.aiEnrichStart(book.bookUid, r.scanUid, words, false);
+    expect(started.toSend).toBe(2);
+    const end = await new Promise<JobProgress>((resolve) => {
+      const stop = mockClient.onJobProgress(started.jobId!, (p) => {
+        if (p.stage === 'done' || p.stage === 'failed') {
+          stop();
+          resolve(p);
+        }
+      });
+    });
+    expect([end.kind, end.stage, end.done]).toEqual(['aiEnrich', 'done', 2]);
+    expect(await mockClient.aiEnrichStart(book.bookUid, r.scanUid, words, false)).toMatchObject({
+      jobId: null,
+      cached: 2,
+    });
+    const res = await mockClient.vocabGenerateDeck(book.bookUid, r.scanUid, words, {
+      order: 'reading',
+      perChapter: false,
+      card2: false,
+      enrich: 'ai',
+    });
+    expect(res.created).toBe(2);
+    for (const id of res.noteIds) {
+      const f = mockHandle.anki.noteFields(id);
+      const sense = await mockClient.aiDefineWord(f.Lema!, null, r.rows.find((x) => x.lemma === f.Lema)!.example ?? '', false);
+      expect(sense.cached, f.Lema).toBe(true);
+      expect([f['Tradução'], f['Definição']]).toEqual([sense.translation, sense.definition]);
+    }
   });
 
   it('applies "Já sei" on the next scan, in seconds (the table is reused)', async () => {

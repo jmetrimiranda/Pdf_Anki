@@ -15,6 +15,7 @@ import {
   setMockBookUidProvider,
   type MockAnkiLog,
 } from './mock/ankiData';
+import { createAiMock, resetAiMock } from './mock/ai';
 import { createAnkiDecksMock, mockDailyBackup } from './mock/ankiDecks';
 import { ankiNotesMock, mockSearch } from './mock/ankiNotes';
 import { ankiStudyMock, mockStudyOwner, resetStudyMock } from './mock/ankiStudy';
@@ -908,6 +909,7 @@ export const mockClient: CoreClient = {
       return { variant: rec.spec.variant ?? 'generic' };
     },
   }),
+  ...createAiMock(),
   ...createOcrMock({
     book: (uid) => {
       const b = liveRec(uid).book;
@@ -1110,6 +1112,7 @@ export const mockHandle: LeitorMockHandle = {
     state = seedState();
     persist();
     resetAnki();
+    resetAiMock();
     resetSync();
     resetStudyMock();
     resetBookPanel();

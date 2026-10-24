@@ -1,4 +1,109 @@
 {
+  "AiCardProposal": [
+    "fields",
+    "tags"
+  ],
+  "AiEstimate": [
+    "cached",
+    "calls",
+    "model",
+    "needsConfirmation",
+    "provider",
+    "state",
+    "toSend",
+    "worstUsd"
+  ],
+  "AiFunctionSettings": [
+    "effectiveModel",
+    "effort",
+    "maxOutputTokens",
+    "model",
+    "provider"
+  ],
+  "AiJudgeResult": [
+    "explicacao",
+    "notaSugerida",
+    "veredito"
+  ],
+  "AiKeyTest": [
+    "code",
+    "message",
+    "model",
+    "ok"
+  ],
+  "AiModelPrice": [
+    "cachedInput",
+    "checkedAt",
+    "edited",
+    "hasTiers",
+    "input",
+    "model",
+    "output",
+    "provider",
+    "roleDefault",
+    "source",
+    "stale"
+  ],
+  "AiProviderInfo": [
+    "available",
+    "hasKey",
+    "id",
+    "keySuffix",
+    "label"
+  ],
+  "AiQueueInfo": [
+    "enabled",
+    "failed",
+    "items",
+    "paused",
+    "pending",
+    "status"
+  ],
+  "AiQueueItem": [
+    "attempts",
+    "createdAt",
+    "error",
+    "leftFields",
+    "lemma",
+    "noteId",
+    "pos",
+    "sentence",
+    "state",
+    "uid"
+  ],
+  "AiSettings": [
+    "backgroundEnrich",
+    "backgroundPaused",
+    "confirmAboveUsd",
+    "enrich",
+    "judge",
+    "keychainAvailable",
+    "limitDayUsd",
+    "limitMonthUsd",
+    "providers"
+  ],
+  "AiUsage": [
+    "day",
+    "dayUsd",
+    "limitDayUsd",
+    "limitMonthUsd",
+    "month",
+    "monthUsd",
+    "state"
+  ],
+  "AiUsageTotal": [
+    "calls",
+    "costUsd",
+    "feature",
+    "provider"
+  ],
+  "AiWordSense": [
+    "cached",
+    "class",
+    "definition",
+    "lemma",
+    "translation"
+  ],
   "AnkiSyncStatus": [
     "certificateFingerprint",
     "firstSyncPending",

@@ -43,6 +43,7 @@ import {
 import { createDeck } from './ankiDecks';
 import { addJob, clearJobs, createJobsMock, emitJob, runningJob, type JobMockKeys, type MockJob } from './jobs';
 import { parseSourceLink } from './ankiStudy';
+import { mockAiCached, mockAiClassPt, mockAiEnqueue, setAiVocabBridge } from './ai';
 import { mockSetVocabRoot, mockVocabRootId, setVocabBridge } from './bookPanel';
 import {
   addToIndex,
@@ -188,7 +189,6 @@ const err = {
       'vocab_prepare_needed',
       'O tipo de nota “Vocabulário · Livro” ainda não existe nesta coleção. Use “Preparar coleção”.',
     ),
-  ai: () => new CoreError('vocab_ai_unavailable', 'O enriquecimento com IA chega numa próxima versão.'),
   deck: () => new CoreError('deck_not_found', 'O deck escolhido não existe mais.'),
   invalid: (message: string) => new CoreError('invalid_input', message),
 };
@@ -716,7 +716,6 @@ function generate(
   const scan = state.scans[uid];
   if (!scan) throw err.noScan();
   if (scan.scanUid !== scanUid) throw err.stale();
-  if (options.enrich === 'ai') throw err.ai();
   const nt = vocabNotetype();
   const report = scan.report;
   const wanted = new Set(lemmas);
@@ -748,7 +747,15 @@ function generate(
     const tags = [naming.bookTag];
     if (naming.rangeTag) tags.push(naming.rangeTag);
     if (r.chapter !== null) tags.push(chapterTag(r.chapter));
-    noteIds.push(addVocabNote(nt, deckId, noteValues(uid, book.title, r, options.card2, book.unit), tags, due++));
+    const values = noteValues(uid, book.title, r, options.card2, book.unit);
+    // With AI: the answers `aiEnrichStart` left in the cache; WordNet for the others.
+    const answer = options.enrich === 'ai' ? mockAiCached(r.lemma, r.example ?? '') : null;
+    if (answer) {
+      values['Definição'] = escapeHtml(answer.definition);
+      values['Tradução'] = escapeHtml(answer.translation);
+      values['Classe'] = mockAiClassPt(answer.class) ?? values['Classe'] ?? '';
+    }
+    noteIds.push(addVocabNote(nt, deckId, values, tags, due++));
   }
   if (!decks.size) decks.add(mainName);
   persistAnki();
@@ -886,6 +893,8 @@ function addWord(deps: VocabBookSource, uid: string, lemma: string, page: number
   const noteId = addVocabNote(nt, deckId, values, tags, nextNewPosition());
   persistAnki();
   logAnki('vocabAddWord', { uid, lemma: key, noteId, deckId });
+  // Background AI enrichment (when on): only words added from now on.
+  mockAiEnqueue(noteId, key, row.pos ?? '', row.example ?? '');
   if (scan) {
     for (const r of scan.report.rows)
       if (r.lemma.toLowerCase() === key) {
@@ -946,6 +955,17 @@ export type VocabMockKeys =
   | JobMockKeys;
 
 export function createVocabMock(deps: VocabBookSource): Pick<CoreClient, VocabMockKeys> {
+  setAiVocabBridge({
+    rows: (uid, scanUid, lemmas) => {
+      const scan = state.scans[uid];
+      if (!scan) throw err.notScanned();
+      if (scan.scanUid !== scanUid) throw err.stale();
+      const wanted = new Set(lemmas.map((l) => l.trim().toLowerCase()));
+      return scan.report.rows
+        .filter((r) => wanted.has(r.lemma) && r.group !== 'proper')
+        .map((r) => ({ lemma: r.lemma, pos: r.pos ?? '', example: r.example ?? '' }));
+    },
+  });
   setVocabBridge({
     panel: (uid, page) => panelVocab(deps, uid, page),
     define: (lemma, bookUid) => defineExtras(lemma, bookUid),

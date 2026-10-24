@@ -475,3 +475,61 @@ describe('mock core vs the Rust contract snapshot', () => {
     for (const f of formats) expect(expected, `mock due format ${f}`).toContain(f);
   });
 });
+
+describe('AI contract (Phase 8)', () => {
+  it('the mock AI produces the shapes the core sends', async () => {
+    const expected = contract as Shapes;
+    const out: Shapes = {};
+    await mockClient.aiSettingsSet({
+      enrich: { provider: 'anthropic' },
+      judge: { provider: 'anthropic' },
+      consent: ['anthropic'],
+    });
+    const settings = await mockClient.aiKeySet('anthropic', 'test-key-TEST');
+    collect(out, 'AiSettings', settings);
+    collect(out, 'AiFunctionSettings', settings.enrich);
+    collect(out, 'AiFunctionSettings', settings.judge);
+    for (const p of settings.providers) collect(out, 'AiProviderInfo', p);
+    collect(out, 'AiKeyTest', await mockClient.aiKeyTest('anthropic'));
+    for (const p of await mockClient.aiPricesGet()) collect(out, 'AiModelPrice', p);
+    collect(
+      out,
+      'AiEstimate',
+      await mockClient.aiEstimate({ feature: 'cards', text: 'ROS 2 é um framework.', kind: 'basico', n: 2 }),
+    );
+    collect(
+      out,
+      'AiJudgeResult',
+      await mockClient.aiJudgeCode(
+        {
+          language: 'bash',
+          question: 'q',
+          answer: 'a',
+          accepted: [],
+          userAnswer: 'b',
+          autoVerdict: 'almost',
+          diffs: '',
+        },
+        false,
+      ),
+    );
+    const cards = await mockClient.aiCardsFromText('ROS 2 é um framework.', 'basico', 2, false);
+    collect(out, 'AiCardProposal', cards[0]);
+    collect(out, 'AiWordSense', await mockClient.aiDefineWord('mill', null, 'The mill.', false));
+    const usage = await mockClient.aiUsage();
+    collect(out, 'AiUsage', usage);
+    collect(out, 'AiUsageTotal', usage.day[0]);
+    await mockClient.aiSettingsSet({ backgroundEnrich: true, backgroundPaused: true });
+    const nt = (await mockClient.ankiNotetypes()).find((t) => t.name === 'Vocabulário · Livro')!;
+    const added = await mockClient.ankiNoteAdd({
+      notetypeId: nt.id,
+      deckId: 1,
+      fields: nt.fields.map((f) => (f.name === 'Palavra' || f.name === 'Lema' ? 'mill' : '')),
+      tags: [],
+    });
+    const queue = await mockClient.aiQueueAddNote(added.noteId, 'The mill.');
+    collect(out, 'AiQueueInfo', queue);
+    collect(out, 'AiQueueItem', queue.items[0]);
+    for (const [name, keys] of Object.entries(out)) expect(keys, name).toEqual(expected[name]);
+  });
+});

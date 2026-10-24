@@ -7,6 +7,7 @@ import { t } from '../../i18n';
 import { protocolUrl } from '../protocol';
 import {
   CoreError,
+  type AiQueueInfo,
   type AnkiChanged,
   type AnkiPageEvent,
   type AnkiSyncStatus,
@@ -214,6 +215,27 @@ export const tauriClient: CoreClient = {
   codeRunnerTest: () => call('code_runner_test'),
   codeImportMarkdown: (text) => call('code_import_markdown', { text }),
   codeImportCommit: (text, deckId, include) => call('code_import_commit', { text, deckId, include }),
+
+  aiSettingsGet: () => call('ai_settings_get'),
+  aiSettingsSet: (patch) => call('ai_settings_set', { patch }),
+  aiKeySet: (provider, key) => call('ai_key_set', { provider, key }),
+  aiKeyDelete: (provider) => call('ai_key_delete', { provider }),
+  aiKeyTest: (provider) => call('ai_key_test', { provider }),
+  aiPricesGet: () => call('ai_prices_get'),
+  aiPricesSet: (provider, model, rates) => call('ai_prices_set', { provider, model, rates }),
+  aiUsage: () => call('ai_usage'),
+  aiEstimate: (request) => call('ai_estimate', { request }),
+  aiJudgeCode: (request, confirmed) => call('ai_judge_code', { request, confirmed }),
+  aiCardsFromText: (text, kind, n, confirmed) => call('ai_cards_from_text', { text, kind, n, confirmed }),
+  aiDefineWord: (lemma, pos, sentence, confirmed) => call('ai_define_word', { lemma, pos, sentence, confirmed }),
+  aiEnrichStart: (bookUid, scanUid, lemmas, confirmed) =>
+    call('ai_enrich_start', { bookUid, scanUid, lemmas, confirmed }),
+  aiQueueGet: () => call('ai_queue_get'),
+  aiQueueSetPaused: (paused) => call('ai_queue_set_paused', { paused }),
+  aiQueueRemove: (uid) => call('ai_queue_remove', { uid }),
+  aiQueueRetry: () => call('ai_queue_retry'),
+  aiQueueAddNote: (noteId, sentence) => call('ai_queue_add_note', { noteId, sentence }),
+  onAiQueue: (cb) => subscription(() => listen<AiQueueInfo>('ai://queue', (e) => cb(e.payload))),
 
   libraryList: () => call('library_list'),
   libraryAdd: (path, opts) => call('library_add', { path, replace: !!opts?.replace }),

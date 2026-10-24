@@ -958,9 +958,9 @@ export interface VocabJob {
 }
 
 export type JobStage =
-  'queued' | 'text' | 'lemmas' | 'known' | 'compare' | 'ocr' | 'writing' | 'done' | 'failed' | 'cancelled';
+  'queued' | 'text' | 'lemmas' | 'known' | 'compare' | 'ocr' | 'writing' | 'ai' | 'done' | 'failed' | 'cancelled';
 
-export type JobKind = 'vocabScan' | 'ocr';
+export type JobKind = 'vocabScan' | 'ocr' | 'aiEnrich';
 
 /** Payload of `job://<jobId>` and of `job_status`. */
 export interface JobProgress {
@@ -1175,6 +1175,196 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type Unlisten = () => void;
 
 /** One function per Tauri command (spec 15), plus the platform helpers the UI needs. */
+// ---------------------------------------------------------------- AI (spec 13, docs/planos/fase-8.md)
+
+export type AiProvider = 'anthropic' | 'openai' | 'gemini' | 'deepseek';
+export type AiEffort = 'minimum' | 'low' | 'medium' | 'high';
+/** `define` and `cards` use the enrichment settings. */
+export type AiFeature = 'enrich' | 'define' | 'cards' | 'judge';
+
+/** Provider, model and effort of one function (`enrich` or `judge`). */
+export interface AiFunctionSettings {
+  /** `null`: the function is off. */
+  provider: AiProvider | null;
+  /** Chosen by the user; `null` = the provider's default for the function. */
+  model: string | null;
+  /** The model the calls use. */
+  effectiveModel: string | null;
+  effort: AiEffort;
+  maxOutputTokens: number;
+}
+
+/** One provider in Configurações → IA: the key never leaves the keychain, only its last 4 characters. */
+export interface AiProviderInfo {
+  id: AiProvider;
+  label: string;
+  /** The adapter exists in this version. */
+  available: boolean;
+  hasKey: boolean;
+  keySuffix: string | null;
+}
+
+export interface AiSettings {
+  enrich: AiFunctionSettings;
+  judge: AiFunctionSettings;
+  limitDayUsd: number;
+  limitMonthUsd: number;
+  confirmAboveUsd: number;
+  backgroundEnrich: boolean;
+  backgroundPaused: boolean;
+  providers: AiProviderInfo[];
+  keychainAvailable: boolean;
+}
+
+/** A missing field is left alone; `provider: null` turns the function off. */
+export interface AiFunctionPatch {
+  provider?: AiProvider | null;
+  model?: string | null;
+  effort?: AiEffort;
+  maxOutputTokens?: number;
+}
+
+export interface AiSettingsPatch {
+  enrich?: AiFunctionPatch;
+  judge?: AiFunctionPatch;
+  limitDayUsd?: number;
+  limitMonthUsd?: number;
+  confirmAboveUsd?: number;
+  backgroundEnrich?: boolean;
+  backgroundPaused?: boolean;
+  /** Providers the user just agreed to send data to: required in the same patch that activates one. */
+  consent?: AiProvider[];
+}
+
+export interface AiKeyTest {
+  ok: boolean;
+  code: string | null;
+  message: string;
+  model: string;
+}
+
+/** One model of the price table (US$ per million tokens, base tier). */
+export interface AiModelPrice {
+  provider: string;
+  model: string;
+  roleDefault: string | null;
+  checkedAt: string;
+  source: string | null;
+  input: number;
+  cachedInput: number | null;
+  output: number;
+  hasTiers: boolean;
+  edited: boolean;
+  stale: boolean;
+}
+
+export interface AiRates {
+  input: number;
+  cachedInput?: number | null;
+  cacheWrite?: number | null;
+  output: number;
+}
+
+export type AiBudgetState = 'ok' | 'warning' | 'blocked';
+
+export interface AiUsageTotal {
+  provider: string;
+  feature: string;
+  calls: number;
+  costUsd: number;
+}
+
+export interface AiUsage {
+  dayUsd: number;
+  monthUsd: number;
+  limitDayUsd: number;
+  limitMonthUsd: number;
+  state: AiBudgetState;
+  day: AiUsageTotal[];
+  month: AiUsageTotal[];
+}
+
+export type AiCardKind = 'basico' | 'cloze' | 'comando' | 'programa';
+
+export type AiEstimateRequest =
+  | { feature: 'cards'; text: string; kind: AiCardKind; n: number }
+  | { feature: 'deck'; bookUid: string; scanUid: string; lemmas: string[] };
+
+export interface AiEstimate {
+  worstUsd: number;
+  calls: number;
+  /** Words already in the cache (no cost). */
+  cached: number;
+  toSend: number;
+  needsConfirmation: boolean;
+  state: AiBudgetState;
+  provider: string;
+  model: string;
+}
+
+/** What the code review screen sends to the judge (it already ran the checker). */
+export interface AiJudgeRequest {
+  language: string;
+  question: string;
+  answer: string;
+  accepted: string[];
+  userAnswer: string;
+  autoVerdict: string;
+  diffs: string;
+}
+
+export interface AiJudgeResult {
+  veredito: 'correto' | 'equivalente' | 'quase' | 'errado';
+  explicacao: string;
+  /** 1 Errei … 4 Fácil: a suggestion, the user rates. */
+  notaSugerida: number;
+}
+
+/** A proposed card: fields by the prompt's names (`frente`/`verso`, `texto`, `pergunta`/`resposta`…). */
+export interface AiCardProposal {
+  fields: Record<string, string>;
+  tags: string[];
+}
+
+export interface AiWordSense {
+  lemma: string;
+  class: string;
+  definition: string;
+  translation: string;
+  cached: boolean;
+}
+
+export interface AiEnrichStarted {
+  /** `null` when every word was already in the cache. */
+  jobId: string | null;
+  alreadyRunning: boolean;
+  cached: number;
+  toSend: number;
+}
+
+export interface AiQueueItem {
+  uid: string;
+  noteId: number;
+  lemma: string;
+  pos: string;
+  sentence: string;
+  leftFields: string;
+  createdAt: number;
+  state: 'pending' | 'failed';
+  attempts: number;
+  error: string | null;
+}
+
+export interface AiQueueInfo {
+  enabled: boolean;
+  paused: boolean;
+  pending: number;
+  failed: number;
+  /** Why the queue isn't moving (cap, no network, paused above the confirmation threshold…). */
+  status: string | null;
+  items: AiQueueItem[];
+}
+
 export interface CoreClient {
   readonly kind: 'tauri' | 'mock';
 
@@ -1370,6 +1560,34 @@ export interface CoreClient {
   codeImportMarkdown(text: string): Promise<ImportPreview>;
   /** Adds the items `include` (indexes) of `text` to `deckId`. */
   codeImportCommit(text: string, deckId: number, include: number[]): Promise<CodeImportResult>;
+
+  // AI (spec 13): every call leaves from the core; keys stay in the system keychain.
+  aiSettingsGet(): Promise<AiSettings>;
+  aiSettingsSet(patch: AiSettingsPatch): Promise<AiSettings>;
+  /** The key crosses the IPC once, into the keychain. */
+  aiKeySet(provider: AiProvider, key: string): Promise<AiSettings>;
+  aiKeyDelete(provider: AiProvider): Promise<AiSettings>;
+  /** "Testar chave": one call with no tokens, only on the user's click. */
+  aiKeyTest(provider: AiProvider): Promise<AiKeyTest>;
+  aiPricesGet(): Promise<AiModelPrice[]>;
+  /** Edits (or, with `null`, restores) a model's price; a new model becomes usable once priced. */
+  aiPricesSet(provider: AiProvider, model: string, rates: AiRates | null): Promise<AiModelPrice[]>;
+  aiUsage(): Promise<AiUsage>;
+  aiEstimate(request: AiEstimateRequest): Promise<AiEstimate>;
+  /** `confirmed`: the user accepted a call above the confirmation threshold (`ai_needs_confirmation`). */
+  aiJudgeCode(request: AiJudgeRequest, confirmed: boolean): Promise<AiJudgeResult>;
+  aiCardsFromText(text: string, kind: AiCardKind, n: number, confirmed: boolean): Promise<AiCardProposal[]>;
+  aiDefineWord(lemma: string, pos: VocabPos | null, sentence: string, confirmed: boolean): Promise<AiWordSense>;
+  /** Fills the AI cache for a deck (a job); "Gerar deck" with `enrich: 'ai'` then reads it. */
+  aiEnrichStart(bookUid: string, scanUid: string, lemmas: string[], confirmed: boolean): Promise<AiEnrichStarted>;
+  aiQueueGet(): Promise<AiQueueInfo>;
+  aiQueueSetPaused(paused: boolean): Promise<AiQueueInfo>;
+  aiQueueRemove(uid: string): Promise<AiQueueInfo>;
+  aiQueueRetry(): Promise<AiQueueInfo>;
+  /** Queues a Vocabulário note created from the selection (when the background enrichment is on). */
+  aiQueueAddNote(noteId: number, sentence: string): Promise<AiQueueInfo>;
+  /** `ai://queue`: the background queue changed. */
+  onAiQueue(cb: (q: AiQueueInfo) => void): Unlisten;
 
   // Library
   libraryList(): Promise<LibraryEntry[]>;
