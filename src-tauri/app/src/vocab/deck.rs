@@ -475,7 +475,7 @@ impl AppState {
 
     /// A report-like row for one word of the reading popover: the table's page row (example of that page, else the
     /// first one), the family from the latest report or the lexicon.
-    fn vocab_word_row(
+    pub(crate) fn vocab_word_row(
         &self,
         book: &core_store::Book,
         lemma: &str,

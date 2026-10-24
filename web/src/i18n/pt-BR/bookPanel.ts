@@ -64,5 +64,8 @@ export const bookPanelMessages = {
   'bookPanel.define.loadError': 'Não foi possível buscar a palavra.',
   'bookPanel.define.wordnet': 'WordNet',
   'bookPanel.define.noDefinition': 'Sem definição no WordNet para esta palavra.',
-  'bookPanel.define.footer': 'Definição com IA chega numa próxima versão.',
+  'bookPanel.define.ai': 'Definir com IA',
+  'bookPanel.define.aiSource': 'IA · sentido na frase do livro',
+  'bookPanel.define.aiCached': 'IA · do cache, sem custo',
+  'bookPanel.define.translation': 'Tradução: {traducao}',
 } as const;

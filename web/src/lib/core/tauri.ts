@@ -227,7 +227,15 @@ export const tauriClient: CoreClient = {
   aiEstimate: (request) => call('ai_estimate', { request }),
   aiJudgeCode: (request, confirmed) => call('ai_judge_code', { request, confirmed }),
   aiCardsFromText: (text, kind, n, confirmed) => call('ai_cards_from_text', { text, kind, n, confirmed }),
-  aiDefineWord: (lemma, pos, sentence, confirmed) => call('ai_define_word', { lemma, pos, sentence, confirmed }),
+  aiDefineWord: (lemma, pos, sentence, confirmed, at) =>
+    call('ai_define_word', {
+      lemma,
+      pos,
+      sentence,
+      bookUid: at?.bookUid ?? null,
+      page: at?.page ?? null,
+      confirmed,
+    }),
   aiEnrichStart: (bookUid, scanUid, lemmas, confirmed) =>
     call('ai_enrich_start', { bookUid, scanUid, lemmas, confirmed }),
   aiQueueGet: () => call('ai_queue_get'),

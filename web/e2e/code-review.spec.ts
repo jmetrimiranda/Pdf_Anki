@@ -168,7 +168,7 @@ test.describe('command cards', () => {
     expect(extra.accepted).toEqual(['ros2 run tf2_ros tf2_echo world turtle1 -h']);
   });
 
-  test('"Pedir avaliação da IA" is a placeholder that never answers the card', async ({ page }) => {
+  test('"Pedir avaliação da IA" with AI off points to the settings and never answers the card', async ({ page }) => {
     await page.goto(studyUrl('ROS 2 — Revisão'));
     await shown(page, 'question');
     await commandInput(page).fill('ls -la');
@@ -176,9 +176,8 @@ test.describe('command cards', () => {
     await expect(verdict(page)).toHaveText('Errado');
     await expect(rating(page, /^De novo/)).toHaveAttribute('data-suggested', 'true');
     await page.getByRole('button', { name: 'Pedir avaliação da IA' }).click();
-    await expect(page.getByTestId('code-ai-placeholder')).toContainText(
-      'A avaliação por IA chega numa próxima versão.',
-    );
+    await expect(page.getByTestId('ai-error')).toHaveAttribute('data-code', 'ai_disabled');
+    await expect(page.getByRole('button', { name: 'Abrir Configurações → IA' })).toBeVisible();
     expect(await answers(page)).toHaveLength(0);
   });
 });

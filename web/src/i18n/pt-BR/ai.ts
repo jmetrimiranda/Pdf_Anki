@@ -27,7 +27,7 @@ export const aiMessages = {
     'Definições e traduções ao gerar decks e na fila de segundo plano. "Definir com IA" e "Criar cards com IA" usam esta mesma configuração.',
   'settings.ai.functions.judge': 'Juiz de código',
   'settings.ai.functions.judgeHint':
-    'Avalia respostas de cards de código que o verificador marcou como quase certas ou não conseguiu verificar.',
+    'Avalia respostas de cards de código que o verificador marcou como erradas ou não conseguiu verificar.',
   'settings.ai.functions.provider': 'Provedor',
   'settings.ai.functions.off': 'Desligada',
   'settings.ai.functions.model': 'Modelo',

@@ -178,7 +178,7 @@ describe('CodePanel · command', () => {
     expect(mockHandle.anki.noteFields(noteId)['Aceitas']).toContain('__node:=eco');
   });
 
-  it('"Pedir avaliação da IA" shows the placeholder and never answers the card', async () => {
+  it('"Pedir avaliação da IA" sends what the checker saw, suggests a rating and never answers the card', async () => {
     const user = userEvent.setup();
     const { input } = await openRos();
     await user.type(input, 'ls -la{Enter}');
@@ -186,13 +186,45 @@ describe('CodePanel · command', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /^De novo/ })?.getAttribute('data-suggested')).toBe('true'),
     );
+    // AI off: the error says so and leads to the settings.
     await user.click(screen.getByRole('button', { name: 'Pedir avaliação da IA' }));
-    expect(screen.getByTestId('code-ai-placeholder')?.textContent ?? '').toContain(
-      'A avaliação por IA chega numa próxima versão. Configure o provedor em Configurações → IA.',
-    );
+    const error = await screen.findByTestId('ai-error');
+    expect(error.getAttribute('data-code')).toBe('ai_disabled');
     await user.click(screen.getByRole('button', { name: 'Abrir Configurações → IA' }));
     expect(navigate).toHaveBeenCalledWith({ to: '/configuracoes/ia' });
+
+    await mockClient.aiSettingsSet({ judge: { provider: 'anthropic' }, consent: ['anthropic'] });
+    await mockClient.aiKeySet('anthropic', 'test-key-TEST');
+    const judge = vi.spyOn(mockClient, 'aiJudgeCode');
+    await user.click(screen.getByRole('button', { name: 'Pedir avaliação da IA' }));
+    const result = await screen.findByTestId('code-ai-result');
+    expect(result.getAttribute('data-verdict')).toBe('errado');
+    expect(result.textContent).toContain('Sugestão da IA: De novo. Você decide a nota.');
+    const [request, confirmed] = judge.mock.calls[0]!;
+    expect(confirmed).toBe(false);
+    expect(request).toMatchObject({ language: 'shell', userAnswer: 'ls -la', autoVerdict: 'wrong' });
+    expect(request.answer).not.toBe('');
     expect(answers()).toHaveLength(0);
+  });
+
+  it('"Pedir avaliação da IA" asks before a call above the confirmation threshold', async () => {
+    const user = userEvent.setup();
+    await mockClient.aiSettingsSet({
+      judge: { provider: 'anthropic' },
+      consent: ['anthropic'],
+      confirmAboveUsd: 0.000_001,
+    });
+    await mockClient.aiKeySet('anthropic', 'test-key-TEST');
+    const judge = vi.spyOn(mockClient, 'aiJudgeCode');
+    const { input } = await openRos();
+    await user.type(input, 'ls -la{Enter}');
+    await screen.findByTestId('code-verdict');
+    await user.click(screen.getByRole('button', { name: 'Pedir avaliação da IA' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Confirmar chamada de IA' });
+    expect(dialog.textContent).toMatch(/pode custar até US\$ 0[.,]\d{4}/);
+    await user.click(screen.getByTestId('ai-confirm-send'));
+    expect(await screen.findByTestId('code-ai-result')).toBeTruthy();
+    expect(judge.mock.calls.map((c) => c[1])).toEqual([false, true]);
   });
 
   it('"Mostrar resposta" gives up: the answer side, no verdict and no suggestion', async () => {

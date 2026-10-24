@@ -4,8 +4,7 @@
 // "Pedir avaliação da IA". After a check the answer side is shown with the suggested rating preselected in the
 // study engine's answer bar (Enter confirms it, 1–4 pick another). Shared by the Anki tab and the mini-review.
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate } from '@tanstack/react-router';
-import { Play, Settings, Sparkles, ThumbsUp } from 'lucide-react';
+import { Play, Sparkles, ThumbsUp } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Checkbox, Dialog, Kbd, Notice, Spinner, useToast } from '../../components/ui';
 import { CodeEditor, loadCodeMirror, type CodeLanguage } from '../../components/code/CodeEditor';
@@ -22,6 +21,8 @@ import { suggestRating } from '@leitor/checkers';
 import { isAbort, referenceFromCard, runCodeCheck, type CodeOutcome } from './run';
 import { pythonManager } from './run/python';
 import { RATING_LABEL } from './verdict';
+import { AiJudgeResult, outcomeSummary, type AiJudgeState } from './AiJudge';
+import { useAiCall } from '../ai/useAiCall';
 
 export const DEFAULT_CODE_SETTINGS: CodeSettings = {
   suggestEasy: false,
@@ -58,7 +59,6 @@ function editorLanguage(raw: string): CodeLanguage {
 export function CodePanel({ session, card, compact, autoAnswer }: CodePanelProps) {
   const code = card.code!;
   const toast = useToast();
-  const navigate = useNavigate();
   const settingsQ = useQuery(codeSettingsQuery);
   const settings = settingsQ.data ?? DEFAULT_CODE_SETTINGS;
   // Extra accepted answers of a type without an Aceitas field (`code_note_extra`).
@@ -76,6 +76,8 @@ export function CodePanel({ session, card, compact, autoAnswer }: CodePanelProps
   const [hint, setHint] = useState<string | null>(null);
   const [contestOpen, setContestOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [aiJudge, setAiJudge] = useState<AiJudgeState>({ kind: 'idle' });
+  const ai = useAiCall();
   const abort = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const autoDone = useRef(false);
@@ -196,6 +198,33 @@ export function CodePanel({ session, card, compact, autoAnswer }: CodePanelProps
     }
     setAccepted(true);
     void session.revealCode(3);
+  }
+
+  /** "Pedir avaliação da IA" (C.1): what the checker saw goes to the judge; the rating stays the user's. */
+  async function askAi() {
+    if (!outcome) return;
+    setAiOpen(true);
+    setAiJudge({ kind: 'asking' });
+    try {
+      const result = await ai.run((confirmed) =>
+        core.aiJudgeCode(
+          {
+            language: code.role === 'command' ? 'shell' : htmlToCode(code.fields.language),
+            question: htmlToCode(card.questionHtml),
+            answer: reference.answer,
+            accepted: reference.accepted,
+            userAnswer: answer,
+            autoVerdict: outcome.verdict,
+            diffs: outcomeSummary(outcome),
+          },
+          confirmed,
+        ),
+      );
+      setAiJudge(result ? { kind: 'done', result } : { kind: 'idle' });
+      if (!result) setAiOpen(false);
+    } catch (error) {
+      setAiJudge({ kind: 'error', error });
+    }
   }
 
   const suggestion = session.codeSuggestion?.rating ?? null;
@@ -319,7 +348,8 @@ export function CodePanel({ session, card, compact, autoAnswer }: CodePanelProps
                   size="sm"
                   variant="ghost"
                   icon={Sparkles}
-                  onClick={() => setAiOpen((o) => !o)}
+                  loading={aiJudge.kind === 'asking'}
+                  onClick={() => void askAi()}
                   aria-expanded={aiOpen}
                 >
                   {t('codeReview.ai')}
@@ -328,20 +358,13 @@ export function CodePanel({ session, card, compact, autoAnswer }: CodePanelProps
             </div>
           )}
           {aiOpen && canAskAi && (
-            <Notice tone="info" onDismiss={() => setAiOpen(false)}>
-              <span className="flex flex-col items-start gap-1" data-testid="code-ai-placeholder">
-                <span>{t('codeReview.aiPlaceholder')}</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  icon={Settings}
-                  className="-ml-2.5"
-                  onClick={() => void navigate({ to: '/configuracoes/ia' })}
-                >
-                  {t('codeReview.aiSettings')}
-                </Button>
-              </span>
-            </Notice>
+            <AiJudgeResult
+              state={aiJudge}
+              onDismiss={() => {
+                setAiOpen(false);
+                setAiJudge({ kind: 'idle' });
+              }}
+            />
           )}
         </div>
       )}
@@ -371,6 +394,7 @@ export function CodePanel({ session, card, compact, autoAnswer }: CodePanelProps
         command={code.role === 'command'}
         onConfirm={(add) => void contest(add)}
       />
+      {ai.dialog}
     </div>
   );
 }

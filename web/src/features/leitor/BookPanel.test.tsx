@@ -170,10 +170,35 @@ describe('BookPanel', () => {
     expect(within(pop).getByText('animals')).toBeTruthy();
     await within(pop).findByText('Lema: animal');
     expect(within(pop).getByText('Nenhuma nota com esta palavra no deck de vocabulário do livro.')).toBeTruthy();
-    expect(within(pop).getByText('Definição com IA chega numa próxima versão.')).toBeTruthy();
+    expect(within(pop).getByRole('button', { name: 'Definir com IA' })).toBeTruthy();
+    expect((await within(pop).findByTestId('ai-state')).textContent).toBe(
+      'IA desligada: configure em Configurações → IA.',
+    );
     const anchor = screen.getByTestId('define-anchor');
     expect(anchor.style.left).toBe('200px');
     expect(anchor.style.top).toBe('300px');
+  });
+
+  it('"Definir com IA" sends the word with the book page (the core finds the sentence) and shows the sense', async () => {
+    await mockClient.aiSettingsSet({ enrich: { provider: 'anthropic' }, consent: ['anthropic'] });
+    await mockClient.aiKeySet('anthropic', 'test-key-TEST');
+    const aiDefine = vi.spyOn(mockClient, 'aiDefineWord');
+    const uid = withBook();
+    renderPanel();
+    act(() =>
+      fake.current.emit({
+        kind: 'define',
+        via: 'menu',
+        selection: { id: uid, page: 2, text: 'animals,', rects: [] },
+        anchor: { x: 200, y: 300, width: 120, height: 24 },
+      }),
+    );
+    const pop = await screen.findByTestId('define-popover');
+    await within(pop).findByText('Lema: animal');
+    fireEvent.click(within(pop).getByRole('button', { name: 'Definir com IA' }));
+    const sense = await within(pop).findByTestId('define-ai');
+    expect(sense.textContent).toContain('Tradução: animal (pt)');
+    expect(aiDefine).toHaveBeenCalledWith('animal', expect.anything(), '', false, { bookUid: uid, page: 2 });
   });
 
   it('"Definir palavra" shows the vocabulary note with its definition, or says there is none', async () => {

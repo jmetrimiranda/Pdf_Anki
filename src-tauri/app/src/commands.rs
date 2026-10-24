@@ -574,11 +574,18 @@ pub async fn ai_define_word(
     lemma: String,
     pos: Option<core_vocab::Pos>,
     sentence: String,
+    book_uid: Option<String>,
+    page: Option<u32>,
     confirmed: bool,
 ) -> Result<AiWordSense, AppError> {
+    let at = book_uid.zip(page);
+    if at.is_some() {
+        // The book's vocabulary data (first use) opens off the async runtime.
+        blocking(&state, |s| Ok(s.vocab_hub().data.lexicon_opt().is_some())).await?;
+    }
     state
         .inner()
-        .ai_define_word(lemma, pos, sentence, confirmed)
+        .ai_define_word(lemma, pos, sentence, at, confirmed)
         .await
 }
 

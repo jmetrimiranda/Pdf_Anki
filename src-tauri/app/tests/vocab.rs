@@ -736,6 +736,21 @@ fn ai_definitions_fill_the_generated_deck_from_the_cache() {
     assert_eq!(pig.fields[TRADUCAO], "porco");
     assert_eq!(pig.fields[CLASSE], "substantivo");
 
+    // "Definir com IA" on the page of the example finds the same sentence: answered from the cache, no call.
+    let pig_row = row(&full, "pig");
+    let page = pig_row.example_page.unwrap_or(pig_row.first_page);
+    let sense = block_on(env.state.ai_define_word(
+        "pig".into(),
+        None,
+        String::new(),
+        Some((env.uid.clone(), page)),
+        false,
+    ))
+    .unwrap();
+    assert!(sense.cached, "{sense:?}");
+    assert_eq!(sense.translation, "porco");
+    assert_eq!(sim.calls(), 1);
+
     let usage = env.state.ai_usage().unwrap();
     assert_eq!(usage.day.len(), 1);
     assert_eq!(

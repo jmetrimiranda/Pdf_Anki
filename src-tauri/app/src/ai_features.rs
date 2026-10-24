@@ -331,17 +331,27 @@ impl AppState {
     }
 
     /// "Definir com IA" (C.3): the sense of `lemma` in `sentence`. The cache answers first, at no cost.
+    ///
+    /// Without a sentence, `at` (book, page) finds it: the example of that page in the book's vocabulary table, the
+    /// sentence "Adicionar ao deck do livro" would use.
     pub async fn ai_define_word(
         self: &Arc<Self>,
         lemma: String,
         pos: Option<Pos>,
         sentence_text: String,
+        at: Option<(String, u32)>,
         confirmed: bool,
     ) -> Result<AiWordSense, AppError> {
         let lemma = lemma.trim().to_lowercase();
         if lemma.is_empty() || lemma.chars().count() > 64 {
             return Err(AppError::new("invalid_input", "Selecione uma só palavra."));
         }
+        let sentence_text = match at {
+            Some((uid, page)) if sentence_text.trim().is_empty() => {
+                self.ai_page_sentence(&uid, &lemma, page)
+            }
+            _ => sentence_text,
+        };
         let item = EnrichItem {
             lema: lemma.clone(),
             classe: class_of(pos).to_owned(),
@@ -376,6 +386,22 @@ impl AppState {
             translation: a.traducao,
             cached: false,
         })
+    }
+
+    /// The example sentence of `lemma` on `page` of a book (empty when the book wasn't scanned or the page has none).
+    fn ai_page_sentence(&self, uid: &str, lemma: &str, page: u32) -> String {
+        let row = self.vocab_book(uid).and_then(|book| {
+            let lex = self.vocab_lexicon()?;
+            self.vocab_word_row(&book, lemma, page, lemma, &lex)
+        });
+        match row {
+            Ok(r) if r.example_page == Some(page) => r.example.unwrap_or_default(),
+            Ok(_) => String::new(),
+            Err(e) => {
+                tracing::debug!(code = %e.code, "no sentence for the AI definition");
+                String::new()
+            }
+        }
     }
 
     pub(crate) fn ai_cache_put(&self, item: &EnrichItem, a: &EnrichAnswer) -> Result<(), AppError> {

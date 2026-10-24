@@ -91,7 +91,11 @@ export const codeReviewMessages = {
   'codeReview.contestFailed': 'Não foi possível adicionar às aceitas: {erro}',
 
   'codeReview.ai': 'Pedir avaliação da IA',
-  'codeReview.aiPlaceholder':
-    'A avaliação por IA chega numa próxima versão. Configure o provedor em Configurações → IA.',
-  'codeReview.aiSettings': 'Abrir Configurações → IA',
+  'codeReview.aiAsking': 'Perguntando à IA…',
+  'codeReview.aiTitle': 'Avaliação da IA: {veredito}',
+  'codeReview.aiVerdict.correto': 'correta',
+  'codeReview.aiVerdict.equivalente': 'equivalente à referência',
+  'codeReview.aiVerdict.quase': 'quase',
+  'codeReview.aiVerdict.errado': 'errada',
+  'codeReview.aiSuggestion': 'Sugestão da IA: {nota}. Você decide a nota.',
 } as const;

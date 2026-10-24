@@ -31,14 +31,10 @@ import type {
   AiQueueInfo,
   AiSettings as AiSettingsData,
 } from '../../lib/core/types';
+import { aiQ } from '../ai/queries';
 import { errorMessage } from '../anki/decks/DeckDialogs';
 
-export const aiQ = {
-  settings: () => ({ queryKey: ['ai', 'settings'], queryFn: () => core.aiSettingsGet() }) as const,
-  usage: () => ({ queryKey: ['ai', 'usage'], queryFn: () => core.aiUsage(), staleTime: 0 }) as const,
-  prices: () => ({ queryKey: ['ai', 'prices'], queryFn: () => core.aiPricesGet() }) as const,
-  queue: () => ({ queryKey: ['ai', 'queue'], queryFn: () => core.aiQueueGet(), staleTime: 0 }) as const,
-};
+export { aiQ };
 
 /** Where each provider's calls go and its data policy (shown in the consent dialog). */
 const PROVIDER_INFO: Record<AiProvider, { domain: string; policy: string | null }> = {

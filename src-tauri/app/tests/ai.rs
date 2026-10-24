@@ -453,6 +453,7 @@ fn judge_cards_and_define_with_the_simulated_provider() {
             "Windmill".into(),
             None,
             "The windmill was  finished.".into(),
+            None,
             false,
         ))
         .unwrap();
@@ -472,6 +473,7 @@ fn judge_cards_and_define_with_the_simulated_provider() {
             "windmill".into(),
             None,
             "The windmill was finished.".into(),
+            None,
             false,
         ))
         .unwrap();

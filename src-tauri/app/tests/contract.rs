@@ -1011,7 +1011,8 @@ fn ai_samples(out: &mut BTreeMap<String, Vec<String>>) {
     .unwrap();
     record(out, "AiCardProposal", &val(&cards[0]));
     let sense =
-        block_on(state.ai_define_word("mill".into(), None, "The mill.".into(), false)).unwrap();
+        block_on(state.ai_define_word("mill".into(), None, "The mill.".into(), None, false))
+            .unwrap();
     record(out, "AiWordSense", &val(&sense));
     let usage = val(&state.ai_usage().unwrap());
     record(out, "AiUsage", &usage);

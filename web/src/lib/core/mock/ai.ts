@@ -435,6 +435,8 @@ function cardsAnswer(text: string, kind: AiCardKind, n: number): AiCardProposal[
 export interface AiVocabBridge {
   /** The rows of a report the deck would create (lemma, WordNet pos, example sentence). */
   rows(bookUid: string, scanUid: string, lemmas: string[]): { lemma: string; pos: string; example: string }[];
+  /** The example of `lemma` on `page` of the book's latest scan (empty when none). */
+  sentence(bookUid: string, lemma: string, page: number): string;
 }
 
 let vocabBridge: AiVocabBridge | null = null;
@@ -830,10 +832,11 @@ export function createAiMock(): Pick<CoreClient, AiMockKeys> {
         call(t, 'cards', text.length, confirmed);
         return cardsAnswer(text, kind, n);
       }),
-    aiDefineWord: (lemma, pos, sentence, confirmed) =>
+    aiDefineWord: (lemma, pos, given, confirmed, at) =>
       later((): AiWordSense => {
         const word = lemma.trim().toLowerCase();
         if (!word || word.length > 64) throw err.invalid('Selecione uma só palavra.');
+        const sentence = !given.trim() && at ? (vocabBridge?.sentence(at.bookUid, word, at.page) ?? '') : given;
         const hit = mockAiCached(word, sentence);
         if (hit) return { lemma: word, ...hit, cached: true };
         const t = target('enrich');

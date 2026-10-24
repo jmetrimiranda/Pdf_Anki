@@ -135,6 +135,7 @@ export function BookPanel({
         setDefine({
           text: r.selection?.text ?? '',
           bookUid: r.selection?.id ?? null,
+          page: r.selection?.page ?? null,
           anchor: r.anchor ?? panelAnchor(),
         });
         return;

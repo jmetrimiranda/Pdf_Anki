@@ -965,6 +965,10 @@ export function createVocabMock(deps: VocabBookSource): Pick<CoreClient, VocabMo
         .filter((r) => wanted.has(r.lemma) && r.group !== 'proper')
         .map((r) => ({ lemma: r.lemma, pos: r.pos ?? '', example: r.example ?? '' }));
     },
+    sentence: (uid, lemma, page) => {
+      const r = state.scans[uid]?.report.rows.find((x) => x.lemma === lemma);
+      return r && (r.examplePage ?? r.firstPage) === page ? (r.example ?? '') : '';
+    },
   });
   setVocabBridge({
     panel: (uid, page) => panelVocab(deps, uid, page),

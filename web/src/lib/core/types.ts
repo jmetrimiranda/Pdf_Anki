@@ -1577,7 +1577,14 @@ export interface CoreClient {
   /** `confirmed`: the user accepted a call above the confirmation threshold (`ai_needs_confirmation`). */
   aiJudgeCode(request: AiJudgeRequest, confirmed: boolean): Promise<AiJudgeResult>;
   aiCardsFromText(text: string, kind: AiCardKind, n: number, confirmed: boolean): Promise<AiCardProposal[]>;
-  aiDefineWord(lemma: string, pos: VocabPos | null, sentence: string, confirmed: boolean): Promise<AiWordSense>;
+  /** Without `sentence`, `at` (book and page) finds it: the example of that page in the book's vocabulary table. */
+  aiDefineWord(
+    lemma: string,
+    pos: VocabPos | null,
+    sentence: string,
+    confirmed: boolean,
+    at?: { bookUid: string; page: number },
+  ): Promise<AiWordSense>;
   /** Fills the AI cache for a deck (a job); "Gerar deck" with `enrich: 'ai'` then reads it. */
   aiEnrichStart(bookUid: string, scanUid: string, lemmas: string[], confirmed: boolean): Promise<AiEnrichStarted>;
   aiQueueGet(): Promise<AiQueueInfo>;
