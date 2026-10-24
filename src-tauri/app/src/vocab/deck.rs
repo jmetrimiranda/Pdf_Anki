@@ -238,7 +238,7 @@ impl AppState {
     }
 
     /// After notes were created: refresh the screens and arm the sync ("60 s after a change").
-    fn vocab_notes_added(&self) {
+    pub(crate) fn vocab_notes_added(&self) {
         self.emit(UiEvent::AnkiChanged(ChangeReason::Vocab));
         self.sync_answered();
         self.vocab.invalidate_marks();
@@ -457,6 +457,15 @@ impl AppState {
             .copied()
             .ok_or_else(|| AppError::internal("no note created"))?;
         self.vocab_notes_added();
+        // Background AI enrichment (when on): only words added from now on.
+        if let Err(e) = self.ai_enqueue_note(
+            note_id,
+            Some(&lemma),
+            row.pos,
+            row.example.as_deref().unwrap_or(""),
+        ) {
+            tracing::warn!(code = %e.code, "could not queue the word for the AI: {e}");
+        }
         Ok(VocabWordAdded {
             note_id,
             deck_id,

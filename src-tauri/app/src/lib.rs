@@ -5,6 +5,7 @@
 
 pub mod ai;
 pub mod ai_features;
+pub mod ai_queue;
 pub mod anki;
 pub mod anki_web;
 pub mod book_panel;
@@ -195,6 +196,7 @@ fn emit_ui_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: UiEvent) {
         UiEvent::AnkiSync(status) => app.emit_to("main", sync::ANKI_SYNC_EVENT, &status),
         UiEvent::StudyOwner(change) => app.emit_to("main", anki::STUDY_OWNER_EVENT, change),
         UiEvent::DeepLink(link) => app.emit_to("main", deep_link::DEEP_LINK_EVENT, &link),
+        UiEvent::AiQueue(info) => app.emit_to("main", ai_queue::AI_QUEUE_EVENT, &info),
         UiEvent::Job(progress) => app.emit_to(
             "main",
             &format!("{}{}", jobs::JOB_EVENT_PREFIX, progress.job_id),
@@ -284,6 +286,11 @@ macro_rules! app_commands {
             commands::ai_cards_from_text,
             commands::ai_define_word,
             commands::ai_enrich_start,
+            commands::ai_queue_get,
+            commands::ai_queue_set_paused,
+            commands::ai_queue_remove,
+            commands::ai_queue_retry,
+            commands::ai_queue_add_note,
             commands::anki_sync_status,
             commands::anki_sync_login,
             commands::anki_sync_logout,

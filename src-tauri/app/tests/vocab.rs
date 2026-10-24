@@ -745,6 +745,123 @@ fn ai_definitions_fill_the_generated_deck_from_the_cache() {
     assert!((usage.day_usd - (600.0 * 0.10 + 180.0 * 0.50) / 1e6).abs() < 1e-12);
 }
 
+/// Background enrichment (plan 5.3): only words added while it is on; an answer fills Definição/Tradução only where
+/// the field is still as the app wrote it; a batch above the confirmation threshold pauses the queue.
+#[test]
+fn background_queue_enriches_new_words_without_overwriting_edits() {
+    use core_ai::simulated::SimulatedProvider;
+    use core_ai::{Completion, ProviderKind, Stop, Usage};
+    use leitor_app::ai::{AiFunctionPatch, AiSettingsPatch};
+    use leitor_app::ai_queue::QueueStep;
+
+    let env = Env::new();
+    let (_, full) = env.scan(RangeSpec::All);
+    let answer = |items: serde_json::Value| -> core_ai::Result<Completion> {
+        Ok(Completion {
+            text: serde_json::json!({ "itens": items }).to_string(),
+            usage: Some(Usage {
+                input: 300,
+                output: 80,
+                ..Usage::default()
+            }),
+            stop: Stop::Done,
+        })
+    };
+    let sim = Arc::new(SimulatedProvider::new(
+        ProviderKind::Anthropic,
+        vec![answer(serde_json::json!([
+            {"lema": "pig", "classe": "noun", "definicao": "a farm animal", "traducao": "porco"},
+            {"lema": "learner", "classe": "noun", "definicao": "a person who learns", "traducao": "aprendiz"}
+        ]))],
+    ));
+    env.state.ai_hub().set_provider(sim.clone());
+    env.state
+        .ai_settings_set(AiSettingsPatch {
+            enrich: Some(AiFunctionPatch {
+                provider: Some(Some(ProviderKind::Anthropic)),
+                ..AiFunctionPatch::default()
+            }),
+            consent: vec![ProviderKind::Anthropic],
+            ..AiSettingsPatch::default()
+        })
+        .unwrap();
+    env.state
+        .ai_key_set(ProviderKind::Anthropic, "test-key-anthropic-TEST")
+        .unwrap();
+    let add = |lemma: &str| {
+        let r = row(&full, lemma);
+        env.state
+            .vocab_add_word(&env.uid, lemma, r.first_page, &r.form)
+            .unwrap()
+            .note_id
+    };
+
+    // Off: words added now never enter the queue.
+    let harvest = add("harvest");
+    assert_eq!(env.state.ai_queue_get().unwrap().items.len(), 0);
+
+    env.state
+        .ai_settings_set(AiSettingsPatch {
+            background_enrich: Some(true),
+            ..AiSettingsPatch::default()
+        })
+        .unwrap();
+    let pig = add("pig");
+    let learner = add("learner");
+    let queue = env.state.ai_queue_get().unwrap();
+    assert_eq!((queue.enabled, queue.pending), (true, 2));
+    assert!(
+        queue.items[0].sentence.contains("pigs"),
+        "{:?}",
+        queue.items[0]
+    );
+
+    // The user writes their own translation before the queue runs: it stays.
+    let mut fields = env.note(learner).fields;
+    fields[TRADUCAO] = "estudante".into();
+    block_on(env.state.anki_note_update(learner, fields, vec![])).unwrap();
+
+    assert_eq!(env.state.ai_queue_step(), QueueStep::Worked);
+    assert_eq!(sim.calls(), 1);
+    let pig_note = env.note(pig);
+    assert_eq!(pig_note.fields[TRADUCAO], "porco");
+    assert_eq!(pig_note.fields[DEFINICAO], "a farm animal");
+    let learner_note = env.note(learner);
+    assert_eq!(
+        learner_note.fields[TRADUCAO], "estudante",
+        "an edit is never overwritten"
+    );
+    assert_eq!(learner_note.fields[DEFINICAO], "a person who learns");
+    assert_eq!(
+        env.note(harvest).fields[TRADUCAO],
+        "",
+        "never the words added before"
+    );
+    assert_eq!(env.state.ai_queue_get().unwrap().items.len(), 0);
+    assert_eq!(env.state.ai_queue_step(), QueueStep::Idle);
+
+    // A batch above the confirmation threshold pauses the queue and says why; nothing is sent.
+    env.state
+        .ai_settings_set(AiSettingsPatch {
+            confirm_above_usd: Some(0.000_001),
+            ..AiSettingsPatch::default()
+        })
+        .unwrap();
+    add("windmill");
+    assert_eq!(env.state.ai_queue_step(), QueueStep::Idle);
+    let queue = env.state.ai_queue_get().unwrap();
+    assert!(queue.paused);
+    assert_eq!(queue.pending, 1);
+    assert!(
+        queue.status.as_deref().unwrap_or("").contains("pausada"),
+        "{queue:?}"
+    );
+    assert_eq!(sim.calls(), 1);
+    // Paused stays paused (the queue is kept).
+    assert_eq!(env.state.ai_queue_step(), QueueStep::Idle);
+    assert_eq!(env.state.ai_queue_get().unwrap().pending, 1);
+}
+
 #[test]
 fn marks_underline_the_right_words() {
     let env = Env::new();

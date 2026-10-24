@@ -418,6 +418,56 @@ fn clean_tag(tag: &str) -> Option<String> {
     (!t.is_empty()).then(|| t.join("_"))
 }
 
+/// The named fields of a note, as stored (HTML). `None` when the note is gone.
+pub fn note_fields_by_name(
+    col: &mut Collection,
+    note_id: i64,
+) -> Result<Option<HashMap<String, String>>> {
+    let Some(note) = col.storage.get_note(anki::prelude::NoteId(note_id))? else {
+        return Ok(None);
+    };
+    let Some(nt) = col.get_notetype(note.notetype_id)? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        nt.fields
+            .iter()
+            .map(|f| f.name.clone())
+            .zip(note.fields().iter().cloned())
+            .collect(),
+    ))
+}
+
+/// Writes `(field, expected, new)` into a note only where the field still holds `expected` (what the app wrote):
+/// an edit by the user is never overwritten (plan of Phase 8, 5.3). Returns the fields written; a missing note or
+/// field writes nothing.
+pub fn fill_fields_if_unchanged(
+    col: &mut Collection,
+    note_id: i64,
+    changes: &[(&str, &str, &str)],
+) -> Result<Vec<String>> {
+    let Some(mut note) = col.storage.get_note(anki::prelude::NoteId(note_id))? else {
+        return Ok(Vec::new());
+    };
+    let Some(nt) = col.get_notetype(note.notetype_id)? else {
+        return Ok(Vec::new());
+    };
+    let mut written = Vec::new();
+    for (name, expected, new) in changes {
+        let Some(i) = nt.fields.iter().position(|f| f.name == *name) else {
+            continue;
+        };
+        if note.fields()[i] == *expected && note.fields()[i] != *new {
+            note.set_field(i, *new)?;
+            written.push((*name).to_owned());
+        }
+    }
+    if !written.is_empty() {
+        col.update_note(&mut note)?;
+    }
+    Ok(written)
+}
+
 /// Creates the plan's notes with the "Vocabulário · Livro" notetype, in the given order, and returns their ids.
 ///
 /// - Missing decks are created (normal decks; `::` nests; blank components are refused before anything is written).

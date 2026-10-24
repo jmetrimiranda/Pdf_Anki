@@ -25,6 +25,8 @@ pub struct AiHub {
     budget: Budget,
     /// The adapter of each provider; tests point them at a local fake server.
     providers: RwLock<HashMap<ProviderKind, Arc<dyn Provider>>>,
+    /// The background enrichment worker.
+    pub(crate) queue: crate::ai_queue::QueueHub,
 }
 
 impl Default for AiHub {
@@ -36,6 +38,7 @@ impl Default for AiHub {
         Self {
             budget: Budget::default(),
             providers: RwLock::new(providers),
+            queue: Default::default(),
         }
     }
 }
@@ -578,6 +581,8 @@ impl AppState {
             }
             Ok(())
         })?;
+        // A provider, key or cap change may unblock the background queue.
+        self.ai_queue_kick();
         self.ai_settings_get()
     }
 
@@ -588,6 +593,7 @@ impl AppState {
             .set(&provider.keychain_account(), key)
             .map_err(keychain_error)?;
         tracing::info!(provider = provider.id(), "AI key stored in the keychain");
+        self.ai_queue_kick();
         self.ai_settings_get()
     }
 

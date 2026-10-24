@@ -163,7 +163,7 @@ pub(crate) fn class_label_pt(class: &str) -> Option<&'static str> {
     })
 }
 
-fn sentence(s: &str) -> String {
+pub(crate) fn sentence(s: &str) -> String {
     s.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -378,11 +378,16 @@ impl AppState {
         })
     }
 
-    fn ai_cache_put(&self, item: &EnrichItem, a: &EnrichAnswer) -> Result<(), AppError> {
+    pub(crate) fn ai_cache_put(&self, item: &EnrichItem, a: &EnrichAnswer) -> Result<(), AppError> {
         let payload = serde_json::to_string(a).map_err(AppError::internal)?;
         self.with_store(|s| {
             s.ai_enrichment_put(&item.lema, &prompts::context_hash(&item.frase), &payload)
         })
+    }
+
+    /// The cached answer of `item`, if any.
+    pub(crate) fn ai_cached(&self, item: &EnrichItem) -> Result<Option<EnrichAnswer>, AppError> {
+        self.with_store(|s| cached(s, item))
     }
 
     /// The enrichment items of the chosen rows of a report (the same rows "Gerar deck" turns into notes).
@@ -604,10 +609,19 @@ impl AppState {
 
 /// The item sent for a report row: lemma, class and the example sentence of the book (nothing else).
 pub(crate) fn enrich_item(row: &VocabRow) -> EnrichItem {
+    enrich_item_of(
+        &row.lemma,
+        class_of(row.pos),
+        row.example.as_deref().unwrap_or(""),
+    )
+}
+
+/// The item sent for a word: lemma, class and the sentence (nothing else).
+pub(crate) fn enrich_item_of(lemma: &str, class: &str, frase: &str) -> EnrichItem {
     EnrichItem {
-        lema: row.lemma.clone(),
-        classe: class_of(row.pos).to_owned(),
-        frase: row.example.as_deref().map(sentence).unwrap_or_default(),
+        lema: lemma.to_owned(),
+        classe: class.to_owned(),
+        frase: sentence(frase),
     }
 }
 

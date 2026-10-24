@@ -285,6 +285,8 @@ impl AppState {
                 if let Err(e) = state.anki() {
                     tracing::warn!(code = %e.code, "could not open the Anki collection: {e}");
                 }
+                // The background AI enrichment picks up what was left in its queue.
+                state.ai_queue_start();
             });
         if let Err(e) = spawned {
             tracing::warn!(%e, "could not start the warm-up thread");
@@ -299,6 +301,7 @@ impl AppState {
         // A running sync stops (a normal sync applying changes finishes or rolls back).
         self.abort_sync();
         self.sync.wake();
+        self.ai_queue_kick_for_shutdown();
         if let Some(h) = lock(&self.anki_handles).take() {
             h.study.close();
         }

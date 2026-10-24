@@ -31,6 +31,7 @@ use crate::ai::{AiKeyTest, AiModelPrice, AiSettings, AiSettingsPatch, AiUsage};
 use crate::ai_features::{
     AiCardProposal, AiEnrichStarted, AiEstimate, AiEstimateRequest, AiJudgeRequest, AiWordSense,
 };
+use crate::ai_queue::AiQueueInfo;
 use crate::anki::{ChangeNotetypePrepared, DeckDeleted};
 use crate::book_panel::{BookPanelInfo, BookPanelPatch, WordDefinition};
 use crate::code::{
@@ -593,6 +594,37 @@ pub async fn ai_enrich_start(
         s.ai_enrich_start(&book_uid, &scan_uid, lemmas, confirmed)
     })
     .await
+}
+
+#[tauri::command]
+pub async fn ai_queue_get(state: Shared<'_>) -> Result<AiQueueInfo, AppError> {
+    blocking(&state, AppState::ai_queue_get).await
+}
+
+#[tauri::command]
+pub async fn ai_queue_set_paused(state: Shared<'_>, paused: bool) -> Result<AiQueueInfo, AppError> {
+    blocking(&state, move |s| s.ai_queue_set_paused(paused)).await
+}
+
+#[tauri::command]
+pub async fn ai_queue_remove(state: Shared<'_>, uid: String) -> Result<AiQueueInfo, AppError> {
+    blocking(&state, move |s| s.ai_queue_remove(&uid)).await
+}
+
+#[tauri::command]
+pub async fn ai_queue_retry(state: Shared<'_>) -> Result<AiQueueInfo, AppError> {
+    blocking(&state, AppState::ai_queue_retry).await
+}
+
+/// After a Vocabulário card was created from the selection: queue it for the background enrichment (when on).
+#[tauri::command]
+pub async fn ai_queue_add_note(
+    state: Shared<'_>,
+    note_id: i64,
+    sentence: String,
+) -> Result<AiQueueInfo, AppError> {
+    anki_ready(&state).await?;
+    blocking(&state, move |s| s.ai_queue_add_note(note_id, &sentence)).await
 }
 
 #[tauri::command]

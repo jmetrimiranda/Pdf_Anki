@@ -87,6 +87,8 @@ pub enum UiEvent {
     DeepLink(crate::deep_link::DeepLink),
     /// `job://<jobId>`: progress of a long task (spec 15).
     Job(crate::jobs::JobProgress),
+    /// `ai://queue`: the background AI enrichment queue changed.
+    AiQueue(crate::ai_queue::AiQueueInfo),
 }
 
 /// Receives [`UiEvent`]s: the app emits them to the main window; tests collect them.
