@@ -138,6 +138,11 @@ test('"Criar cards com IA" points to Configurações → IA; "Definir palavra" s
   await expect(pop).toContainText('Nenhuma nota com esta palavra no deck de vocabulário do livro.');
   await page.keyboard.press('Escape');
   await expect(pop).toHaveCount(0);
+  // The × closes it too.
+  await fakeMenu(page, 'define', { page: 0, text: 'animals', anchor: [120, 180, 110, 24] });
+  await expect(pop).toBeVisible();
+  await page.getByTestId('define-anchor-close').click();
+  await expect(pop).toHaveCount(0);
 
   await fakeMenu(page, 'ai', { page: 0, text: 'All animals are equal' });
   const dialog = page.getByRole('dialog', { name: 'Criar cards com IA' });

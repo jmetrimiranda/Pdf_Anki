@@ -2,11 +2,11 @@
 // notice for now) and "Definir palavra" (spec 12.7 — the lemma and the vocabulary note, if any).
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
-import { ExternalLink, Settings } from 'lucide-react';
+import { ExternalLink, Settings, X } from 'lucide-react';
 import { Popover as P } from 'radix-ui';
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Button, Dialog, popoverSurface, SkeletonLines } from '../../components/ui';
+import { Button, Dialog, IconButton, popoverSurface, SkeletonLines } from '../../components/ui';
 import { usePortalContainer } from '../../components/ui/portal';
 import { t } from '../../i18n';
 import { cn } from '../../lib/cn';
@@ -77,8 +77,32 @@ export function AnchoredPopover({
 }) {
   const container = usePortalContainer();
   const a = anchor ? clampAnchor(anchor, viewportSize()) : null;
+  const open = anchor !== null;
+  // Esc also closes it while the focus is back in the (same-origin) PdfCraft iframe, whose keys never reach this
+  // document. The key is only observed, never consumed, so PdfCraft still gets its own Esc.
+  useEffect(() => {
+    if (!open) return;
+    const el = returnFocus?.();
+    const win = el instanceof HTMLIFrameElement ? el.contentWindow : null;
+    if (!win) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    try {
+      win.addEventListener('keydown', onKey, true);
+    } catch {
+      return; // not same-origin (never in the app): Esc inside the popover still works
+    }
+    return () => {
+      try {
+        win.removeEventListener('keydown', onKey, true);
+      } catch {
+        /* the iframe went away */
+      }
+    };
+  }, [open, onClose, returnFocus]);
   return (
-    <P.Root open={anchor !== null} onOpenChange={(o) => !o && onClose()}>
+    <P.Root open={open} onOpenChange={(o) => !o && onClose()}>
       {createPortal(
         <P.Anchor asChild>
           <div
@@ -97,7 +121,7 @@ export function AnchoredPopover({
           sideOffset={6}
           collisionPadding={8}
           aria-label={label}
-          className={cn(popoverSurface, 'w-72 max-w-[calc(100vw-16px)] p-3')}
+          className={cn(popoverSurface, 'relative w-72 max-w-[calc(100vw-16px)] p-3 pr-9')}
           onCloseAutoFocus={(e) => {
             const el = returnFocus?.();
             if (!el) return;
@@ -105,6 +129,16 @@ export function AnchoredPopover({
             el.focus({ preventScroll: true });
           }}
         >
+          <IconButton
+            icon={X}
+            size="sm"
+            label={t('common.close')}
+            // No tooltip: the focus lands here when the popover opens, and an open tooltip would take the first Esc.
+            tooltip={false}
+            className="absolute top-1.5 right-1.5"
+            data-testid={`${testId}-close`}
+            onClick={onClose}
+          />
           {children}
         </P.Content>
       </P.Portal>
