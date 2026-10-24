@@ -59,6 +59,8 @@ pub struct AppState {
     pub(crate) ocr: crate::ocr::OcrHub,
     /// Parsed EPUBs of the last books used (annotations, outline, marks; spec 7.1).
     pub(crate) epubs: crate::epub::EpubCache,
+    /// AI: reservations of the calls in flight and the provider adapters (spec 13).
+    pub(crate) ai: crate::ai::AiHub,
 }
 
 impl AppState {
@@ -99,6 +101,7 @@ impl AppState {
             vocab: crate::vocab::VocabHub::default(),
             ocr: crate::ocr::OcrHub::default(),
             epubs: Default::default(),
+            ai: crate::ai::AiHub::default(),
         }
     }
 

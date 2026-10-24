@@ -112,7 +112,12 @@ impl Env {
             },
         )
         .unwrap();
-        let state = Arc::new(AppState::new(data));
+        // Keys of the AI tests go to an in-memory keychain.
+        let state = Arc::new(AppState::with_secret_store(
+            data,
+            Arc::new(core_store::SystemClock),
+            Arc::new(leitor_app::secrets::MemoryStore::default()),
+        ));
         common::use_lexicon(&state);
         let events: Arc<Mutex<Vec<JobProgress>>> = Arc::default();
         let seen = Arc::clone(&events);
@@ -254,6 +259,9 @@ fn has_row(report: &leitor_app::VocabReport, lemma: &str) -> bool {
 
 // Field order of "Vocabulário · Livro".
 const PALAVRA: usize = 0;
+const CLASSE: usize = 2;
+const DEFINICAO: usize = 3;
+const TRADUCAO: usize = 4;
 const EXEMPLO: usize = 5;
 const FONTE: usize = 6;
 const FAMILIA: usize = 8;
@@ -471,21 +479,6 @@ fn rescan_finds_the_outline_items_again() {
 fn generated_decks_names_tags_and_no_duplicates() {
     let env = Env::new();
     let (_, full) = env.scan(RangeSpec::All);
-    // The AI enrichment is Phase 8.
-    let e = env
-        .state
-        .vocab_generate_deck(
-            &env.uid,
-            &full.scan_uid,
-            vec!["pig".into()],
-            VocabDeckOptions {
-                enrich: leitor_app::vocab::deck::EnrichMode::Ai,
-                ..VocabDeckOptions::default()
-            },
-        )
-        .unwrap_err();
-    assert_eq!(e.code, "ai_unavailable");
-
     // Whole book: the book deck, reading order, the Fonte of the first occurrence, the family.
     let out = env.generate(
         &full.scan_uid,
@@ -628,6 +621,128 @@ fn generated_decks_names_tags_and_no_duplicates() {
     assert_eq!(panel.vocab_deck.name, "Vocabulário::Livros::Animal Farm");
     let panel = block_on(env.state.book_panel_info_at(&env.uid, Some(25))).unwrap();
     assert!(panel.chapter_deck.is_none(), "no Cap 03 subdeck");
+}
+
+/// "Gerar deck" with AI definitions (plan `docs/planos/fase-8.md` 5.1): the estimate, the job that fills the cache
+/// batch by batch, the deck reading the cache. Simulated provider: no network, no real key.
+#[test]
+fn ai_definitions_fill_the_generated_deck_from_the_cache() {
+    use core_ai::simulated::SimulatedProvider;
+    use core_ai::{Completion, ProviderKind, Stop, Usage};
+    use leitor_app::ai::{AiFunctionPatch, AiSettingsPatch};
+    use leitor_app::ai_features::AiEstimateRequest;
+
+    let env = Env::new();
+    let (_, full) = env.scan(RangeSpec::All);
+    let lemmas = ["pig", "harvest", "learner"];
+    let wanted: Vec<String> = lemmas.iter().map(|l| l.to_string()).collect();
+    // The rows are sent in the report's order, with their example sentence.
+    let sent: Vec<&core_vocab::VocabRow> = full
+        .rows
+        .iter()
+        .filter(|r| lemmas.contains(&r.lemma.as_str()))
+        .collect();
+    assert_eq!(sent.len(), 3);
+    let answers: Vec<serde_json::Value> = sent
+        .iter()
+        .map(|r| {
+            let (classe, def, pt) = match r.lemma.as_str() {
+                "pig" => ("noun", "a farm animal kept for its meat", "porco"),
+                "harvest" => ("noun", "the gathering of crops", "colheita"),
+                _ => ("noun", "a person who is learning", "aprendiz"),
+            };
+            serde_json::json!({"lema": r.lemma, "classe": classe, "definicao": def, "traducao": pt})
+        })
+        .collect();
+    let sim = Arc::new(SimulatedProvider::new(
+        ProviderKind::Anthropic,
+        vec![Ok(Completion {
+            text: serde_json::json!({ "itens": answers }).to_string(),
+            usage: Some(Usage {
+                input: 600,
+                output: 180,
+                ..Usage::default()
+            }),
+            stop: Stop::Done,
+        })],
+    ));
+    env.state.ai_hub().set_provider(sim.clone());
+
+    // Without a configured provider nothing is estimated nor sent.
+    let deck = || AiEstimateRequest::Deck {
+        book_uid: env.uid.clone(),
+        scan_uid: full.scan_uid.clone(),
+        lemmas: wanted.clone(),
+    };
+    assert_eq!(
+        env.state.ai_estimate(deck()).unwrap_err().code,
+        "ai_disabled"
+    );
+    env.state
+        .ai_settings_set(AiSettingsPatch {
+            enrich: Some(AiFunctionPatch {
+                provider: Some(Some(ProviderKind::Anthropic)),
+                ..AiFunctionPatch::default()
+            }),
+            consent: vec![ProviderKind::Anthropic],
+            ..AiSettingsPatch::default()
+        })
+        .unwrap();
+    assert_eq!(env.state.ai_estimate(deck()).unwrap_err().code, "ai_no_key");
+    env.state
+        .ai_key_set(ProviderKind::Anthropic, "test-key-anthropic-TEST")
+        .unwrap();
+
+    let est = env.state.ai_estimate(deck()).unwrap();
+    assert_eq!((est.to_send, est.cached, est.calls), (3, 0, 1));
+    assert!(est.worst_usd > 0.0 && est.worst_usd < 0.05, "{est:?}");
+    assert!(!est.needs_confirmation);
+    assert_eq!(est.model, "claude-haiku-5-5");
+
+    let started = env
+        .state
+        .ai_enrich_start(&env.uid, &full.scan_uid, wanted.clone(), false)
+        .unwrap();
+    assert_eq!((started.cached, started.to_send), (0, 3));
+    let end = env
+        .state
+        .job_wait(started.job_id.as_deref().unwrap(), WAIT)
+        .unwrap();
+    assert_eq!(end.stage, JobStage::Done, "{end:?}");
+    assert_eq!((end.done, end.total), (3, 3));
+    let request = sim.last_request().unwrap();
+    assert_eq!(request.max_output_tokens, 4000);
+    assert!(!request.user.contains(TITLE), "the title is never sent");
+
+    // Everything is cached now: no job, no call.
+    let again = env
+        .state
+        .ai_enrich_start(&env.uid, &full.scan_uid, wanted.clone(), false)
+        .unwrap();
+    assert_eq!((again.job_id, again.cached, again.to_send), (None, 3, 0));
+    assert_eq!(sim.calls(), 1);
+
+    let out = env.generate(
+        &full.scan_uid,
+        &lemmas,
+        VocabDeckOptions {
+            enrich: leitor_app::vocab::deck::EnrichMode::Ai,
+            ..VocabDeckOptions::default()
+        },
+    );
+    let notes: Vec<_> = out.note_ids.iter().map(|id| env.note(*id)).collect();
+    let pig = notes.iter().find(|n| n.fields[PALAVRA] == "pig").unwrap();
+    assert_eq!(pig.fields[DEFINICAO], "a farm animal kept for its meat");
+    assert_eq!(pig.fields[TRADUCAO], "porco");
+    assert_eq!(pig.fields[CLASSE], "substantivo");
+
+    let usage = env.state.ai_usage().unwrap();
+    assert_eq!(usage.day.len(), 1);
+    assert_eq!(
+        (usage.day[0].feature.as_str(), usage.day[0].calls),
+        ("enrich", 1)
+    );
+    assert!((usage.day_usd - (600.0 * 0.10 + 180.0 * 0.50) / 1e6).abs() < 1e-12);
 }
 
 #[test]

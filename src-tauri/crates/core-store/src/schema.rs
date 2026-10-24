@@ -5,7 +5,7 @@ use rusqlite::Connection;
 
 use crate::{Result, StoreError};
 
-const MIGRATIONS: &[&str] = &[V1, V2, V3, V4];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5];
 
 /// Schema version this build creates and understands.
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -310,6 +310,36 @@ CREATE TABLE book_lemma_state (
     -- Repeated header/footer lines removed by the cleanup (JSON list of normalized keys): the highlight skips them.
     repeated_lines TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(repeated_lines))
 ) STRICT;
+"#;
+
+/// Phase 8 (plan `docs/planos/fase-8.md` 6.1): the full usage of each AI call and the background enrichment queue.
+const V5: &str = r#"
+ALTER TABLE ai_usage ADD COLUMN tokens_cached_in INTEGER NOT NULL DEFAULT 0 CHECK (tokens_cached_in >= 0);
+ALTER TABLE ai_usage ADD COLUMN tokens_cache_write INTEGER NOT NULL DEFAULT 0 CHECK (tokens_cache_write >= 0);
+ALTER TABLE ai_usage ADD COLUMN tokens_thinking INTEGER NOT NULL DEFAULT 0 CHECK (tokens_thinking >= 0);
+-- 1 = no usage came back and the call was billed at its worst case.
+ALTER TABLE ai_usage ADD COLUMN estimated INTEGER NOT NULL DEFAULT 0 CHECK (estimated IN (0, 1));
+-- `checked_at` of the price table the cost was computed with (YYYY-MM-DD).
+ALTER TABLE ai_usage ADD COLUMN prices_checked_at TEXT;
+
+-- Words waiting for the background enrichment (plan 5.3); device-local, doesn't sync. Done items are deleted.
+CREATE TABLE ai_queue (
+    uid        TEXT PRIMARY KEY NOT NULL,
+    note_id    INTEGER NOT NULL,
+    lemma      TEXT NOT NULL,
+    pos        TEXT NOT NULL DEFAULT '',
+    sentence   TEXT NOT NULL DEFAULT '',
+    -- The Definição and Tradução the app wrote ({"definicao","traducao"}): the answer fills a field only while it
+    -- still holds this (an edit by the user is never overwritten).
+    left_fields TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(left_fields)),
+    created_at INTEGER NOT NULL,
+    state      TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'failed')),
+    attempts   INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    error      TEXT,
+    updated_at INTEGER NOT NULL
+) STRICT;
+CREATE UNIQUE INDEX ai_queue_note ON ai_queue (note_id);
+CREATE INDEX ai_queue_order ON ai_queue (state, created_at);
 "#;
 
 #[cfg(test)]
@@ -710,6 +740,57 @@ mod tests {
             )
             .expect("left");
         assert_eq!(left, 0);
+        migrate(&mut conn).expect("idempotent");
+    }
+
+    /// A V4 database keeps its AI usage rows; the new columns get their defaults and the queue exists.
+    #[test]
+    fn v4_database_migrates_to_v5() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("v4.sqlite");
+        {
+            let mut conn = Connection::open(&path).expect("open");
+            for (i, sql) in MIGRATIONS[..4].iter().enumerate() {
+                let tx = conn.transaction().expect("tx");
+                tx.execute_batch(sql).expect("migration");
+                tx.execute_batch(&format!("PRAGMA user_version = {}", i + 1))
+                    .expect("version");
+                tx.commit().expect("commit");
+            }
+            conn.execute_batch(
+                "INSERT INTO ai_usage (uid, at, feature, provider, model, tokens_in, tokens_out, cost_usd)
+                 VALUES ('u1', 1, 'enrich', 'anthropic', 'claude-haiku-5-5', 10, 20, 0.5);",
+            )
+            .expect("v4 row");
+        }
+        let mut conn = Connection::open(&path).expect("reopen");
+        migrate(&mut conn).expect("migrate");
+        let row: (i64, i64, i64, i64, Option<String>, f64) = conn
+            .query_row(
+                "SELECT tokens_cached_in, tokens_cache_write, tokens_thinking, estimated, prices_checked_at, cost_usd
+                 FROM ai_usage WHERE uid = 'u1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .expect("usage");
+        assert_eq!(row, (0, 0, 0, 0, None, 0.5));
+        assert!(tables(&conn).iter().any(|t| t == "ai_queue"));
+        assert!(
+            conn.execute("UPDATE ai_usage SET estimated = 2 WHERE uid = 'u1'", [])
+                .is_err()
+        );
+        let add = |uid: &str, note: i64, state: &str| {
+            conn.execute(
+                &format!(
+                    "INSERT INTO ai_queue (uid, note_id, lemma, created_at, state, updated_at)
+                     VALUES ('{uid}', {note}, 'mill', 1, '{state}', 1)"
+                ),
+                [],
+            )
+        };
+        add("q1", 7, "pending").expect("queue row");
+        assert!(add("q2", 7, "pending").is_err(), "one entry per note");
+        assert!(add("q3", 8, "done").is_err(), "done items are deleted");
         migrate(&mut conn).expect("idempotent");
     }
 }

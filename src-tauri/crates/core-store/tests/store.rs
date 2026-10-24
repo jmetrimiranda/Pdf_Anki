@@ -50,8 +50,8 @@ fn migrations_are_idempotent_on_reopen() {
         assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
         tables = table_count(&store);
         assert_eq!(
-            tables, 19,
-            "16 tables + book_prefs (V3) + book_lemma_page and book_lemma_state (V4)"
+            tables, 20,
+            "16 tables + book_prefs (V3) + book_lemma_page and book_lemma_state (V4) + ai_queue (V5)"
         );
         store.add_book(&new_book(b"x")).unwrap();
         let mode: String = store
@@ -255,7 +255,19 @@ fn settings_defaults_and_validation() {
         store.setting(keys::VOCAB_COUNT_YOUNG).unwrap(),
         json!(false)
     );
-    assert_eq!(store.setting(keys::AI_PROVIDER).unwrap(), json!(null));
+    assert_eq!(
+        store.setting(keys::AI_ENRICH_PROVIDER).unwrap(),
+        json!(null)
+    );
+    assert_eq!(store.setting(keys::AI_LIMIT_MONTH_USD).unwrap(), json!(5.0));
+    assert_eq!(store.setting(keys::AI_PRICE_OVERRIDES).unwrap(), json!({}));
+    assert!(
+        store
+            .set_setting(keys::AI_JUDGE_MAX_TOKENS, json!(4000))
+            .is_err(),
+        "the judge answers in at most 2000 tokens"
+    );
+    assert!(store.set_setting(keys::AI_CONSENT, json!([])).is_err());
 
     store
         .set_setting(keys::VOCAB_KNOWN_IVL_DAYS, json!(30))

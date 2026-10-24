@@ -17,6 +17,7 @@
 //! [`Store`] wraps one [`rusqlite::Connection`]; it is `Send` but not `Sync`, so share it behind a
 //! `Mutex` (or give it its own thread).
 
+mod ai;
 mod code;
 mod epub;
 mod error;
@@ -32,6 +33,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
+pub use ai::{AiQueueRow, AiUsageRow, AiUsageTotal};
 pub use code::{
     CODE_EXTRA_MAX_CHARS, CODE_EXTRA_MAX_ENTRIES, CodeMappingFields, CodeMappingRow, CodeNoteExtra,
     CodeRole,

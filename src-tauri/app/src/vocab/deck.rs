@@ -2,8 +2,9 @@
 //! rows, in the vocabulary folder (`<pasta>::Livros::<Título>`, a subdeck per range or per chapter), with tags, the
 //! `leitor://` Fonte of the first occurrence, the family of derivatives and a WordNet definition.
 //!
-//! Without AI the definition comes from the bundled WordNet ([`WordNetEnricher`]); [`VocabEnricher`] is the Phase 8
-//! hook for the AI enrichment (definition, translation, part of speech; `vocab_enrichment_cache` stays untouched).
+//! Without AI the definition comes from the bundled WordNet ([`WordNetEnricher`]). With AI ([`AiCacheEnricher`]) it
+//! comes from the answers `ai_enrich_start` left in `vocab_enrichment_cache` (definition, translation, class), the
+//! words the AI didn't answer falling back to WordNet.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -21,7 +22,7 @@ use crate::state::AppState;
 
 use super::normal_deck_name;
 
-/// How the definition is filled (`ai` arrives with Phase 8).
+/// How the definition is filled (`ai`: from the AI answers of `ai_enrich_start`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EnrichMode {
@@ -75,6 +76,8 @@ pub struct Enrichment {
     pub definition: Option<(Pos, String)>,
     /// pt-BR translation (empty without AI).
     pub translation: Option<String>,
+    /// The "Classe" when the AI gave one WordNet doesn't have (`preposição`, `expressão`…).
+    pub class_pt: Option<String>,
 }
 
 /// Fills the definition (and, with AI in Phase 8, the translation) of a new vocabulary note.
@@ -92,12 +95,38 @@ impl VocabEnricher for WordNetEnricher {
         Enrichment {
             definition: self.lex.definition(&row.lemma, row.pos),
             translation: None,
+            class_pt: None,
         }
     }
 }
 
-fn ai_unavailable() -> AppError {
-    AppError::new("ai_unavailable", "A IA chega numa próxima versão.")
+/// The AI answers already in the cache; WordNet for the words without one.
+pub struct AiCacheEnricher {
+    pub answers: HashMap<String, core_ai::prompts::EnrichAnswer>,
+    pub fallback: WordNetEnricher,
+}
+
+impl VocabEnricher for AiCacheEnricher {
+    fn enrich(&self, row: &VocabRow) -> Enrichment {
+        let Some(a) = self.answers.get(&row.lemma) else {
+            return self.fallback.enrich(row);
+        };
+        let pos = crate::ai_features::pos_of_class(&a.classe)
+            .or(row.pos)
+            .or_else(|| {
+                self.fallback
+                    .lex
+                    .parts_of_speech(&row.lemma)
+                    .first()
+                    .copied()
+            })
+            .unwrap_or(Pos::Noun);
+        Enrichment {
+            definition: Some((pos, a.definicao.clone())),
+            translation: Some(a.traducao.clone()),
+            class_pt: crate::ai_features::class_label_pt(&a.classe).map(str::to_owned),
+        }
+    }
 }
 
 /// Rows already in the folder: their status comes from the deck.
@@ -159,6 +188,10 @@ pub(crate) fn note_spec(
             )
         }
     };
+    let classe = match &enrichment.class_pt {
+        Some(c) => escape(c),
+        None => f.classe,
+    };
     let traducao = match enrichment.translation {
         Some(t) if f.traducao.is_empty() => escape(&t),
         _ => f.traducao,
@@ -168,7 +201,7 @@ pub(crate) fn note_spec(
         fields: VocabBookFields {
             palavra: f.palavra,
             lema: f.lema,
-            classe: f.classe,
+            classe,
             definicao: f.definicao,
             traducao,
             exemplo: f.exemplo,
@@ -219,15 +252,12 @@ impl AppState {
         lemmas: Vec<String>,
         options: VocabDeckOptions,
     ) -> Result<VocabDeckResult, AppError> {
-        if options.enrich == EnrichMode::Ai {
-            return Err(ai_unavailable());
-        }
         let report = self
             .vocab_report_of(scan_uid)?
             .filter(|r| r.book_uid == uid)
             .ok_or_else(super::not_scanned)?;
         let lex = self.vocab_lexicon()?;
-        let enricher = WordNetEnricher {
+        let wordnet = WordNetEnricher {
             lex: Arc::clone(&lex),
         };
         let wanted: HashSet<String> = lemmas.iter().map(|l| l.trim().to_lowercase()).collect();
@@ -252,6 +282,13 @@ impl AppState {
             }
         }
         core_vocab::order_rows(&mut rows, options.order);
+        let enricher: Box<dyn VocabEnricher> = match options.enrich {
+            EnrichMode::Wordnet => Box::new(wordnet),
+            EnrichMode::Ai => Box::new(AiCacheEnricher {
+                answers: self.ai_cached_answers(&rows)?,
+                fallback: wordnet,
+            }),
+        };
         let root = self.vocab_root_name(report.folder.root_deck_id, &report.folder.root_name)?;
         let names = core_vocab::vocab_deck_names(
             Some(&root),

@@ -56,10 +56,12 @@ pub struct Engine {
 
 impl Engine {
     pub fn new(ledger: Arc<dyn Ledger>) -> Self {
-        Self {
-            budget: Budget::default(),
-            ledger,
-        }
+        Self::with_budget(Budget::default(), ledger)
+    }
+
+    /// An engine sharing `budget` (and so its reservations) with the other engines of the app.
+    pub fn with_budget(budget: Budget, ledger: Arc<dyn Ledger>) -> Self {
+        Self { budget, ledger }
     }
 
     pub fn budget(&self) -> &Budget {

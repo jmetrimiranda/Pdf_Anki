@@ -38,11 +38,31 @@ pub mod keys {
     pub const CODE_OUTPUT_EXACT: &str = "code_output_exact";
     /// Where C++ runs (spec 11.5): `auto` (local compiler, else the runner), `local` or `remote`.
     pub const CODE_CPP_BACKEND: &str = "code_cpp_backend";
-    pub const AI_PROVIDER: &str = "ai_provider";
-    pub const AI_BASE_URL: &str = "ai_base_url";
-    pub const AI_MODEL_FAST: &str = "ai_model_fast";
-    pub const AI_MODEL_STRONG: &str = "ai_model_strong";
-    pub const AI_MONTHLY_LIMIT_USD: &str = "ai_monthly_limit_usd";
+    /// AI (plan `docs/planos/fase-8.md` 6.1): provider, model and effort per function. No provider = AI off.
+    /// "Definir palavra" and "Cards a partir de um trecho" use the enrichment ones.
+    pub const AI_ENRICH_PROVIDER: &str = "ai_enrich_provider";
+    /// `None` = the provider's default model for the function (`model-prices.toml`).
+    pub const AI_ENRICH_MODEL: &str = "ai_enrich_model";
+    pub const AI_ENRICH_EFFORT: &str = "ai_enrich_effort";
+    /// Output tokens per enrichment call (≤ 4000; batches of up to 40 words).
+    pub const AI_ENRICH_MAX_TOKENS: &str = "ai_enrich_max_tokens";
+    pub const AI_JUDGE_PROVIDER: &str = "ai_judge_provider";
+    pub const AI_JUDGE_MODEL: &str = "ai_judge_model";
+    pub const AI_JUDGE_EFFORT: &str = "ai_judge_effort";
+    /// Output tokens per judge call (≤ 2000).
+    pub const AI_JUDGE_MAX_TOKENS: &str = "ai_judge_max_tokens";
+    /// Spending caps over every provider, in US$ (local calendar day and month).
+    pub const AI_LIMIT_DAY_USD: &str = "ai_limit_day_usd";
+    pub const AI_LIMIT_MONTH_USD: &str = "ai_limit_month_usd";
+    /// A foreground call whose worst case is above this asks first; the background queue pauses instead.
+    pub const AI_CONFIRM_ABOVE_USD: &str = "ai_confirm_above_usd";
+    /// The user's price edits: `{"<provider>/<model>": {"input", "cachedInput"?, "cacheWrite"?, "output"}}`.
+    pub const AI_PRICE_OVERRIDES: &str = "ai_price_overrides";
+    /// Enrich new vocabulary notes in the background (only words added while it is on).
+    pub const AI_BACKGROUND_ENRICH: &str = "ai_background_enrich";
+    pub const AI_BACKGROUND_PAUSED: &str = "ai_background_paused";
+    /// Providers the user agreed to send data to: `{"<provider>": <epoch ms>}`.
+    pub const AI_CONSENT: &str = "ai_consent";
     pub const PAINEL_URL: &str = "painel_url";
     pub const PAINEL_INTEGRATION_ENABLED: &str = "painel_integration_enabled";
 }
@@ -61,6 +81,8 @@ enum Kind {
     Choice(&'static [&'static str]),
     /// JSON array of integers.
     IntList,
+    /// JSON object (its members are checked by the code that reads it).
+    Object,
 }
 
 struct Spec {
@@ -82,6 +104,15 @@ const fn spec(key: &'static str, kind: Kind, nullable: bool, default: fn() -> Va
 fn null() -> Value {
     Value::Null
 }
+
+fn empty_object() -> Value {
+    Value::Object(Map::new())
+}
+
+/// AI providers with an adapter (`core-ai`).
+const AI_PROVIDERS: &[&str] = &["anthropic", "openai", "gemini", "deepseek"];
+/// `core_ai::Effort`.
+const AI_EFFORTS: &[&str] = &["minimum", "low", "medium", "high"];
 
 use keys::*;
 
@@ -151,20 +182,50 @@ const SPECS: &[Spec] = &[
         false,
         || "auto".into(),
     ),
+    spec(AI_ENRICH_PROVIDER, Kind::Choice(AI_PROVIDERS), true, null),
+    spec(AI_ENRICH_MODEL, Kind::Text, true, null),
+    spec(AI_ENRICH_EFFORT, Kind::Choice(AI_EFFORTS), false, || {
+        "minimum".into()
+    }),
     spec(
-        AI_PROVIDER,
-        Kind::Choice(&["anthropic", "openai_compatible"]),
-        true,
-        null,
+        AI_ENRICH_MAX_TOKENS,
+        Kind::Int {
+            min: 500,
+            max: 4000,
+        },
+        false,
+        || 4000.into(),
     ),
-    spec(AI_BASE_URL, Kind::Text, true, null),
-    spec(AI_MODEL_FAST, Kind::Text, false, || {
-        "claude-haiku-5-5".into()
+    spec(AI_JUDGE_PROVIDER, Kind::Choice(AI_PROVIDERS), true, null),
+    spec(AI_JUDGE_MODEL, Kind::Text, true, null),
+    spec(AI_JUDGE_EFFORT, Kind::Choice(AI_EFFORTS), false, || {
+        "low".into()
     }),
-    spec(AI_MODEL_STRONG, Kind::Text, false, || {
-        "claude-sonnet-5-5".into()
+    spec(
+        AI_JUDGE_MAX_TOKENS,
+        Kind::Int {
+            min: 500,
+            max: 2000,
+        },
+        false,
+        || 2000.into(),
+    ),
+    spec(AI_LIMIT_DAY_USD, Kind::Number { min: 0.0 }, false, || {
+        1.0.into()
     }),
-    spec(AI_MONTHLY_LIMIT_USD, Kind::Number { min: 0.0 }, true, null),
+    spec(AI_LIMIT_MONTH_USD, Kind::Number { min: 0.0 }, false, || {
+        5.0.into()
+    }),
+    spec(
+        AI_CONFIRM_ABOVE_USD,
+        Kind::Number { min: 0.0 },
+        false,
+        || 0.05.into(),
+    ),
+    spec(AI_PRICE_OVERRIDES, Kind::Object, false, empty_object),
+    spec(AI_BACKGROUND_ENRICH, Kind::Bool, false, || false.into()),
+    spec(AI_BACKGROUND_PAUSED, Kind::Bool, false, || false.into()),
+    spec(AI_CONSENT, Kind::Object, false, empty_object),
     spec(PAINEL_URL, Kind::Text, true, null),
     spec(PAINEL_INTEGRATION_ENABLED, Kind::Bool, false, || {
         false.into()
@@ -214,6 +275,8 @@ fn validate(spec: &Spec, value: &Value) -> Result<()> {
             Some(items) if items.iter().all(|v| v.as_i64().is_some()) => Ok(()),
             _ => Err(invalid("esperada uma lista de números inteiros.".into())),
         },
+        Kind::Object if value.is_object() => Ok(()),
+        Kind::Object => Err(invalid("esperado um objeto.".into())),
     }
 }
 

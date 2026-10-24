@@ -125,7 +125,7 @@ pub struct BookPanelPatch {
     pub review_deck_id: Option<Option<i64>>,
 }
 
-fn double_option<'de, T, D>(d: D) -> Result<Option<Option<T>>, D::Error>
+pub(crate) fn double_option<'de, T, D>(d: D) -> Result<Option<Option<T>>, D::Error>
 where
     T: Deserialize<'de>,
     D: serde::Deserializer<'de>,

@@ -3,6 +3,8 @@
 //! reader is PdfCraft's own web UI (`/pdfcraft/`, an iframe of the UI); all the real work lives in
 //! the `core-*` crates and in plain [`AppState`] methods, so the integration tests need no webview.
 
+pub mod ai;
+pub mod ai_features;
 pub mod anki;
 pub mod anki_web;
 pub mod book_panel;
@@ -269,6 +271,19 @@ macro_rules! app_commands {
             commands::anki_export,
             commands::anki_backup_now,
             commands::anki_backups,
+            commands::ai_settings_get,
+            commands::ai_settings_set,
+            commands::ai_key_set,
+            commands::ai_key_delete,
+            commands::ai_key_test,
+            commands::ai_prices_get,
+            commands::ai_prices_set,
+            commands::ai_usage,
+            commands::ai_estimate,
+            commands::ai_judge_code,
+            commands::ai_cards_from_text,
+            commands::ai_define_word,
+            commands::ai_enrich_start,
             commands::anki_sync_status,
             commands::anki_sync_login,
             commands::anki_sync_logout,

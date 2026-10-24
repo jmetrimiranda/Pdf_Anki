@@ -72,6 +72,8 @@ keyring = { version = "3.6", default-features = false, features = ["apple-native
 tempfile.workspace = true
 # The offline test's TCP proxy (tests/sync.rs).
 tokio = { workspace = true, features = ["net"] }
+# The fake AI provider of tests/ai.rs (already in the lock through core-ai's tests).
+axum = "0.8"
 # Synthetic PDFs for the integration tests (spec 20); nothing large is committed.
 pdfcraft-testkit.workspace = true
 pdfcraft-cos.workspace = true

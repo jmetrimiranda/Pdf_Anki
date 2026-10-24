@@ -29,6 +29,8 @@ pub enum JobKind {
     VocabScan,
     /// Text recognition of a scanned PDF (spec 7.2, `crate::ocr`).
     Ocr,
+    /// AI definitions of the words of a deck (`crate::ai_features`); `done`/`total` are words.
+    AiEnrich,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -47,6 +49,8 @@ pub enum JobStage {
     Ocr,
     /// Writing the new version of the file with the text layer (OCR).
     Writing,
+    /// Asking the AI, batch by batch; `done`/`total` are words.
+    Ai,
     Done,
     Failed,
     Cancelled,

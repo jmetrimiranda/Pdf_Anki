@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use core_ai::prompts::{CardKind, JudgeOut};
+use core_ai::{ProviderKind, Rates};
 use core_anki::book::BookCard;
 use core_anki::browse::{BrowseOrder, BrowseRow, ForgetOptions};
 use core_anki::notes::{AddDefaults, NewNote, NoteAdded, NoteCheck, NoteData, NotetypeInfo};
@@ -25,6 +27,10 @@ use core_store::{ClosedSession, LibraryEntry, ReadingPosition};
 use tauri::State;
 use tauri::ipc::{InvokeBody, Request, Response};
 
+use crate::ai::{AiKeyTest, AiModelPrice, AiSettings, AiSettingsPatch, AiUsage};
+use crate::ai_features::{
+    AiCardProposal, AiEnrichStarted, AiEstimate, AiEstimateRequest, AiJudgeRequest, AiWordSense,
+};
 use crate::anki::{ChangeNotetypePrepared, DeckDeleted};
 use crate::book_panel::{BookPanelInfo, BookPanelPatch, WordDefinition};
 use crate::code::{
@@ -471,6 +477,122 @@ pub async fn anki_backup_now(state: Shared<'_>) -> Result<BackupInfo, AppError> 
 #[tauri::command]
 pub async fn anki_backups(state: Shared<'_>) -> Result<Vec<BackupInfo>, AppError> {
     blocking(&state, AppState::anki_backups).await
+}
+
+#[tauri::command]
+pub async fn ai_settings_get(state: Shared<'_>) -> Result<AiSettings, AppError> {
+    blocking(&state, AppState::ai_settings_get).await
+}
+
+#[tauri::command]
+pub async fn ai_settings_set(
+    state: Shared<'_>,
+    patch: AiSettingsPatch,
+) -> Result<AiSettings, AppError> {
+    blocking(&state, move |s| s.ai_settings_set(patch)).await
+}
+
+/// The key crosses the IPC once, into the keychain; it is never logged nor returned (only its last 4 characters).
+#[tauri::command]
+pub async fn ai_key_set(
+    state: Shared<'_>,
+    provider: ProviderKind,
+    key: String,
+) -> Result<AiSettings, AppError> {
+    blocking(&state, move |s| s.ai_key_set(provider, &key)).await
+}
+
+#[tauri::command]
+pub async fn ai_key_delete(
+    state: Shared<'_>,
+    provider: ProviderKind,
+) -> Result<AiSettings, AppError> {
+    blocking(&state, move |s| s.ai_key_delete(provider)).await
+}
+
+#[tauri::command]
+pub async fn ai_key_test(state: Shared<'_>, provider: ProviderKind) -> Result<AiKeyTest, AppError> {
+    state.ai_key_test(provider).await
+}
+
+#[tauri::command]
+pub async fn ai_prices_get(state: Shared<'_>) -> Result<Vec<AiModelPrice>, AppError> {
+    blocking(&state, AppState::ai_prices_get).await
+}
+
+#[tauri::command]
+pub async fn ai_prices_set(
+    state: Shared<'_>,
+    provider: ProviderKind,
+    model: String,
+    rates: Option<Rates>,
+) -> Result<Vec<AiModelPrice>, AppError> {
+    blocking(&state, move |s| s.ai_prices_set(provider, &model, rates)).await
+}
+
+#[tauri::command]
+pub async fn ai_usage(state: Shared<'_>) -> Result<AiUsage, AppError> {
+    blocking(&state, AppState::ai_usage).await
+}
+
+#[tauri::command]
+pub async fn ai_estimate(
+    state: Shared<'_>,
+    request: AiEstimateRequest,
+) -> Result<AiEstimate, AppError> {
+    blocking_arc(&state, move |s| s.ai_estimate(request)).await
+}
+
+/// `confirmed`: the user accepted a call above the confirmation threshold (`ai_needs_confirmation`).
+#[tauri::command]
+pub async fn ai_judge_code(
+    state: Shared<'_>,
+    request: AiJudgeRequest,
+    confirmed: bool,
+) -> Result<JudgeOut, AppError> {
+    state.inner().ai_judge_code(request, confirmed).await
+}
+
+#[tauri::command]
+pub async fn ai_cards_from_text(
+    state: Shared<'_>,
+    text: String,
+    kind: CardKind,
+    n: u32,
+    confirmed: bool,
+) -> Result<Vec<AiCardProposal>, AppError> {
+    state
+        .inner()
+        .ai_cards_from_text(text, kind, n, confirmed)
+        .await
+}
+
+#[tauri::command]
+pub async fn ai_define_word(
+    state: Shared<'_>,
+    lemma: String,
+    pos: Option<core_vocab::Pos>,
+    sentence: String,
+    confirmed: bool,
+) -> Result<AiWordSense, AppError> {
+    state
+        .inner()
+        .ai_define_word(lemma, pos, sentence, confirmed)
+        .await
+}
+
+#[tauri::command]
+pub async fn ai_enrich_start(
+    state: Shared<'_>,
+    book_uid: String,
+    scan_uid: String,
+    lemmas: Vec<String>,
+    confirmed: bool,
+) -> Result<AiEnrichStarted, AppError> {
+    blocking_arc(&state, move |s| {
+        s.ai_enrich_start(&book_uid, &scan_uid, lemmas, confirmed)
+    })
+    .await
 }
 
 #[tauri::command]
