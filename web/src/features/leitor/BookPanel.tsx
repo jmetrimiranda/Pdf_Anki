@@ -5,7 +5,7 @@ import { IconButton, useToast } from '../../components/ui';
 import { t } from '../../i18n';
 import { cn } from '../../lib/cn';
 import { useMediaQuery } from '../../lib/useMediaQuery';
-import { AiDialog, BookPanelContent, DefinePopover, type CardSelection, type DefineRequest } from '../book-panel';
+import { AiCardsDialog, BookPanelContent, DefinePopover, type CardSelection, type DefineRequest } from '../book-panel';
 import type { PdfcraftTheme } from './bridge';
 import type { LeitorSelection, MarkClick, PanelRequest } from './controller';
 import { leitor, useLeitorSelector } from './instance';
@@ -114,7 +114,7 @@ export function BookPanel({
   );
   const asideRef = useRef<HTMLElement>(null);
   const [card, setCard] = useState<(CardSelection & { uid: string }) | null>(null);
-  const [aiOpen, setAiOpen] = useState(false);
+  const [aiCards, setAiCards] = useState<(CardSelection & { uid: string }) | null>(null);
   const [define, setDefine] = useState<DefineRequest | null>(null);
   const [reviewRequest, setReviewRequest] = useState(false);
   const [markClick, setMarkClick] = useState<MarkClick | null>(null);
@@ -128,7 +128,17 @@ export function BookPanel({
   const handle = useCallback(
     (r: PanelRequest) => {
       if (r.kind === 'ai') {
-        setAiOpen(true);
+        const sel = r.selection;
+        if (!sel || !sel.text.trim()) toast.show(t('bookPanel.ai.selectFirst'), { tone: 'info' });
+        else if (sel.id === null) toast.show(t('bookPanel.notInLibrary'), { tone: 'info' });
+        else
+          setAiCards({
+            uid: sel.id,
+            page: sel.page,
+            text: sel.text,
+            rects: sel.rects,
+            ...(sel.unit === 'chapter' ? { unit: sel.unit, cfi: sel.cfi ?? null, label: sel.label ?? null } : {}),
+          });
         return;
       }
       if (r.kind === 'define') {
@@ -279,7 +289,14 @@ export function BookPanel({
   );
   const floating = (
     <>
-      <AiDialog open={aiOpen} onOpenChange={setAiOpen} />
+      {aiCards && (
+        <AiCardsDialog
+          bookUid={aiCards.uid}
+          title={aiCards.uid === bookUid ? (bookTitle ?? '') : ''}
+          selection={aiCards}
+          onClose={() => setAiCards(null)}
+        />
+      )}
       <DefinePopover request={define} onClose={() => setDefine(null)} />
       <VocabPopover click={markClick} onClose={() => setMarkClick(null)} />
     </>

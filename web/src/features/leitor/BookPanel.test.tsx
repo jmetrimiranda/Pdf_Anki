@@ -137,7 +137,7 @@ describe('BookPanel', () => {
     expect(screen.queryByRole('form', { name: 'Novo card' })).toBeNull();
   });
 
-  it('"Criar cards com IA" explains that AI is not configured and links to the settings', async () => {
+  it('"Criar cards com IA" with AI off says so and links to the settings', async () => {
     const uid = withBook();
     renderPanel({ open: false });
     act(() =>
@@ -149,9 +149,43 @@ describe('BookPanel', () => {
       }),
     );
     const dialog = await screen.findByRole('dialog', { name: 'Criar cards com IA' });
-    expect(within(dialog).getByText(/A IA ainda não está configurada/)).toBeTruthy();
+    expect((await within(dialog).findByTestId('ai-state')).textContent).toBe(
+      'IA desligada: configure em Configurações → IA.',
+    );
+    fireEvent.click(within(dialog).getByTestId('ai-cards-propose'));
+    expect((await within(dialog).findByTestId('ai-error')).getAttribute('data-code')).toBe('ai_disabled');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Abrir Configurações → IA' }));
     expect(router.navigate).toHaveBeenCalledWith({ to: '/configuracoes/ia' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Criar cards com IA' })).toBeNull());
+  });
+
+  it('"Criar cards com IA" proposes cards and adds the chosen ones with the Fonte of the selection', async () => {
+    await mockClient.aiSettingsSet({ enrich: { provider: 'anthropic' }, consent: ['anthropic'] });
+    await mockClient.aiKeySet('anthropic', 'test-key-TEST');
+    const add = vi.spyOn(mockClient, 'ankiNoteAdd');
+    const uid = withBook();
+    renderPanel();
+    act(() =>
+      fake.current.emit({
+        kind: 'ai',
+        via: 'menu',
+        selection: { id: uid, page: 3, text: 'Pigs are clever. Windmills grind grain.', rects: [] },
+        anchor: null,
+      }),
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'Criar cards com IA' });
+    expect(await within(dialog).findByTestId('ai-cards-estimate')).toBeTruthy();
+    fireEvent.click(within(dialog).getByTestId('ai-cards-propose'));
+    const list = await within(dialog).findByTestId('ai-cards-list');
+    expect(within(list).getAllByRole('checkbox')).toHaveLength(2);
+    fireEvent.click(within(list).getByRole('checkbox', { name: 'Adicionar a proposta 2' }));
+    await waitFor(() => expect((within(dialog).getByTestId('ai-cards-add') as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(within(dialog).getByTestId('ai-cards-add'));
+    await waitFor(() => expect(add).toHaveBeenCalledTimes(1));
+    const note = add.mock.calls[0]![0];
+    expect(note.tags).toEqual(['leitor', 'ia']);
+    expect(note.fields.join(' ')).toContain('Pigs are clever.');
+    expect(note.fields.join(' ')).toContain(`leitor://livro/${uid}?pagina=4`);
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Criar cards com IA' })).toBeNull());
   });
 
@@ -323,7 +357,7 @@ describe('BookPanel', () => {
       await within(pop).findByText('someone who is learning');
       expect(within(pop).getByText('WordNet')).toBeTruthy();
       expect(within(pop).getByTestId('vocab-family').textContent).toBe('Da família de: learn ✓');
-      expect(within(pop).getByText('Definição com IA chega numa próxima versão.')).toBeTruthy();
+      expect(within(pop).getByRole('button', { name: 'Definir com IA' })).toBeTruthy();
       expect(define).toHaveBeenCalledWith('learner', uid);
       const anchor = screen.getByTestId('vocab-anchor');
       expect([anchor.style.left, anchor.style.top, anchor.style.width]).toEqual(['300px', '400px', '40px']);

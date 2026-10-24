@@ -366,8 +366,10 @@ export function CardForm({
         fieldRefs.current.get(KINDS[kind].fields[0]!.name)?.focus();
         return;
       }
-      await core.ankiNoteAdd({ notetypeId: notetype.id, deckId: effectiveDeck, fields, tags: ['leitor'] });
+      const added = await core.ankiNoteAdd({ notetypeId: notetype.id, deckId: effectiveDeck, fields, tags: ['leitor'] });
       toast.show(t('bookPanel.form.added'), { tone: 'success' });
+      // A Vocabulário card joins the background AI enrichment when it is on (a no-op otherwise).
+      if (kind === 'vocab') void core.aiQueueAddNote(added.noteId, current.Exemplo ?? '').catch(() => undefined);
       try {
         // The panel's info is per page (`['bookPanel', uid, page]`): refreshed by the invalidation below.
         await core.bookPanelSet(bookUid, { lastDeckId: effectiveDeck, lastKind: kind });

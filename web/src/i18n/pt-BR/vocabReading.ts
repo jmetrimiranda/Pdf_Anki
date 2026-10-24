@@ -21,7 +21,6 @@ export const vocabReadingMessages = {
   'vocabReading.fromWordnet': 'WordNet',
   'vocabReading.noDefinition': 'Sem definição para esta palavra.',
   'vocabReading.defineFailed': 'Não foi possível buscar a definição.',
-  'vocabReading.aiSoon': 'Definição com IA chega numa próxima versão.',
   'vocabReading.add': 'Adicionar ao deck do livro',
   'vocabReading.known': 'Já sei',
   'vocabReading.proper': 'Nome próprio',

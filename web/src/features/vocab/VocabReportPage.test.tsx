@@ -199,7 +199,7 @@ describe('Relatório de vocabulário', () => {
     expect(within(dialog).getByTestId('vocab-deck-tags').textContent).toBe('livro::animal-farmtrecho::cap-3cap::03');
     const ai = within(dialog).getByRole('radio', { name: /IA/ }) as HTMLInputElement;
     expect(ai.disabled).toBe(true);
-    expect(within(dialog).getByText('— chega numa próxima versão')).toBeTruthy();
+    expect(within(dialog).getByTestId('ai-state').textContent).toBe('IA desligada: configure em Configurações → IA.');
     expect((within(dialog).getByRole('radio', { name: 'WordNet (offline)' }) as HTMLInputElement).checked).toBe(true);
     await user.click(within(dialog).getByRole('switch', { name: 'Um subdeck por capítulo' }));
     expect(within(dialog).getByTestId('vocab-deck-name').textContent).toBe(
@@ -217,6 +217,31 @@ describe('Relatório de vocabulário', () => {
     });
     // The report refreshes: the words are now in the book's deck and can't be checked again.
     await waitFor(() => expect(screen.getByRole('button', { name: 'Gerar deck (0)' })).toBeTruthy());
+  });
+
+  it('generates with AI definitions: the estimate, the AI job, then the deck from the cache', async () => {
+    const user = userEvent.setup();
+    await mockClient.aiSettingsSet({ enrich: { provider: 'anthropic' }, consent: ['anthropic'] });
+    await mockClient.aiKeySet('anthropic', 'test-key-TEST');
+    const start = vi.spyOn(mockClient, 'aiEnrichStart');
+    const generate = vi.spyOn(mockClient, 'vocabGenerateDeck');
+    const { uid, report } = await scanned({ kind: 'outline', ids: ['2'] });
+    await renderApp(`/vocabulario?livro=${uid}`);
+    await screen.findByTestId('vocab-range');
+    const n = report.rows.filter((r) => r.defaultSelected).length;
+    await user.click(screen.getByRole('button', { name: `Gerar deck (${n})` }));
+    const dialog = await screen.findByRole('dialog', { name: 'Gerar deck' });
+    await user.click(within(dialog).getByRole('radio', { name: /IA/ }));
+    expect((await within(dialog).findByTestId('vocab-ai-estimate')).textContent).toMatch(
+      /^Custo máximo estimado: US\$ 0,\d+/,
+    );
+    await user.click(within(dialog).getByTestId('vocab-deck-create'));
+    await waitFor(() => expect(generate).toHaveBeenCalled());
+    expect(start).toHaveBeenCalledWith(uid, report.scanUid, expect.any(Array), false);
+    expect(generate.mock.calls[0]![3]).toMatchObject({ enrich: 'ai' });
+    const result = await generate.mock.results[0]!.value;
+    const fields = mockHandle.anki.noteFields(result.noteIds[0]);
+    expect(fields['Tradução']).not.toBe('');
   });
 
   it('offers "Preparar coleção" when the vocabulary notetype is missing', async () => {

@@ -1,5 +1,5 @@
 // The popover over a highlighted word (spec 12.7): `pdfcraft:mark-click` → the lemma, its status, a definition (the
-// user's note, else WordNet; AI in a later phase), the family it derives from, and "Adicionar ao deck do livro",
+// user's note, else WordNet; "Definir com IA" on demand), the family it derives from, and "Adicionar ao deck do livro",
 // "Já sei", "Nome próprio". Shown over the PdfCraft iframe where the word is; same surface as "Definir palavra".
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
@@ -10,6 +10,7 @@ import { t } from '../../i18n';
 import { core } from '../../lib/core/client';
 import type { VocabOverride } from '../../lib/core/types';
 import { errorMessage } from '../anki/decks/DeckDialogs';
+import { AiDefine } from '../ai/AiDefine';
 import { AnchoredPopover } from '../book-panel/PanelDialogs';
 import type { MarkClick } from './controller';
 import { leitor } from './instance';
@@ -123,7 +124,7 @@ function VocabBody({ click, onClose }: { click: MarkClick; onClose: () => void }
           })}
         </p>
       )}
-      <p className="text-2xs text-muted">{t('vocabReading.aiSoon')}</p>
+      {d && <AiDefine lemma={d.lemma} pos={d.pos} bookUid={uid} page={page} />}
       <div className="flex flex-col gap-1.5 border-t border-line pt-2">
         {mark.status === 'unknown' && (
           <Button

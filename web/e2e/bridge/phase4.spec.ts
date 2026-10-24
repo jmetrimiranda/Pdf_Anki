@@ -370,13 +370,13 @@ test("the app's items in PdfCraft's selection bar and context menu open the pref
   await expect(form(page).getByLabel('Frente')).toHaveValue(PHRASE);
   await closeForm(page);
 
-  // "Criar cards com IA" (10.3): the AI-not-configured notice with the way to Configurações → IA.
+  // "Criar cards com IA" (10.3): the dialog with the selected passage; AI off says so.
   const aiAt = await now(page);
   await pdfcraftClick(page, (at.text.x0 + at.text.x1) / 2, (at.text.y0 + at.text.y1) / 2, { button: 'right' });
   await clickItem(page, await menuShown(page, aiAt), 'ai', uid);
   const ai = page.getByRole('dialog', { name: 'Criar cards com IA' });
-  await expect(ai).toContainText('A IA ainda não está configurada.');
-  await expect(ai.getByRole('button', { name: 'Abrir Configurações → IA' })).toBeVisible();
+  await expect(ai).toContainText(PHRASE);
+  await expect(ai.getByTestId('ai-state')).toHaveText('IA desligada: configure em Configurações → IA.');
   await page.keyboard.press('Escape');
   await expect(ai).toHaveCount(0);
 

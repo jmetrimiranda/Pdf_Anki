@@ -128,7 +128,9 @@ test('book decks, cards of the page, cards from the selection (button, PdfCraft 
   await expect(panel(page)).toHaveAttribute('data-open', 'true');
 });
 
-test('"Criar cards com IA" points to Configurações → IA; "Definir palavra" shows the lemma', async ({ page }) => {
+test('"Criar cards com IA" with AI off points to Configurações → IA; "Definir palavra" shows the lemma', async ({
+  page,
+}) => {
   await openAnimalFarm(page);
   await fakeMenu(page, 'define', { page: 0, text: 'animals', anchor: [120, 180, 110, 24] });
   const pop = page.getByTestId('define-popover');
@@ -146,10 +148,12 @@ test('"Criar cards com IA" points to Configurações → IA; "Definir palavra" s
 
   await fakeMenu(page, 'ai', { page: 0, text: 'All animals are equal' });
   const dialog = page.getByRole('dialog', { name: 'Criar cards com IA' });
-  await expect(dialog).toContainText('A IA ainda não está configurada.');
+  await expect(dialog.getByTestId('ai-state')).toHaveText('IA desligada: configure em Configurações → IA.');
+  await dialog.getByTestId('ai-cards-propose').click();
+  await expect(dialog.getByTestId('ai-error')).toHaveAttribute('data-code', 'ai_disabled');
   await dialog.getByRole('button', { name: 'Abrir Configurações → IA' }).click();
   await expect(page).toHaveURL(/\/configuracoes\/ia$/);
-  await expect(page.getByText('Provedor de IA: em breve…')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Chaves' })).toBeVisible();
 });
 
 test('captures: dark theme and a 390 px window', async ({ page }, info) => {

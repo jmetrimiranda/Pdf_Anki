@@ -66,7 +66,16 @@ export function useAiCall(): {
 }
 
 /** An AI error, with "Abrir Configurações → IA" when a setting fixes it. */
-export function AiErrorNotice({ error, onDismiss }: { error: unknown; onDismiss?: () => void }) {
+export function AiErrorNotice({
+  error,
+  onDismiss,
+  onOpenSettings,
+}: {
+  error: unknown;
+  onDismiss?: () => void;
+  /** Runs before going to the settings (e.g. closes the dialog the notice is in). */
+  onOpenSettings?: () => void;
+}) {
   const navigate = useNavigate();
   const code = error instanceof CoreError ? error.code : '';
   const message = error instanceof Error ? error.message : t('errors.unexpected');
@@ -80,7 +89,10 @@ export function AiErrorNotice({ error, onDismiss }: { error: unknown; onDismiss?
             size="sm"
             icon={Settings}
             className="-ml-2.5"
-            onClick={() => void navigate({ to: '/configuracoes/ia' })}
+            onClick={() => {
+              onOpenSettings?.();
+              void navigate({ to: '/configuracoes/ia' });
+            }}
           >
             {t('ai.openSettings')}
           </Button>

@@ -79,7 +79,7 @@ test('report → "Já sei" → generate the Cap 3 deck, found on the Anki tab wi
   await expect(dialog.getByTestId('vocab-deck-name')).toHaveText('Vocabulário::Livros::Animal Farm::Cap 3');
   await expect(dialog.getByTestId('vocab-deck-tags')).toContainText('trecho::cap-3');
   await expect(dialog.getByRole('radio', { name: /IA/ })).toBeDisabled();
-  await expect(dialog.getByText('— chega numa próxima versão')).toBeVisible();
+  await expect(dialog.getByTestId('ai-state')).toHaveText('IA desligada: configure em Configurações → IA.');
   await dialog.screenshot({ path: shot('vocab-generate', info.project.name) });
   await dialog.getByTestId('vocab-deck-create').click();
   await expect(page.getByText(`${n} cards criados em Vocabulário::Livros::Animal Farm::Cap 3.`)).toBeVisible();

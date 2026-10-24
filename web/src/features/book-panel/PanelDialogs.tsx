@@ -2,46 +2,17 @@
 // notice for now) and "Definir palavra" (spec 12.7 — the lemma and the vocabulary note, if any).
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
-import { ExternalLink, Settings, Sparkles, X } from 'lucide-react';
+import { ExternalLink, X } from 'lucide-react';
 import { Popover as P } from 'radix-ui';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Button, Dialog, IconButton, popoverSurface, SkeletonLines } from '../../components/ui';
+import { Button, IconButton, popoverSurface, SkeletonLines } from '../../components/ui';
 import { usePortalContainer } from '../../components/ui/portal';
 import { t } from '../../i18n';
 import { cn } from '../../lib/cn';
 import { core } from '../../lib/core/client';
-import type { AiWordSense, VocabPos } from '../../lib/core/types';
-import { AiStateHint } from '../ai/AiStateHint';
-import { AiErrorNotice, useAiCall } from '../ai/useAiCall';
+import { AiDefine } from '../ai/AiDefine';
 import { singleWord } from './text';
-
-export function AiDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const navigate = useNavigate();
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={onOpenChange}
-      title={t('bookPanel.ai.title')}
-      description={t('bookPanel.ai.body')}
-      footer={
-        <>
-          <Button onClick={() => onOpenChange(false)}>{t('common.close')}</Button>
-          <Button
-            variant="primary"
-            icon={Settings}
-            onClick={() => {
-              onOpenChange(false);
-              void navigate({ to: '/configuracoes/ia' });
-            }}
-          >
-            {t('bookPanel.ai.settings')}
-          </Button>
-        </>
-      }
-    />
-  );
-}
 
 /** Viewport CSS px rectangle the popover points at. */
 export interface ViewportAnchor {
@@ -204,23 +175,6 @@ function DefineBody({
   onClose: () => void;
 }) {
   const navigate = useNavigate();
-  const ai = useAiCall();
-  const [sense, setSense] = useState<AiWordSense | null>(null);
-  const [aiError, setAiError] = useState<unknown>(null);
-  const [asking, setAsking] = useState(false);
-
-  async function defineWithAi(lemma: string, pos: VocabPos | null) {
-    setAsking(true);
-    setAiError(null);
-    try {
-      const at = bookUid !== null && page !== null ? { bookUid, page } : undefined;
-      setSense(await ai.run((confirmed) => core.aiDefineWord(lemma, pos, '', confirmed, at)));
-    } catch (e) {
-      setAiError(e);
-    } finally {
-      setAsking(false);
-    }
-  }
   const word = singleWord(text);
   const def = useQuery({
     queryKey: ['vocabDefine', word, bookUid],
@@ -277,32 +231,10 @@ function DefineBody({
         </>
       )}
       {d && (
-        <div className="flex flex-col gap-1.5 border-t border-line pt-2">
-          {sense ? (
-            <div className="flex flex-col gap-0.5 rounded-ctl bg-surface px-2.5 py-2" data-testid="define-ai">
-              <p className="text-base break-words">{sense.definition}</p>
-              <p className="text-base">{t('bookPanel.define.translation', { traducao: sense.translation })}</p>
-              <p className="text-xs text-muted">
-                {sense.cached ? t('bookPanel.define.aiCached') : t('bookPanel.define.aiSource')}
-              </p>
-            </div>
-          ) : (
-            <Button
-              size="sm"
-              variant="ghost"
-              icon={Sparkles}
-              className="-ml-2 self-start"
-              loading={asking}
-              onClick={() => void defineWithAi(d.lemma, d.pos)}
-            >
-              {t('bookPanel.define.ai')}
-            </Button>
-          )}
-          {aiError !== null && <AiErrorNotice error={aiError} onDismiss={() => setAiError(null)} />}
-          <AiStateHint fn="enrich" />
+        <div className="border-t border-line pt-2">
+          <AiDefine lemma={d.lemma} pos={d.pos} bookUid={bookUid} page={page} />
         </div>
       )}
-      {ai.dialog}
     </div>
   );
 }
